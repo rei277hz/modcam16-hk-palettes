@@ -5,11 +5,17 @@ from .aces_jmh import (
     REC2020_D65_PRIMARIES_XY,
     ACESJMhParams,
     init_jmh_params,
+    jmh_to_cartesian,
     output_j_from_xyz,
     params_for_profile,
     xyz_to_aces_j,
 )
 from .cam16_hk import AppearanceModel
+from .colorchecker import (
+    COMPENSATED_COLORCHECKER_ASSIGNMENT_POLICY,
+    COMPENSATED_COLORCHECKER_MATCHING_MODE,
+    build_compensated_colorchecker_marker_assignments,
+)
 from .colorimetry import GAMUT_MATRICES
 from .config import (
     COMPENSATION_PROFILE_CHOICES,
@@ -41,6 +47,7 @@ from .ocio_compensation import (
     CompensationProcessor,
     TargetGamutProjection,
     apply_inverse_view_compensation,
+    compensate_candidate_colors,
     compensate_foreground,
     load_compensation_processor,
     load_ocio_processors,
@@ -57,6 +64,8 @@ from .render import (
 )
 
 __all__ = [
+    "COMPENSATED_COLORCHECKER_ASSIGNMENT_POLICY",
+    "COMPENSATED_COLORCHECKER_MATCHING_MODE",
     "COMPENSATION_PROFILES",
     "COMPENSATION_PROFILE_CHOICES",
     "COMPENSATION_PROFILE_DEFINITIONS",
@@ -81,7 +90,9 @@ __all__ = [
     "RenderedPalette",
     "TargetGamutProjection",
     "apply_inverse_view_compensation",
+    "build_compensated_colorchecker_marker_assignments",
     "build_palette",
+    "compensate_candidate_colors",
     "compensate_foreground",
     "default_config",
     "evaluate_aces_j_objective",
@@ -90,6 +101,7 @@ __all__ = [
     "fit_profile",
     "fit_profile_anchor",
     "init_jmh_params",
+    "jmh_to_cartesian",
     "load_compensation_processor",
     "load_config",
     "load_ocio_processors",

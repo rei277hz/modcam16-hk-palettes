@@ -367,6 +367,41 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
         assert "compensationFitMode" not in exr.header()
 
 
+def test_compensated_generation_uses_post_view_colorchecker_markers(tmp_path):
+    pytest.importorskip("OpenEXR")
+    base = _tiny_fit_config(tmp_path)
+    config = replace(
+        base,
+        colorchecker=replace(
+            base.colorchecker,
+            enabled=True,
+            compensated_marker_exposure_min_stops=-1.0,
+            compensated_marker_exposure_max_stops=1.0,
+            compensated_marker_exposure_step_stops=1.0,
+        ),
+    )
+    paths = generate(config, verbose=False)
+    compensated = [path for path in paths if "ACESJFit" in path.name]
+    assert len(compensated) == 1
+    import OpenEXR
+
+    with OpenEXR.File(str(compensated[0])) as exr:
+        header = exr.header()
+        assert header["colorCheckerMatchMode"] == "post-view ACES JMh exposure"
+        assert header["colorCheckerMatchExposureMin"] == -1.0
+        assert header["colorCheckerMatchExposureMax"] == 1.0
+        assert header["colorCheckerMatchExposureStep"] == 1.0
+        assert header["colorCheckerMatchExposureSamples"] == 3
+        assert "candidate locations may be reused" in header[
+            "colorCheckerMatchAssignmentPolicy"
+        ]
+        assert header["colorCheckerMatchCandidateCount"] > 0
+        assert header["colorCheckerMatchEvaluationCount"] == 18 * (
+            header["colorCheckerMatchCandidateCount"]
+        ) * 3
+        assert "post-view ACES JMh" in header["comments"]
+
+
 def test_manual_fit_keeps_legacy_anchor_and_filename(tmp_path):
     pytest.importorskip("OpenEXR")
     config = _tiny_fit_config(tmp_path, fit_mode="manual")

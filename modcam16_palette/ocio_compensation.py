@@ -471,6 +471,53 @@ def solve_profile_neutral_y(
     return source_y, intermediate, processor
 
 
+def compensate_candidate_colors(
+    colors: np.ndarray,
+    processor: CompensationProcessor,
+    anchor: float,
+) -> np.ndarray:
+    """Return final stored ACEScg values for logical palette candidates.
+
+    This is the same source-comparison, limiting-gamut projection, inverse
+    view, and anchor-normalization path used by :func:`compensate_foreground`.
+    Keeping it here lets marker matching evaluate exactly the values that will
+    be written to the compensated EXR rather than reimplementing a subtly
+    different inverse path.
+    """
+
+    values = np.asarray(colors, dtype=np.float32)
+    if values.ndim != 2 or values.shape[-1] != 3:
+        raise ValueError("colors must have shape N x 3.")
+    if not np.isfinite(anchor) or anchor <= 0.0:
+        raise ValueError("Compensation anchor must be finite and positive.")
+    if values.size == 0:
+        return np.empty((0, 3), dtype=np.float32)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Candidate colors must be finite.")
+
+    comparison = processor.source_comparison(values)
+    comparison = processor.project_target_to_limiting_gamut(comparison).xyz
+    inverse = np.asarray(processor.target_inverse_values(comparison), dtype=np.float32)
+    if inverse.shape != values.shape:
+        raise RuntimeError(
+            f"OCIO inverse compensation returned shape {inverse.shape}, "
+            f"expected {values.shape} for {processor.profile.name}."
+        )
+    if not np.all(np.isfinite(inverse)):
+        raise RuntimeError(
+            f"OCIO inverse compensation produced non-finite values for "
+            f"{processor.profile.name}."
+        )
+    # A tiny negative can arise from OCIO float round-off at a gamut boundary;
+    # values materially below zero make the exposure objective undefined.
+    if np.min(inverse) < -1.0e-6:
+        raise RuntimeError(
+            f"OCIO inverse compensation produced negative values for "
+            f"{processor.profile.name}."
+        )
+    return np.maximum(inverse, 0.0) / np.float32(anchor)
+
+
 def compensate_foreground(
     image: np.ndarray,
     foreground_mask: np.ndarray,

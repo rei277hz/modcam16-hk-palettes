@@ -256,6 +256,28 @@ def xyz_to_aces_j(
     return params.xyz_to_j(xyz_display_reference)
 
 
+def jmh_to_cartesian(jmh: np.ndarray) -> np.ndarray:
+    """Map ACES ``J, M, h`` values to normalized Cartesian coordinates.
+
+    The normalization keeps the achromatic and chromatic components on the
+    same 0..1 scale before Euclidean comparison.  Hue is interpreted in
+    degrees, as returned by :meth:`ACESJMhParams.xyz_to_jmh`.
+    """
+
+    values = np.asarray(jmh, dtype=np.float64)
+    if values.ndim == 0 or values.shape[-1] != 3:
+        raise ValueError("JMh arrays must have a final dimension of three.")
+    hue_radians = np.radians(values[..., 2])
+    return np.stack(
+        (
+            values[..., 0] / 100.0,
+            (values[..., 1] / 100.0) * np.cos(hue_radians),
+            (values[..., 1] / 100.0) * np.sin(hue_radians),
+        ),
+        axis=-1,
+    )
+
+
 # Descriptive aliases used by callers and by older exploratory notebooks.
 ACESJ = ACESJMhParams
 init_JMhParams = init_jmh_params
@@ -270,6 +292,7 @@ __all__ = [
     "ACESJMhParams",
     "init_JMhParams",
     "init_jmh_params",
+    "jmh_to_cartesian",
     "output_j_from_xyz",
     "params_for_profile",
     "xyz_to_J",

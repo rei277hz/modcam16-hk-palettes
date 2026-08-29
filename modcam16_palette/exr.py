@@ -26,13 +26,27 @@ def make_comments(
 
     cc = config.colorchecker
     if cc.enabled:
-        colorchecker_comment = (
-            f"ColorChecker dataset={cc.dataset}; "
-            f"ColorChecker adaptation={cc.adaptation_method}; "
-            "first eighteen chromatic patches only; "
-            "nearest matching uses Hellwig saturation and hue only; "
-            f"ColorChecker dot radius={cc.dot_radius_pixels:g} pixels; "
+        matching_mode = str(
+            statistics.get("colorchecker_matching_mode", "source CAM16 saturation/hue")
         )
+        if matching_mode == "post-view ACES JMh exposure":
+            colorchecker_comment = (
+                f"ColorChecker dataset={cc.dataset}; "
+                f"ColorChecker adaptation={cc.adaptation_method}; "
+                "first eighteen chromatic patches only; "
+                "compensated matching uses post-view ACES JMh over the configured "
+                "exposure grid with independent per-patch nearest matching; "
+                "candidate locations may be reused; "
+                f"ColorChecker dot radius={cc.dot_radius_pixels:g} pixels; "
+            )
+        else:
+            colorchecker_comment = (
+                f"ColorChecker dataset={cc.dataset}; "
+                f"ColorChecker adaptation={cc.adaptation_method}; "
+                "first eighteen chromatic patches only; "
+                "nearest matching uses Hellwig saturation and hue only; "
+                f"ColorChecker dot radius={cc.dot_radius_pixels:g} pixels; "
+            )
     else:
         colorchecker_comment = "ColorChecker markers disabled; "
 
@@ -156,6 +170,82 @@ def write_float_rgb_exr(
         # Keep the legacy metadata value for generated-file compatibility.
         "software": "make_modcam16hk_c3_log_caps_markers_colorchecker.py",
     }
+    if config.colorchecker.enabled and statistics.get("colorchecker_matching_mode") == (
+        "post-view ACES JMh exposure"
+    ):
+        assignments = statistics.get("colorchecker_assignments", ())
+        header.update(
+            {
+                "colorCheckerMatchMode": str(
+                    statistics["colorchecker_matching_mode"]
+                ),
+                "colorCheckerMatchMetric": str(
+                    statistics.get("colorchecker_distance_metric", "")
+                ),
+                "colorCheckerMatchAssignmentPolicy": str(
+                    statistics.get("colorchecker_assignment_policy", "")
+                ),
+                "colorCheckerMatchUniqueLocations": int(
+                    statistics.get("colorchecker_unique_marker_count", 0)
+                ),
+                "colorCheckerMatchCandidateCount": int(
+                    statistics.get("colorchecker_candidate_count", 0)
+                ),
+                "colorCheckerMatchEvaluationCount": int(
+                    statistics.get("colorchecker_evaluation_count", 0)
+                ),
+            }
+        )
+        if statistics["colorchecker_matching_mode"] == (
+            "post-view ACES JMh exposure"
+        ):
+            header.update(
+                {
+                    "colorCheckerMatchExposureMin": float(
+                        statistics["colorchecker_exposure_min_stops"]
+                    ),
+                    "colorCheckerMatchExposureMax": float(
+                        statistics["colorchecker_exposure_max_stops"]
+                    ),
+                    "colorCheckerMatchExposureStep": float(
+                        statistics["colorchecker_exposure_step_stops"]
+                    ),
+                    "colorCheckerMatchExposureSamples": int(
+                        statistics["colorchecker_exposure_sample_count"]
+                    ),
+                    "colorCheckerMatchEVs": ",".join(
+                        f"{float(assignment['ev_stops']):.6g}"
+                        for assignment in assignments
+                        if "ev_stops" in assignment
+                    ),
+                    "colorCheckerMatchDistances": ",".join(
+                        f"{float(assignment['distance']):.9g}"
+                        for assignment in assignments
+                        if "distance" in assignment
+                    ),
+                    "colorCheckerMatchCandidates": ",".join(
+                        str(int(assignment["candidate_index"]))
+                        for assignment in assignments
+                        if "candidate_index" in assignment
+                    ),
+                    "colorCheckerMatchCandidateJMh": ";".join(
+                        ",".join(
+                            f"{float(value):.9g}"
+                            for value in assignment["candidate_jmh"]
+                        )
+                        for assignment in assignments
+                        if "candidate_jmh" in assignment
+                    ),
+                    "colorCheckerMatchTargetJMh": ";".join(
+                        ",".join(
+                            f"{float(value):.9g}"
+                            for value in assignment["target_jmh"]
+                        )
+                        for assignment in assignments
+                        if "target_jmh" in assignment
+                    ),
+                }
+            )
     if statistics.get("compensation_enabled"):
         compensation_header = {
             "compensationProfile": str(statistics["compensation_profile"]),

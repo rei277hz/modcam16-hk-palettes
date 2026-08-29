@@ -25,6 +25,7 @@ from .config import (
 )
 from .ocio_compensation import (
     CompensationProcessor,
+    compensate_candidate_colors,
     solve_neutral_y,
 )
 from .palette import PaletteResult, build_palette
@@ -175,33 +176,7 @@ def _scaled_inverse_colors(
     processor: CompensationProcessor,
     anchor: float,
 ) -> np.ndarray:
-    values = np.asarray(colors, dtype=np.float32)
-    if values.ndim != 2 or values.shape[-1] != 3:
-        raise ValueError("colors must have shape N x 3.")
-    if not np.isfinite(anchor) or anchor <= 0.0:
-        raise ValueError("Compensation anchor must be finite and positive.")
-    if values.size == 0:
-        return np.empty((0, 3), dtype=np.float32)
-    comparison = processor.source_comparison(values)
-    comparison = processor.project_target_to_limiting_gamut(comparison).xyz
-    inverse = processor.target_inverse_values(comparison)
-    inverse = np.asarray(inverse, dtype=np.float32)
-    if inverse.shape != values.shape:
-        raise RuntimeError(
-            f"OCIO inverse compensation returned shape {inverse.shape}, "
-            f"expected {values.shape} for {processor.profile.name}."
-        )
-    if not np.all(np.isfinite(inverse)):
-        raise RuntimeError(
-            f"OCIO inverse compensation produced non-finite values for {processor.profile.name}."
-        )
-    # A tiny negative can arise from OCIO float round-off at a gamut boundary;
-    # values materially below zero make the exposure objective undefined.
-    if inverse.size and np.min(inverse) < -1.0e-6:
-        raise RuntimeError(
-            f"OCIO inverse compensation produced negative values for {processor.profile.name}."
-        )
-    return np.maximum(inverse, 0.0) / np.float32(anchor)
+    return compensate_candidate_colors(colors, processor, anchor)
 
 
 def evaluate_anchor_objective(

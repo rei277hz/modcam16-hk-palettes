@@ -7,7 +7,10 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+
 from .cam16_hk import AppearanceModel
+from .colorchecker import build_compensated_colorchecker_marker_assignments
 from .colorimetry import GAMUT_MATRICES
 from .config import (
     COMPENSATION_PROFILE_CHOICES,
@@ -20,6 +23,7 @@ from .config import (
 from .fitting import fit_profile
 from .naming import output_path_for_compensation, output_path_for_gamut
 from .ocio_compensation import (
+    compensate_candidate_colors,
     compensate_foreground,
     load_compensation_processor,
 )
@@ -77,6 +81,30 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument("--colorchecker-dot-radius", type=float)
+    parser.add_argument(
+        "--colorchecker-compensated-exposure-min",
+        "--colorchecker-compensated-exposure-min-stops",
+        "--compensated-marker-exposure-min",
+        dest="colorchecker_compensated_exposure_min",
+        type=float,
+        help="minimum exposure sample for compensated CC18 matching (stops)",
+    )
+    parser.add_argument(
+        "--colorchecker-compensated-exposure-max",
+        "--colorchecker-compensated-exposure-max-stops",
+        "--compensated-marker-exposure-max",
+        dest="colorchecker_compensated_exposure_max",
+        type=float,
+        help="maximum exposure sample for compensated CC18 matching (stops)",
+    )
+    parser.add_argument(
+        "--colorchecker-compensated-exposure-step",
+        "--colorchecker-compensated-exposure-step-stops",
+        "--compensated-marker-exposure-step",
+        dest="colorchecker_compensated_exposure_step",
+        type=float,
+        help="exposure spacing for compensated CC18 matching (stops)",
+    )
     parser.add_argument(
         "--compensation",
         action=argparse.BooleanOptionalAction,
@@ -241,6 +269,18 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
         colorchecker["include_caps_in_matching"] = args.colorchecker_include_caps
     if args.colorchecker_dot_radius is not None:
         colorchecker["dot_radius_pixels"] = args.colorchecker_dot_radius
+    if args.colorchecker_compensated_exposure_min is not None:
+        colorchecker["compensated_marker_exposure_min_stops"] = (
+            args.colorchecker_compensated_exposure_min
+        )
+    if args.colorchecker_compensated_exposure_max is not None:
+        colorchecker["compensated_marker_exposure_max_stops"] = (
+            args.colorchecker_compensated_exposure_max
+        )
+    if args.colorchecker_compensated_exposure_step is not None:
+        colorchecker["compensated_marker_exposure_step_stops"] = (
+            args.colorchecker_compensated_exposure_step
+        )
     if args.compensation is not None:
         compensation["enabled"] = args.compensation
     if args.compensation_profile is not None:
@@ -362,10 +402,62 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                     f"Solved source neutral Y is outside the supported range for "
                     f"{profile.name}: {source_y:.15g}"
                 )
+            compensated_result = source_result
+            if source_config.colorchecker.enabled:
+                source_full_candidates = source_result.color_table[
+                    source_result.block_valid_table
+                ]
+                source_candidates = np.concatenate(
+                    (source_full_candidates, source_result.cap_color_table), axis=0
+                )
+                stored_candidates = compensate_candidate_colors(
+                    source_candidates,
+                    processor,
+                    fit.intermediate_anchor,
+                )
+                (
+                    compensated_full_markers,
+                    compensated_cap_markers,
+                    compensated_assignments,
+                    compensated_unique_count,
+                    compensated_marker_metadata,
+                ) = build_compensated_colorchecker_marker_assignments(
+                    stored_candidates,
+                    source_result.palette_appearance,
+                    source_result.palette_chroma,
+                    float(source_result.statistics["c3_raw"]),
+                    source_result.statistics["relative_chroma_levels"],
+                    source_result.valid_ring_indices,
+                    source_result.valid_hue_indices,
+                    source_result.statistics["hue_angles"],
+                    processor,
+                    profile.name,
+                    source_config.colorchecker,
+                )
+                compensated_statistics = dict(source_result.statistics)
+                compensated_statistics.update(compensated_marker_metadata)
+                compensated_statistics.update(
+                    {
+                        "colorchecker_assignments": compensated_assignments,
+                        "colorchecker_unique_marker_count": compensated_unique_count,
+                        "colorchecker_full_marker_count": int(
+                            np.count_nonzero(compensated_full_markers)
+                        ),
+                        "colorchecker_cap_marker_count": int(
+                            np.count_nonzero(compensated_cap_markers)
+                        ),
+                    }
+                )
+                compensated_result = replace(
+                    source_result,
+                    colorchecker_full_marker_table=compensated_full_markers,
+                    colorchecker_cap_marker_table=compensated_cap_markers,
+                    statistics=compensated_statistics,
+                )
             rendered = render_palette_layers(
-                source_result,
+                compensated_result,
                 source_config,
-                center_color=source_result.reference_neutral_acescg,
+                center_color=compensated_result.reference_neutral_acescg,
             )
             image, diagnostics = compensate_foreground(
                 rendered.image,
@@ -376,7 +468,7 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                 rendered.center_mask,
                 fit.intermediate_anchor,
             )
-            statistics = dict(source_result.statistics)
+            statistics = dict(compensated_result.statistics)
             statistics.update(diagnostics.as_statistics())
             statistics.update(fit.diagnostics.as_statistics())
             output_path = output_path_for_compensation(
@@ -417,7 +509,7 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
         print("Every hue has a thin gamut-boundary cap.")
         if config.colorchecker.enabled:
             print(
-                "ColorChecker dots mark unique nearest palette locations using saturation and hue only."
+                "Ordinary ColorChecker dots use source saturation/hue; compensated dots use exposure-aware post-view ACES JMh matching."
             )
         if eligible_profiles:
             print(

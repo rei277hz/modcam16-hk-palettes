@@ -208,6 +208,48 @@ class ColorCheckerConfig:
     adaptation_method: str = "CAT02"
     include_caps_in_matching: bool = True
     dot_radius_pixels: float = 5.0
+    # Exposure sampling used only when matching CC18 markers on an ACES 2.0
+    # compensated palette.  Keep this independent from the compensation
+    # anchor-fitting grid: marker matching asks which stored palette cell is
+    # closest after the forward view transform, while anchor fitting asks how
+    # to normalize the palette itself.
+    compensated_marker_exposure_min_stops: float = -5.0
+    compensated_marker_exposure_max_stops: float = 5.0
+    compensated_marker_exposure_step_stops: float = 0.25
+
+    @property
+    def compensated_marker_exposure_stops(self) -> tuple[float, ...]:
+        """Return the inclusive compensated-marker exposure sample grid."""
+
+        span = (
+            float(self.compensated_marker_exposure_max_stops)
+            - float(self.compensated_marker_exposure_min_stops)
+        )
+        step = float(self.compensated_marker_exposure_step_stops)
+        if (
+            not np.isfinite(span)
+            or not np.isfinite(step)
+            or step <= 0.0
+            or span <= 0.0
+        ):
+            raise ValueError("Invalid compensated-marker exposure grid.")
+        ratio = span / step
+        count = round(ratio)
+        if count < 1 or not np.isclose(ratio, count, atol=1.0e-9, rtol=0.0):
+            raise ValueError(
+                "Compensated-marker exposure span must be an integer multiple of step."
+            )
+        # linspace makes the requested upper endpoint exact despite binary
+        # floating-point representation of quarter-stop increments.
+        return tuple(
+            float(value)
+            for value in np.linspace(
+                float(self.compensated_marker_exposure_min_stops),
+                float(self.compensated_marker_exposure_max_stops),
+                count + 1,
+                dtype=np.float64,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -517,6 +559,50 @@ class Config:
             not np.isfinite(cc.dot_radius_pixels) or cc.dot_radius_pixels <= 0.0
         ):
             raise ValueError("ColorChecker dot radius must be finite and positive.")
+        for value, label in (
+            (
+                cc.compensated_marker_exposure_min_stops,
+                "compensated_marker_exposure_min_stops",
+            ),
+            (
+                cc.compensated_marker_exposure_max_stops,
+                "compensated_marker_exposure_max_stops",
+            ),
+        ):
+            if not np.isfinite(value):
+                raise ValueError(f"{label} must be finite.")
+        if (
+            cc.compensated_marker_exposure_max_stops
+            <= cc.compensated_marker_exposure_min_stops
+        ):
+            raise ValueError(
+                "compensated_marker_exposure_max_stops must exceed "
+                "compensated_marker_exposure_min_stops."
+            )
+        if (
+            not np.isfinite(cc.compensated_marker_exposure_step_stops)
+            or cc.compensated_marker_exposure_step_stops <= 0.0
+        ):
+            raise ValueError(
+                "compensated_marker_exposure_step_stops must be finite and positive."
+            )
+        marker_exposure_span = (
+            cc.compensated_marker_exposure_max_stops
+            - cc.compensated_marker_exposure_min_stops
+        ) / cc.compensated_marker_exposure_step_stops
+        if not np.isfinite(marker_exposure_span) or marker_exposure_span < 1.0:
+            raise ValueError(
+                "Compensated-marker exposure grid must contain at least two samples."
+            )
+        if not np.isclose(
+            marker_exposure_span, round(marker_exposure_span), atol=1.0e-9, rtol=0.0
+        ):
+            raise ValueError(
+                "compensated-marker exposure span must be an integer multiple "
+                "of compensated_marker_exposure_step_stops."
+            )
+        if round(marker_exposure_span) > 10001:
+            raise ValueError("Compensated-marker exposure grid is unreasonably large.")
 
         if not isinstance(r.image_size, int) or r.image_size <= 0 or r.image_size % 2:
             raise ValueError("image_size must be a positive even integer.")
@@ -682,6 +768,15 @@ def config_from_mapping(
         "colorchecker": {
             "include_caps": "include_caps_in_matching",
             "dot_radius": "dot_radius_pixels",
+            "compensated_exposure_min": "compensated_marker_exposure_min_stops",
+            "compensated_exposure_max": "compensated_marker_exposure_max_stops",
+            "compensated_exposure_step": "compensated_marker_exposure_step_stops",
+            "marker_exposure_min": "compensated_marker_exposure_min_stops",
+            "marker_exposure_max": "compensated_marker_exposure_max_stops",
+            "marker_exposure_step": "compensated_marker_exposure_step_stops",
+            "compensated_marker_exposure_min": "compensated_marker_exposure_min_stops",
+            "compensated_marker_exposure_max": "compensated_marker_exposure_max_stops",
+            "compensated_marker_exposure_step": "compensated_marker_exposure_step_stops",
         },
         "palette": {
             "srgb_k": "srgb_chroma_companding_k",

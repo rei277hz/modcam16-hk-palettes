@@ -205,6 +205,10 @@ def _build_statistics(
         "combined_marker_count": combined_marker_count,
         "marker_overlap_count": marker_overlap_count,
         "marker_boundary_cmax": marker_boundary_cmax,
+        "colorchecker_matching_mode": "source CAM16 saturation/hue",
+        "colorchecker_distance_metric": (
+            "Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded"
+        ),
         "colorchecker_assignments": colorchecker_assignments,
         "colorchecker_unique_marker_count": colorchecker_unique_marker_count,
         "colorchecker_full_marker_count": int(

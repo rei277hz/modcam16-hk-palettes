@@ -61,7 +61,26 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
         return
     stats = result.statistics
     print("ColorChecker chromatic-patch matches:")
-    print("  Metric: Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded")
+    matching_mode = stats.get(
+        "colorchecker_matching_mode", "source CAM16 saturation/hue"
+    )
+    if matching_mode == "post-view ACES JMh exposure":
+        print(
+            "  Metric: Euclidean normalized Cartesian ACES JMh after the "
+            "forward view transform"
+        )
+        print(
+            "  Assignment: independent closest-distance match per patch; "
+            "candidate locations may be reused"
+        )
+        print(
+            "  Exposure grid: "
+            f"{stats.get('colorchecker_exposure_min_stops', 0.0):g}.."
+            f"{stats.get('colorchecker_exposure_max_stops', 0.0):g} EV @ "
+            f"{stats.get('colorchecker_exposure_step_stops', 0.0):g}"
+        )
+    else:
+        print("  Metric: Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded")
     print(f"  Dataset: {config.colorchecker.dataset}")
     print(f"  Chromatic adaptation: {config.colorchecker.adaptation_method} -> D65")
     print(
@@ -75,14 +94,32 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
             )
         else:
             location_text = "boundary cap"
-        print(
-            f"  {assignment['patch_name']:<16} "
-            f"target h={assignment['target_hue']:7.2f}°, s={assignment['target_saturation']:8.3f} "
-            f"-> {location_text}, sector={assignment['palette_sector_hue']:6.1f}°, "
-            f"C/C3={assignment['candidate_relative_chroma']:7.3%}, "
-            f"palette h={assignment['candidate_hue']:7.2f}°, "
-            f"s={assignment['candidate_saturation']:8.3f}, d={assignment['distance']:.4f}"
-        )
+        if matching_mode == "post-view ACES JMh exposure":
+            print(
+                f"  {assignment['patch_name']:<16} -> {location_text}, "
+                f"sector={assignment['palette_sector_hue']:6.1f}°, "
+                f"C/C3={assignment['candidate_relative_chroma']:7.3%}, "
+                f"source h={assignment['candidate_hue']:7.2f}°, "
+                f"s={assignment['candidate_saturation']:8.3f}, "
+                f"d={assignment['distance']:.4f}, EV={assignment['ev_stops']:+.2f}"
+            )
+            print(
+                f"    post-view target J/M/h=({assignment['target_J']:.3f}, "
+                f"{assignment['target_M']:.3f}, {assignment['target_hue']:.2f}°); "
+                f"candidate J/M/h=({assignment['candidate_J']:.3f}, "
+                f"{assignment['candidate_M']:.3f}, "
+                f"{assignment['candidate_post_view_hue']:.2f}°); "
+                f"d={assignment['distance']:.6f}"
+            )
+        else:
+            print(
+                f"  {assignment['patch_name']:<16} "
+                f"target h={assignment['target_hue']:7.2f}°, s={assignment['target_saturation']:8.3f} "
+                f"-> {location_text}, sector={assignment['palette_sector_hue']:6.1f}°, "
+                f"C/C3={assignment['candidate_relative_chroma']:7.3%}, "
+                f"palette h={assignment['candidate_hue']:7.2f}°, "
+                f"s={assignment['candidate_saturation']:8.3f}, d={assignment['distance']:.4f}"
+            )
     print()
     print(f"  Source chromatic patches: {len(stats['colorchecker_assignments'])}")
     print(

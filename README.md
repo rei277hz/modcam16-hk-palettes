@@ -36,6 +36,23 @@ not baked into the scene-linear EXR. Foreground palette pixels are normalized
 after inversion so the published center remains `(1, 1, 1)`; background and
 marker pixels are left untouched.
 
+CC18 dots on ordinary palettes retain the source-palette matching rule
+(nearest Hellwig saturation/hue). On compensated palettes, dots are assigned
+after the inverse-view colors have been finalized: each logical ring/cap
+candidate is exposed over the configured grid, passed through the selected
+ACES 2.0 forward view, and compared with the fixed D65 CC18 XYZ targets in
+normalized Cartesian ACES JMh space. The dot is drawn at the winning palette
+location; its winning EV is recorded as metadata and does not alter the stored
+pixel. Matching is independent for each CC18 patch: candidate locations are
+not consumed, so one ring or cap may receive multiple dots. The default
+compensated-marker grid is inclusive `-5..+5` EV in
+quarter-stop increments (41 samples). Configure it with
+`colorchecker.compensated_marker_exposure_min_stops`,
+`colorchecker.compensated_marker_exposure_max_stops`, and
+`colorchecker.compensated_marker_exposure_step_stops`, or the corresponding
+CLI options. `scripts/analyze_compensated_cc18_grid.py` compares the configured
+grid with a finer reference grid when tuning these defaults.
+
 P3-D65 is not a strict subset of Rec.2020: there is a very small sliver near
 the P3 red primary that produces a negative Rec.2020 blue channel. The source
 P3 cap remains at its configured safety inset from the P3 boundary, but such a
