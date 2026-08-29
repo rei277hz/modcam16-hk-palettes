@@ -15,10 +15,7 @@ def print_generation_header(config: Config, model) -> None:
     p = config.palette
     r = config.raster
     selected = ", ".join(config.output.selected_gamuts)
-    print(
-        "Generating C3-relative modCAM16-HK palettes for "
-        f"{selected}..."
-    )
+    print(f"Generating C3-relative modCAM16-HK palettes for {selected}...")
     print()
     print(f"H-K model: J_HK = sqrt(J^2 + {a.hk_chroma_coefficient:g} C)")
     print("Underlying attributes: Hellwig-Fairchild revised CAM16")
@@ -27,10 +24,7 @@ def print_generation_header(config: Config, model) -> None:
     print()
     print(f"Image size: {r.image_size} x {r.image_size}")
     print(f"Reference white: {a.reference_white_luminance_nits:.6f} cd/m^2")
-    print(
-        "Configured source neutral Y: "
-        f"{a.reference_neutral_y:.15g}"
-    )
+    print(f"Configured source neutral Y: {a.reference_neutral_y:.15g}")
     print("Published ordinary neutral ACEScg value: (1.0, 1.0, 1.0)")
     print(
         f"Neutral physical luminance: {config.reference_neutral_luminance_nits:.6f} cd/m^2"
@@ -51,10 +45,7 @@ def print_generation_header(config: Config, model) -> None:
     print(f"Complete chromatic levels: {p.chroma_level_count}")
     compensation = config.compensation
     if compensation.enabled and compensation.profiles:
-        print(
-            "ACES 2.0 compensated profiles: "
-            + ", ".join(compensation.profiles)
-        )
+        print("ACES 2.0 compensated profiles: " + ", ".join(compensation.profiles))
         print(
             "Compensated chroma companding k: "
             f"sRGB={compensation.srgb_chroma_companding_k:g}, "
@@ -193,3 +184,17 @@ def print_palette_report(result: PaletteResult, config: Config) -> None:
             "  Post-scale encoded display max error: "
             f"{stats['compensation_post_scale_display_max_error']:.9g}"
         )
+        if "compensation_fit_mode" in stats:
+            print(f"  Fit mode: {stats['compensation_fit_mode']}")
+            print(f"  Fitted anchor: {stats['compensation_fitted_anchor']:.9g}")
+            print(f"  ACES-J fit RMS: {stats['compensation_fit_rms_error']:.9g}")
+            print(
+                "  ACES-J legacy-anchor RMS: "
+                f"{stats['compensation_fit_legacy_rms_error']:.9g}"
+            )
+            print(
+                "  Exposure grid: "
+                f"{stats['compensation_fit_exposure_min_stops']:.9g} to "
+                f"{stats['compensation_fit_exposure_max_stops']:.9g} stops, "
+                f"step {stats['compensation_fit_exposure_step_stops']:.9g}"
+            )

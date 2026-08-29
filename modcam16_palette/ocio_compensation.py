@@ -136,7 +136,9 @@ class CompensationProcessor:
 def _import_ocio() -> Any:
     try:
         import PyOpenColorIO as ocio
-    except ImportError as exc:  # pragma: no cover - exercised in missing-dependency installs
+    except (
+        ImportError
+    ) as exc:  # pragma: no cover - exercised in missing-dependency installs
         raise RuntimeError(
             "ACES compensation requires PyOpenColorIO (opencolorio==2.5.2)."
         ) from exc
@@ -166,9 +168,7 @@ def _resolve_config_path(path: str | Path) -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
-    raise FileNotFoundError(
-        f"OpenColorIO configuration was not found: {requested}"
-    )
+    raise FileNotFoundError(f"OpenColorIO configuration was not found: {requested}")
 
 
 def _view_reference_group(ocio: Any, config: Any, view_name: str) -> Any:
@@ -251,6 +251,7 @@ def _neutral_intermediate(
 def solve_neutral_y(
     processor: CompensationProcessor,
     compensation: CompensationConfig,
+    target_intermediate_center: float | None = None,
 ) -> tuple[float, np.ndarray]:
     """Solve a deterministic source neutral Y for the requested center.
 
@@ -259,7 +260,11 @@ def solve_neutral_y(
     comparison, rather than a claim of exact real-valued equality.
     """
 
-    target = float(compensation.target_intermediate_center)
+    target = float(
+        compensation.target_intermediate_center
+        if target_intermediate_center is None
+        else target_intermediate_center
+    )
     if not np.isfinite(target) or target <= 0.0:
         raise ValueError("target_intermediate_center must be finite and positive.")
     if (
@@ -316,12 +321,18 @@ def solve_neutral_y(
 
 
 def solve_profile_neutral_y(
-    compensation: CompensationConfig, profile_name: str
+    compensation: CompensationConfig,
+    profile_name: str,
+    target_intermediate_center: float | None = None,
 ) -> tuple[float, np.ndarray, CompensationProcessor]:
     """Convenience helper that loads a profile and solves its source neutral."""
 
     processor = load_compensation_processor(compensation, profile_name)
-    source_y, intermediate = solve_neutral_y(processor, compensation)
+    source_y, intermediate = solve_neutral_y(
+        processor,
+        compensation,
+        target_intermediate_center=target_intermediate_center,
+    )
     return source_y, intermediate, processor
 
 
@@ -332,16 +343,19 @@ def compensate_foreground(
     compensation: CompensationConfig,
     solved_source_y: float,
     center_mask: np.ndarray | None = None,
+    intermediate_center_target: float | None = None,
 ) -> tuple[np.ndarray, CompensationDiagnostics]:
     """Inverse-transform and normalize foreground pixels only."""
 
     if not np.isfinite(solved_source_y) or solved_source_y <= 0.0:
         raise ValueError("solved_source_y must be finite and positive.")
-    if (
-        not np.isfinite(compensation.target_intermediate_center)
-        or compensation.target_intermediate_center <= 0.0
-    ):
-        raise ValueError("target_intermediate_center must be finite and positive.")
+    target = float(
+        compensation.target_intermediate_center
+        if intermediate_center_target is None
+        else intermediate_center_target
+    )
+    if not np.isfinite(target) or target <= 0.0:
+        raise ValueError("intermediate center target must be finite and positive.")
     if (
         not np.isfinite(compensation.round_trip_tolerance)
         or compensation.round_trip_tolerance <= 0.0
@@ -404,17 +418,24 @@ def compensate_foreground(
     encoded_max = float(np.max(encoded_norm)) if encoded_norm.size else 0.0
     encoded_count = int(np.count_nonzero(encoded_norm > tolerance))
 
-    if inverse_values.size and (
-        not np.all(np.isfinite(inverse_values)) or np.any(inverse_values < 0.0)
-    ):
+    if inverse_values.size and not np.all(np.isfinite(inverse_values)):
         minimum = float(np.nanmin(inverse_values))
         raise RuntimeError(
             f"OCIO inverse compensation produced invalid foreground values for "
             f"{processor.profile.name} (minimum={minimum:.9g})."
         )
+    if inverse_values.size:
+        minimum = float(np.min(inverse_values))
+        if minimum < -1.0e-6:
+            raise RuntimeError(
+                f"OCIO inverse compensation produced negative foreground values for "
+                f"{processor.profile.name} (minimum={minimum:.9g})."
+            )
+        # OCIO can return a few negative ulps at a gamut boundary. Match the
+        # fitter's treatment and clamp only those numerically insignificant
+        # values before scaling the foreground.
+        inverse_values = np.maximum(inverse_values, 0.0)
 
-
-    target = float(compensation.target_intermediate_center)
     scale_factor = 1.0 / target
     scaled = inverse_values * np.float32(scale_factor)
     if scaled.size and np.any(scaled < 0.0):

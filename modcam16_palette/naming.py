@@ -70,6 +70,9 @@ def output_path_for_compensation(
     gamut: GamutMatrices,
     profile: CompensationProfileConfig | str,
     source_y: float,
+    *,
+    intermediate_anchor: float | None = None,
+    fit_mode: str | None = None,
 ) -> Path:
     """Build a distinct filename for an ACES 2.0 compensated palette."""
 
@@ -107,13 +110,39 @@ def output_path_for_compensation(
             f"No compensated companding setting is available for {gamut.name}."
         ) from exc
     layout = make_layout_filename_tag(config, companding_k)
-    target_tag = filename_number_tag(config.compensation.target_intermediate_center)
-    scale_tag = filename_number_tag(
-        1.0 / config.compensation.target_intermediate_center
+    selected_mode = config.compensation.fit_mode if fit_mode is None else fit_mode
+    if selected_mode not in ("auto", "manual"):
+        raise ValueError("fit_mode must be 'auto' or 'manual'.")
+    anchor = (
+        config.compensation.target_intermediate_center
+        if intermediate_anchor is None
+        else float(intermediate_anchor)
     )
+    if not math.isfinite(float(anchor)) or float(anchor) <= 0.0:
+        raise ValueError("intermediate_anchor must be finite and positive.")
+    if selected_mode == "manual":
+        # Preserve the established filename structure for scripts that opt in
+        # to the explicit legacy anchor.
+        target_tag = filename_number_tag(anchor)
+        scale_tag = filename_number_tag(1.0 / anchor)
+        compensation_tag = (
+            f"{profile.filename_tag}_SourceY{filename_number_tag(source_y)}_"
+            f"TargetY{target_tag}_Scale{scale_tag}"
+        )
+    else:
+        # Optimized files must not collide with manual/legacy variants.  Encode
+        # the fitted scalar and the exposure grid in the filename so a change
+        # to fitting settings naturally creates a new artifact.
+        exposure = config.compensation
+        compensation_tag = (
+            f"{profile.filename_tag}_ACESJFit_A{filename_number_tag(anchor)}_"
+            f"SourceY{filename_number_tag(source_y)}_"
+            f"Exp{filename_number_tag(exposure.exposure_min_stops)}to"
+            f"{filename_number_tag(exposure.exposure_max_stops)}s"
+            f"Step{filename_number_tag(exposure.exposure_step_stops)}"
+        )
     filename = (
         f"modCAM16HK_{white_tag}nit_{prefix}_{layout}_"
-        f"{profile.filename_tag}_SourceY{filename_number_tag(source_y)}_"
-        f"TargetY{target_tag}_Scale{scale_tag}_ACEScg_Radial_32f.exr"
+        f"{compensation_tag}_ACEScg_Radial_32f.exr"
     )
     return config.output.output_dir / filename

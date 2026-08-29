@@ -1,5 +1,14 @@
 """Compatibility exports for ACES 2.0 palette compensation helpers."""
 
+from .aces_jmh import (
+    REC709_D65_PRIMARIES_XY,
+    REC2020_D65_PRIMARIES_XY,
+    ACESJMhParams,
+    init_jmh_params,
+    output_j_from_xyz,
+    params_for_profile,
+    xyz_to_aces_j,
+)
 from .config import (
     COMPENSATION_PROFILE_CHOICES,
     COMPENSATION_PROFILE_DEFINITIONS,
@@ -10,6 +19,16 @@ from .config import (
     CompensationConfig,
     CompensationProfile,
     CompensationProfileConfig,
+)
+from .fitting import (
+    CompensationFitDiagnostics,
+    CompensationFitResult,
+    evaluate_aces_j_objective,
+    evaluate_anchor_objective,
+    fit_compensation_anchor,
+    fit_profile,
+    fit_profile_anchor,
+    unique_palette_colors,
 )
 from .ocio_compensation import (
     CompensationDiagnostics,
@@ -30,16 +49,31 @@ __all__ = [
     "COMPENSATION_PROFILE_NAMES",
     "DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K",
     "DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K",
+    "REC709_D65_PRIMARIES_XY",
+    "REC2020_D65_PRIMARIES_XY",
+    "ACESJMhParams",
     "CompensationConfig",
     "CompensationDiagnostics",
+    "CompensationFitDiagnostics",
+    "CompensationFitResult",
     "CompensationProcessor",
     "CompensationProfile",
     "CompensationProfileConfig",
     "apply_inverse_view_compensation",
     "compensate_foreground",
+    "evaluate_aces_j_objective",
+    "evaluate_anchor_objective",
+    "fit_compensation_anchor",
+    "fit_profile",
+    "fit_profile_anchor",
+    "init_jmh_params",
     "load_compensation_processor",
     "load_ocio_processors",
+    "output_j_from_xyz",
+    "params_for_profile",
     "solve_neutral_y",
     "solve_profile_neutral_y",
     "solve_source_neutral_y",
+    "unique_palette_colors",
+    "xyz_to_aces_j",
 ]

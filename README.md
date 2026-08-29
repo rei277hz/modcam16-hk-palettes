@@ -26,8 +26,8 @@ the same gamut-cone, equal-J_HK, cap, and marker constraints as the original
 script.
 
 With the default all-gamut selection, the generator writes the original three
-palettes and two additional compensated variants. The sRGB variant is built at
-a solved low source neutral and uses the inverse of the ACES 2.0 SDR 100-nit
+palettes and two additional compensated variants. The sRGB variant uses a
+solved profile-specific source neutral and the inverse of the ACES 2.0 SDR 100-nit
 Rec.709 view transform (with Rec.1886/BT.1886 display diagnostics). The P3
 variant uses the ACES 2.0 HDR 1000-nit Rec.2020 view transform (with
 Rec.2100-PQ diagnostics). In both cases the inverse is evaluated in the OCIO
@@ -43,6 +43,20 @@ which remain unchanged.  Override them with
 `--compensation-srgb-k` and `--compensation-p3-k`, or the corresponding keys
 in `[compensation]` in a TOML file.
 
+Automatic compensation fitting is enabled by default.  For each profile, the
+generator fits one intermediate neutral anchor against the ACES 2.0 output
+transform using the nine exposure samples `-2, -1.5, ..., 2` stops.  The fit
+objective is the RMS error of every unique valid ring color and cap relative
+to the transformed neutral `J` at each exposure.  The fitted anchor, search
+diagnostics, exposure grid, and legacy-`0.18` comparison are written to the
+filename, EXR metadata, comments, and report.  Use
+`--compensation-fit-mode manual` (or `fit_mode = "manual"`) to retain the
+explicit `target_intermediate_center` anchor and the legacy compensation
+filename structure.  Supplying a numeric center without a fit mode in a TOML
+mapping also selects manual mode for backwards compatibility.  Ordinary
+palettes never enter this fit and retain their original geometry, names, and
+exact ACEScg white center.
+
 The supplied ACES 2.0 CG config has no AP1-specific output target, so the
 default run has two compensated variants (five files total); AP1 remains the
 ordinary scene-linear palette.
@@ -53,5 +67,7 @@ The checked-in `cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio` is the default.
 
 Ordinary palettes always publish an exact ACEScg white center `(1, 1, 1)`.
 That publishing value is independent of the CAM16 neutral-Y used to solve a
-palette; compensated source renders retain their low-Y model center until the
-inverse-view normalization step.
+palette; compensated source renders retain their profile-specific model center
+until the inverse-view normalization step. A fitted HDR anchor can require a
+source neutral above one because ACES scene-linear values are not restricted to
+the unit interval.

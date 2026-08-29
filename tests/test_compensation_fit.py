@@ -1,0 +1,300 @@
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from modcam16_palette import fitting
+from modcam16_palette.aces_jmh import (
+    REC709_D65_PRIMARIES_XY,
+    REC2020_D65_PRIMARIES_XY,
+    init_jmh_params,
+)
+from modcam16_palette.cli import generate
+from modcam16_palette.colorimetry import GAMUT_MATRICES
+from modcam16_palette.config import (
+    COMPENSATION_PROFILE_DEFINITIONS,
+    CompensationConfig,
+    default_config,
+    load_config,
+)
+from modcam16_palette.fitting import (
+    evaluate_anchor_objective,
+    unique_palette_colors,
+)
+
+
+def _tiny_fit_config(output_dir, *, fit_mode="auto"):
+    base = default_config()
+    return replace(
+        base,
+        palette=replace(base.palette, hue_count=4, chroma_level_count=1),
+        solver=replace(
+            base.solver,
+            c3_hue_sample_count=60,
+            c3_max_refinement_candidates=2,
+            boundary_coarse_steps=64,
+            boundary_binary_iterations=40,
+            boundary_face_tolerance=1.0e-6,
+        ),
+        raster=replace(
+            base.raster,
+            image_size=256,
+            outer_margin=16.0,
+            center_radius=32.0,
+            radial_gap_pixels=3.0,
+        ),
+        markers=replace(base.markers, enable_srgb_boundary_markers=False),
+        colorchecker=replace(base.colorchecker, enabled=False),
+        output=replace(
+            base.output,
+            selected_gamuts=("sRGB-D65",),
+            output_dir=output_dir,
+        ),
+        compensation=replace(
+            base.compensation,
+            profiles=("srgb_rec709_bt1886",),
+            fit_mode=fit_mode,
+            anchor_search_tolerance=0.25,
+            anchor_search_max_iterations=2,
+            anchor_search_max_stops=2.0,
+        ),
+    )
+
+
+def test_aces_j_neutral_is_reference_white_for_both_profiles():
+    for primaries in (REC709_D65_PRIMARIES_XY, REC2020_D65_PRIMARIES_XY):
+        params = init_jmh_params(primaries)
+        white_xyz = params.rgb_to_xyz @ np.ones(3)
+        assert np.isclose(params.xyz_to_j(white_xyz), 100.0, atol=1.0e-10)
+        assert params.xyz_to_j(np.zeros(3)) == 0.0
+        assert params.xyz_to_j(-white_xyz) == 0.0
+        with pytest.raises(ValueError):
+            params.xyz_to_j(np.ones(2))
+
+
+def test_default_exposure_grid_has_nine_half_stop_samples():
+    config = default_config()
+    assert config.compensation.exposure_stops == (
+        -2.0,
+        -1.5,
+        -1.0,
+        -0.5,
+        0.0,
+        0.5,
+        1.0,
+        1.5,
+        2.0,
+    )
+    assert config.compensation.exposure_grid == config.compensation.exposure_stops
+
+
+def test_invalid_exposure_grid_is_rejected():
+    base = default_config()
+    for change in (
+        {"exposure_step_stops": 0.3},
+        {"exposure_max_stops": -2.0},
+        {"exposure_step_stops": 0.0},
+    ):
+        config = replace(base, compensation=replace(base.compensation, **change))
+        with pytest.raises(ValueError):
+            config.validate()
+
+
+def test_numeric_mapping_anchor_selects_manual_mode_but_explicit_auto_wins():
+    manual = load_config(
+        overrides={"compensation": {"target_intermediate_center": 0.42}}
+    )
+    assert manual.compensation.fit_mode == "manual"
+    assert manual.compensation.manual_anchor == 0.42
+
+    automatic = load_config(
+        overrides={
+            "compensation": {
+                "target_intermediate_center": 0.42,
+                "fit_mode": "automatic",
+            }
+        }
+    )
+    assert automatic.compensation.fit_mode == "auto"
+
+
+def test_legacy_compensation_positional_constructor_order_is_preserved():
+    config = CompensationConfig(
+        True,
+        ("srgb_rec709_bt1886",),
+        Path("profile.ocio"),
+        0.18,
+        1.0e-5,
+        1.0e-12,
+        100,
+        2.5,
+        4.0,
+    )
+    assert config.target_intermediate_center == 0.18
+    assert config.round_trip_tolerance == 1.0e-5
+    assert config.srgb_chroma_companding_k == 2.5
+    assert config.fit_mode == "auto"
+
+
+def test_reference_neutral_y_above_one_is_valid_for_hdr_source():
+    base = default_config()
+    config = replace(
+        base,
+        appearance=replace(base.appearance, reference_neutral_y=1.25),
+        compensation=replace(base.compensation, enabled=False),
+    )
+    config.validate()
+    assert np.isclose(
+        config.appearance.reference_neutral_y,
+        1.25,
+    )
+
+
+def test_unique_palette_colors_excludes_invalid_rows_and_deduplicates_caps():
+    result = SimpleNamespace(
+        color_table=np.array(
+            [
+                [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            ],
+            dtype=np.float32,
+        ),
+        block_valid_table=np.array([[True, False], [True, True]]),
+        cap_color_table=np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32),
+    )
+    colors = unique_palette_colors(result)
+    assert np.array_equal(
+        colors,
+        np.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            dtype=np.float32,
+        ),
+    )
+
+
+class _LinearXYZProcessor:
+    def __init__(self, profile_name="srgb_rec709_bt1886"):
+        self.profile = SimpleNamespace(name=profile_name)
+        self.calls = []
+        self._params = init_jmh_params(REC709_D65_PRIMARIES_XY)
+
+    def target_forward_values(self, values):
+        values = np.asarray(values, dtype=np.float32)
+        self.calls.append(values.shape)
+        return values @ self._params.rgb_to_xyz.T
+
+
+def test_objective_batches_each_unique_color_at_each_exposure_once():
+    processor = _LinearXYZProcessor()
+    colors = np.array([[1.0, 1.0, 1.0], [0.2, 0.4, 0.8]], dtype=np.float32)
+    rms, maximum, per_stop = evaluate_anchor_objective(
+        colors,
+        processor,
+        "srgb_rec709_bt1886",
+        (-1.0, 0.0, 1.0),
+    )
+    assert np.isfinite(rms)
+    assert np.isfinite(maximum)
+    assert len(per_stop) == 3
+    assert processor.calls == [(6, 3), (3, 3)]
+    with pytest.raises(ValueError):
+        evaluate_anchor_objective(colors, processor, "srgb_rec709_bt1886", (0.0, 0.0))
+
+
+def test_directional_fit_finds_minimum_on_either_side_and_survives_invalid_samples(
+    monkeypatch,
+):
+    base = default_config()
+    config = replace(
+        base,
+        compensation=replace(
+            base.compensation,
+            anchor_search_tolerance=0.01,
+            anchor_search_max_iterations=8,
+            anchor_search_initial_step_stops=1.0,
+            anchor_search_max_stops=3.0,
+        ),
+    )
+    profile = COMPENSATION_PROFILE_DEFINITIONS["srgb_rec709_bt1886"]
+    gamut = GAMUT_MATRICES["sRGB-D65"]
+
+    def run(target, invalid_lower=None, invalid_upper=None):
+        def factory(_config, _gamut, _profile, _processor, x):
+            if invalid_lower is not None and x < invalid_lower:
+                raise RuntimeError("lower side unavailable")
+            if invalid_upper is not None and x > invalid_upper:
+                raise RuntimeError("upper side unavailable")
+            error = (x - target) ** 2
+            return SimpleNamespace(
+                anchor_log2=float(x),
+                anchor=float(2.0**x),
+                rms_error=float(error),
+                source_y=1.0,
+                source_config=config,
+                source_model=None,
+                palette=None,
+                intermediate_center=np.ones(3),
+                scaled_colors=np.empty((0, 3), dtype=np.float32),
+                color_count=0,
+                maximum_error=float(error),
+                per_stop_rms=(float(error),),
+            )
+
+        monkeypatch.setattr(fitting, "_candidate_factory", factory)
+        return fitting._fit_candidate(config, gamut, profile, object())
+
+    seed = np.log2(config.compensation.target_intermediate_center)
+    right, legacy, _ = run(seed + 1.8, invalid_upper=seed + 2.4)
+    assert right.anchor_log2 > seed
+    assert right.rms_error < legacy.rms_error
+
+    left, legacy, _ = run(seed - 1.8, invalid_lower=seed - 2.4)
+    assert left.anchor_log2 < seed
+    assert left.rms_error < legacy.rms_error
+
+
+def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
+    pytest.importorskip("OpenEXR")
+    config = _tiny_fit_config(tmp_path)
+    paths = generate(config, verbose=False)
+    ordinary = [path for path in paths if "ACESJFit" not in path.name]
+    compensated = [path for path in paths if "ACESJFit" in path.name]
+    assert len(ordinary) == 1
+    assert len(compensated) == 1
+    assert "ACESJFit_A" in compensated[0].name
+
+    import OpenEXR
+
+    with OpenEXR.File(str(compensated[0])) as exr:
+        header = exr.header()
+        pixels = exr.channels()["RGB"].pixels
+        assert pixels.dtype == np.float32
+        assert np.array_equal(pixels[128, 128], np.ones(3, dtype=np.float32))
+        assert header["compensationFitMode"] == "auto"
+        assert header["compensationFitExposureMin"] == -2.0
+        assert header["compensationFitExposureMax"] == 2.0
+        assert header["compensationFitExposureStep"] == 0.5
+        assert header["compensationFitSampleCount"] == (
+            header["compensationFitColorCount"] * 9
+        )
+        assert header["compensationFitRMS"] <= header["compensationFitLegacyRMS"]
+        assert "fitted anchor=" in header["comments"]
+
+    with OpenEXR.File(str(ordinary[0])) as exr:
+        assert np.array_equal(
+            exr.channels()["RGB"].pixels[128, 128],
+            np.ones(3, dtype=np.float32),
+        )
+        assert "compensationFitMode" not in exr.header()
+
+
+def test_manual_fit_keeps_legacy_anchor_and_filename(tmp_path):
+    pytest.importorskip("OpenEXR")
+    config = _tiny_fit_config(tmp_path, fit_mode="manual")
+    paths = generate(config, verbose=False)
+    compensated = [path for path in paths if "ACES2Inv" in path.name]
+    assert len(compensated) == 1
+    assert "TargetY0p18_Scale5p55555555556" in compensated[0].name
+    assert "ACESJFit" not in compensated[0].name

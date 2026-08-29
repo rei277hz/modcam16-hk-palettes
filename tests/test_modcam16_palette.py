@@ -101,8 +101,14 @@ def test_compensated_companding_defaults_are_independent_and_milder():
         config.compensation.p3_chroma_companding_k
         == DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K
     )
-    assert config.compensation.srgb_chroma_companding_k < config.palette.srgb_chroma_companding_k
-    assert config.compensation.p3_chroma_companding_k < config.palette.p3_chroma_companding_k
+    assert (
+        config.compensation.srgb_chroma_companding_k
+        < config.palette.srgb_chroma_companding_k
+    )
+    assert (
+        config.compensation.p3_chroma_companding_k
+        < config.palette.p3_chroma_companding_k
+    )
     assert config.palette.srgb_chroma_companding_k == 10.0
     assert config.palette.p3_chroma_companding_k == 12.0
 
@@ -277,10 +283,16 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
     )
     assert np.array_equal(compensated[0, 0], rendered.image[0, 0])
     assert np.array_equal(compensated[255, 255], np.ones(3, dtype=np.float32))
-    assert diagnostics.intermediate_round_trip_max_error < compensation.round_trip_tolerance
+    assert (
+        diagnostics.intermediate_round_trip_max_error
+        < compensation.round_trip_tolerance
+    )
     assert diagnostics.post_scale_display_max_error >= 0.0
     assert diagnostics.post_scale_negative_count == 0
-    assert result.statistics["chroma_companding_k"] == compensation.srgb_chroma_companding_k
+    assert (
+        result.statistics["chroma_companding_k"]
+        == compensation.srgb_chroma_companding_k
+    )
     path = output_path_for_compensation(
         config,
         GAMUT_MATRICES["sRGB-D65"],

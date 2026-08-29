@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 
 from .cam16_hk import AppearanceModel
@@ -17,20 +16,15 @@ from .config import (
     Config,
     load_config,
 )
+from .fitting import fit_profile
 from .naming import output_path_for_compensation, output_path_for_gamut
 from .ocio_compensation import (
     compensate_foreground,
     load_compensation_processor,
-    solve_neutral_y,
 )
 from .palette import build_palette
 from .render import render_palette_layers, render_radial_palette
 from .report import print_generation_header, print_palette_report
-
-_PALETTE_COMPANDING_FIELD_BY_GAMUT = {
-    "sRGB-D65": "srgb_chroma_companding_k",
-    "P3-D65": "p3_chroma_companding_k",
-}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -108,6 +102,48 @@ def _parser() -> argparse.ArgumentParser:
         dest="compensation_p3_k",
         type=float,
         help="log companding k for the compensated P3 palette",
+    )
+    parser.add_argument(
+        "--compensation-fit-mode",
+        "--compensation-mode",
+        dest="compensation_fit_mode",
+        choices=("auto", "automatic", "manual", "legacy"),
+        help="choose an exposure-fitted or explicit legacy compensation anchor",
+    )
+    parser.add_argument(
+        "--compensation-exposure-min",
+        "--fit-exposure-min",
+        dest="compensation_exposure_min",
+        type=float,
+        help="minimum exposure sample in stops for ACES-J fitting",
+    )
+    parser.add_argument(
+        "--compensation-exposure-max",
+        "--fit-exposure-max",
+        dest="compensation_exposure_max",
+        type=float,
+        help="maximum exposure sample in stops for ACES-J fitting",
+    )
+    parser.add_argument(
+        "--compensation-exposure-step",
+        "--fit-exposure-step",
+        dest="compensation_exposure_step",
+        type=float,
+        help="exposure sample spacing in stops for ACES-J fitting",
+    )
+    parser.add_argument(
+        "--compensation-fit-tolerance",
+        "--fit-anchor-tolerance",
+        dest="compensation_fit_tolerance",
+        type=float,
+        help="anchor-search tolerance in stops",
+    )
+    parser.add_argument(
+        "--compensation-fit-iterations",
+        "--fit-anchor-iterations",
+        dest="compensation_fit_iterations",
+        type=int,
+        help="maximum anchor-search iterations",
     )
     return parser
 
@@ -209,6 +245,18 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
         compensation["srgb_chroma_companding_k"] = args.compensation_srgb_k
     if getattr(args, "compensation_p3_k", None) is not None:
         compensation["p3_chroma_companding_k"] = args.compensation_p3_k
+    if getattr(args, "compensation_fit_mode", None) is not None:
+        compensation["fit_mode"] = args.compensation_fit_mode
+    if getattr(args, "compensation_exposure_min", None) is not None:
+        compensation["exposure_min_stops"] = args.compensation_exposure_min
+    if getattr(args, "compensation_exposure_max", None) is not None:
+        compensation["exposure_max_stops"] = args.compensation_exposure_max
+    if getattr(args, "compensation_exposure_step", None) is not None:
+        compensation["exposure_step_stops"] = args.compensation_exposure_step
+    if getattr(args, "compensation_fit_tolerance", None) is not None:
+        compensation["anchor_search_tolerance"] = args.compensation_fit_tolerance
+    if getattr(args, "compensation_fit_iterations", None) is not None:
+        compensation["anchor_search_max_iterations"] = args.compensation_fit_iterations
     for name, values in (
         ("output", output),
         ("palette", palette),
@@ -279,7 +327,6 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
         processor_cache: dict[str, object] = {}
         for profile in eligible_profiles:
             gamut = GAMUT_MATRICES[profile.source_gamut]
-            companding_field = _PALETTE_COMPANDING_FIELD_BY_GAMUT[gamut.name]
             compensated_k = compensation.companding_by_source_gamut[gamut.name]
             if verbose:
                 print()
@@ -294,25 +341,15 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             if processor is None:
                 processor = load_compensation_processor(compensation, profile.name)
                 processor_cache[profile.name] = processor
-            source_y, _intermediate_center = solve_neutral_y(processor, compensation)
-            if not 0.0 < source_y <= 1.0:
+            fit = fit_profile(config, profile, processor=processor, gamut=gamut)
+            source_y = fit.source_y
+            source_config = fit.source_config
+            source_result = fit.palette
+            if not 0.0 < source_y:
                 raise RuntimeError(
                     f"Solved source neutral Y is outside the supported range for "
                     f"{profile.name}: {source_y:.15g}"
                 )
-            source_config = replace(
-                config,
-                palette=replace(
-                    config.palette,
-                    **{companding_field: compensated_k},
-                ),
-                appearance=replace(
-                    config.appearance,
-                    reference_neutral_y=source_y,
-                ),
-            )
-            source_model = AppearanceModel.from_config(source_config.appearance)
-            source_result = build_palette(gamut, source_config, source_model)
             rendered = render_palette_layers(
                 source_result,
                 source_config,
@@ -325,11 +362,18 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                 compensation,
                 source_y,
                 rendered.center_mask,
+                fit.intermediate_anchor,
             )
             statistics = dict(source_result.statistics)
             statistics.update(diagnostics.as_statistics())
+            statistics.update(fit.diagnostics.as_statistics())
             output_path = output_path_for_compensation(
-                config, gamut, profile, source_y
+                config,
+                gamut,
+                profile,
+                source_y,
+                intermediate_anchor=fit.intermediate_anchor,
+                fit_mode=fit.diagnostics.fit_mode,
             )
             write_float_rgb_exr(
                 output_path,
@@ -341,6 +385,8 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             paths.append(output_path)
             if verbose:
                 print(f"Solved source neutral Y: {source_y:.15g}")
+                print(f"Compensation anchor: {fit.intermediate_anchor:.15g}")
+                print(f"ACES-J fit RMS: {fit.diagnostics.rms_error:.9g}")
                 print(
                     "Intermediate center after inverse view: "
                     + ", ".join(f"{x:.9g}" for x in diagnostics.intermediate_center)

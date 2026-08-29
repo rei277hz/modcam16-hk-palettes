@@ -142,9 +142,9 @@ class AppearanceModel:
             raise ValueError("REFERENCE_WHITE_LUMINANCE_NITS must be positive.")
         if (
             not np.isfinite(config.reference_neutral_y)
-            or not 0.0 < config.reference_neutral_y <= 1.0
+            or config.reference_neutral_y <= 0.0
         ):
-            raise ValueError("REFERENCE_NEUTRAL_Y must be finite and lie in (0, 1].")
+            raise ValueError("REFERENCE_NEUTRAL_Y must be finite and positive.")
         background_luminance = (
             config.reference_background_ratio * config.reference_white_luminance_nits
         )

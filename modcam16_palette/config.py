@@ -89,6 +89,29 @@ DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K = 4.0
 PUBLISHED_CENTER_ACESCG = (1.0, 1.0, 1.0)
 
 
+def _normalize_compensation_fit_mode(value: Any) -> str:
+    """Normalize friendly automatic/manual fit-mode spellings."""
+
+    if isinstance(value, bool):
+        return "auto" if value else "manual"
+    text = str(value).strip().lower().replace("-", "_")
+    aliases = {
+        "auto": "auto",
+        "automatic": "auto",
+        "fit": "auto",
+        "optimized": "auto",
+        "optimised": "auto",
+        "manual": "manual",
+        "legacy": "manual",
+        "explicit": "manual",
+        "manual_anchor": "manual",
+    }
+    try:
+        return aliases[text]
+    except KeyError as exc:
+        raise ValueError("compensation.fit_mode must be 'auto' or 'manual'.") from exc
+
+
 @dataclass(frozen=True)
 class AppearanceConfig:
     reference_white_luminance_nits: float = 200.0
@@ -188,14 +211,32 @@ class CompensationConfig:
     enabled: bool = True
     profiles: tuple[str, ...] = COMPENSATION_PROFILE_NAMES
     ocio_config_path: Path = DEFAULT_OCIO_CONFIG_PATH
+    # ``target_intermediate_center`` is retained as the legacy/manual anchor
+    # and as the deterministic seed for automatic fitting.  In the default
+    # ``auto`` mode it is not used as the final anchor.
     target_intermediate_center: float = 0.18
     round_trip_tolerance: float = 1.0e-5
     solver_tolerance: float = 1.0e-12
     solver_max_iterations: int = 100
-    srgb_chroma_companding_k: float = (
-        DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K
-    )
+    srgb_chroma_companding_k: float = DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K
     p3_chroma_companding_k: float = DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K
+    # New fitting controls follow the legacy fields so positional construction
+    # by older callers keeps its original meaning.
+    fit_mode: str = "auto"
+    exposure_min_stops: float = -2.0
+    exposure_max_stops: float = 2.0
+    exposure_step_stops: float = 0.5
+    anchor_search_tolerance: float = 1.0e-3
+    anchor_search_max_iterations: int = 12
+    anchor_search_initial_step_stops: float = 1.0
+    anchor_search_max_stops: float = 8.0
+
+    def __post_init__(self) -> None:
+        # Normalize aliases for callers constructing the dataclass directly;
+        # TOML/CLI mappings use the same helper before merging fields.
+        object.__setattr__(
+            self, "fit_mode", _normalize_compensation_fit_mode(self.fit_mode)
+        )
 
     @property
     def selected_profiles(self) -> tuple[str, ...]:
@@ -208,6 +249,71 @@ class CompensationConfig:
         """Short alias for the configured OCIO profile path."""
 
         return self.ocio_config_path
+
+    @property
+    def automatic_fit(self) -> bool:
+        """Whether the ACES-J exposure fit should choose the anchor."""
+
+        return self.fit_mode == "auto"
+
+    @property
+    def manual_anchor(self) -> float:
+        """The explicit legacy anchor used in manual mode."""
+
+        return float(self.target_intermediate_center)
+
+    @property
+    def exposure_stops(self) -> tuple[float, ...]:
+        """Return the deterministic inclusive exposure sample grid."""
+
+        count = round(
+            (float(self.exposure_max_stops) - float(self.exposure_min_stops))
+            / float(self.exposure_step_stops)
+        )
+        return tuple(
+            float(self.exposure_min_stops + index * self.exposure_step_stops)
+            for index in range(count + 1)
+        )
+
+    @property
+    def exposure_grid(self) -> tuple[float, ...]:
+        """Compatibility alias for :attr:`exposure_stops`."""
+
+        return self.exposure_stops
+
+    # Verbose aliases make the intended relationship to the fitter explicit
+    # for callers configuring the dataclass directly.
+    @property
+    def fit_exposure_min_stops(self) -> float:
+        return float(self.exposure_min_stops)
+
+    @property
+    def fit_exposure_max_stops(self) -> float:
+        return float(self.exposure_max_stops)
+
+    @property
+    def fit_exposure_step_stops(self) -> float:
+        return float(self.exposure_step_stops)
+
+    @property
+    def fit_tolerance(self) -> float:
+        """Compatibility alias for the log-anchor search tolerance."""
+
+        return float(self.anchor_search_tolerance)
+
+    @property
+    def fit_max_iterations(self) -> int:
+        """Compatibility alias for the anchor search iteration limit."""
+
+        return int(self.anchor_search_max_iterations)
+
+    @property
+    def fit_search_tolerance(self) -> float:
+        return float(self.anchor_search_tolerance)
+
+    @property
+    def fit_search_max_iterations(self) -> int:
+        return int(self.anchor_search_max_iterations)
 
     @property
     def companding_by_source_gamut(self) -> dict[str, float]:
@@ -302,11 +408,8 @@ class Config:
             or a.reference_white_luminance_nits <= 0.0
         ):
             raise ValueError("reference_white_luminance_nits must be positive.")
-        if (
-            not np.isfinite(a.reference_neutral_y)
-            or not 0.0 < a.reference_neutral_y <= 1.0
-        ):
-            raise ValueError("reference_neutral_y must be finite and lie in (0, 1].")
+        if not np.isfinite(a.reference_neutral_y) or a.reference_neutral_y <= 0.0:
+            raise ValueError("reference_neutral_y must be finite and positive.")
         if not np.isfinite(a.reference_background_ratio):
             raise ValueError("reference_background_ratio must be finite.")
         if not 0.0 < self.background_luminance_nits < a.reference_white_luminance_nits:
@@ -418,6 +521,8 @@ class Config:
         c = self.compensation
         if not isinstance(c.enabled, bool):
             raise TypeError("compensation.enabled must be Boolean.")
+        if not isinstance(c.fit_mode, str) or c.fit_mode not in ("auto", "manual"):
+            raise ValueError("compensation.fit_mode must be 'auto' or 'manual'.")
         if not isinstance(c.profiles, (tuple, list)):
             raise TypeError("compensation.profiles must be a list or tuple.")
         if not all(isinstance(name, str) for name in c.profiles):
@@ -443,15 +548,49 @@ class Config:
             or c.target_intermediate_center <= 0.0
         ):
             raise ValueError("target_intermediate_center must be finite and positive.")
-        if (
-            not np.isfinite(c.round_trip_tolerance)
-            or c.round_trip_tolerance <= 0.0
-        ):
+        if not np.isfinite(c.round_trip_tolerance) or c.round_trip_tolerance <= 0.0:
             raise ValueError("round_trip_tolerance must be finite and positive.")
         if not np.isfinite(c.solver_tolerance) or c.solver_tolerance <= 0.0:
             raise ValueError("solver_tolerance must be finite and positive.")
         if not isinstance(c.solver_max_iterations, int) or c.solver_max_iterations <= 0:
             raise ValueError("solver_max_iterations must be a positive integer.")
+        if not np.isfinite(c.exposure_min_stops) or not np.isfinite(
+            c.exposure_max_stops
+        ):
+            raise ValueError("Compensation exposure bounds must be finite.")
+        if c.exposure_max_stops <= c.exposure_min_stops:
+            raise ValueError("exposure_max_stops must exceed exposure_min_stops.")
+        if not np.isfinite(c.exposure_step_stops) or c.exposure_step_stops <= 0.0:
+            raise ValueError("exposure_step_stops must be finite and positive.")
+        exposure_span = (
+            c.exposure_max_stops - c.exposure_min_stops
+        ) / c.exposure_step_stops
+        if not np.isfinite(exposure_span) or exposure_span < 1.0:
+            raise ValueError(
+                "Compensation exposure grid must contain at least two samples."
+            )
+        if not np.isclose(exposure_span, round(exposure_span), atol=1.0e-9, rtol=0.0):
+            raise ValueError(
+                "exposure_max_stops - exposure_min_stops must be an integer multiple of exposure_step_stops."
+            )
+        if round(exposure_span) > 10001:
+            raise ValueError("Compensation exposure grid is unreasonably large.")
+        for value, label in (
+            (c.anchor_search_tolerance, "anchor_search_tolerance"),
+            (c.anchor_search_initial_step_stops, "anchor_search_initial_step_stops"),
+            (c.anchor_search_max_stops, "anchor_search_max_stops"),
+        ):
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{label} must be finite and positive.")
+        if (
+            not isinstance(c.anchor_search_max_iterations, int)
+            or c.anchor_search_max_iterations <= 0
+        ):
+            raise ValueError("anchor_search_max_iterations must be a positive integer.")
+        if c.anchor_search_initial_step_stops > c.anchor_search_max_stops:
+            raise ValueError(
+                "anchor_search_initial_step_stops must not exceed anchor_search_max_stops."
+            )
         return self
 
 
@@ -532,6 +671,28 @@ def config_from_mapping(
             "center": "target_intermediate_center",
             "tolerance": "round_trip_tolerance",
             "iterations": "solver_max_iterations",
+            "mode": "fit_mode",
+            "fit": "fit_mode",
+            "auto_fit": "fit_mode",
+            "target_center": "target_intermediate_center",
+            "intermediate_center": "target_intermediate_center",
+            "exposure_min": "exposure_min_stops",
+            "exposure_max": "exposure_max_stops",
+            "exposure_step": "exposure_step_stops",
+            "min_exposure_stops": "exposure_min_stops",
+            "max_exposure_stops": "exposure_max_stops",
+            "step_exposure_stops": "exposure_step_stops",
+            "fit_tolerance": "anchor_search_tolerance",
+            "search_tolerance": "anchor_search_tolerance",
+            "fit_iterations": "anchor_search_max_iterations",
+            "search_iterations": "anchor_search_max_iterations",
+            "initial_step_stops": "anchor_search_initial_step_stops",
+            "max_search_stops": "anchor_search_max_stops",
+            "fit_exposure_min_stops": "exposure_min_stops",
+            "fit_exposure_max_stops": "exposure_max_stops",
+            "fit_exposure_step_stops": "exposure_step_stops",
+            "fit_search_tolerance": "anchor_search_tolerance",
+            "fit_search_max_iterations": "anchor_search_max_iterations",
         },
     }
     unknown_sections = set(mapping) - set(sections)
@@ -546,6 +707,21 @@ def config_from_mapping(
             raise TypeError(f"Configuration section '{section}' must be a table.")
         normalized_values = dict(values)
         section_aliases = aliases.get(section, {})
+        # A numeric center in a TOML/override mapping is the established
+        # manual-anchor interface.  Keep the default dataclass mode automatic,
+        # but make the intent explicit when this key is supplied.
+        explicit_center = section == "compensation" and any(
+            key in normalized_values
+            for key in (
+                "target_intermediate_center",
+                "center",
+                "target_center",
+                "intermediate_center",
+            )
+        )
+        explicit_mode = section == "compensation" and any(
+            key in normalized_values for key in ("fit_mode", "mode", "fit", "auto_fit")
+        )
         for old_name, new_name in section_aliases.items():
             if old_name in normalized_values:
                 if new_name in normalized_values:
@@ -553,6 +729,12 @@ def config_from_mapping(
                         f"Configuration section '{section}' contains both '{old_name}' and '{new_name}'."
                     )
                 normalized_values[new_name] = normalized_values.pop(old_name)
+        if section == "compensation" and "auto_fit" in values:
+            normalized_values["fit_mode"] = "auto" if values["auto_fit"] else "manual"
+        if section == "compensation" and "fit_mode" in normalized_values:
+            normalized_values["fit_mode"] = _normalize_compensation_fit_mode(
+                normalized_values["fit_mode"]
+            )
         if section == "palette" and "companding" in normalized_values:
             companding = normalized_values.pop("companding")
             if not isinstance(companding, Mapping):
@@ -574,6 +756,8 @@ def config_from_mapping(
                         f"Configuration section 'palette' contains both '{name}' companding and '{field_name}'."
                     )
                 normalized_values[field_name] = value
+        if section == "compensation" and explicit_center and not explicit_mode:
+            normalized_values["fit_mode"] = "manual"
         if section == "compensation" and "companding" in normalized_values:
             companding = normalized_values.pop("companding")
             if not isinstance(companding, Mapping):
@@ -687,7 +871,9 @@ def load_config(
             config,
             compensation=replace(
                 config.compensation,
-                ocio_config_path=(Path(path).resolve().parent / config.compensation.ocio_config_path),
+                ocio_config_path=(
+                    Path(path).resolve().parent / config.compensation.ocio_config_path
+                ),
             ),
         )
     elif path is not None and not explicit_ocio_path:

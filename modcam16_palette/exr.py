@@ -40,6 +40,18 @@ def make_comments(
     a = config.appearance
     compensation_comment = ""
     if statistics.get("compensation_enabled"):
+        fit_comment = ""
+        if "compensation_fit_mode" in statistics:
+            fit_comment = (
+                f"fit mode={statistics['compensation_fit_mode']}; "
+                f"fitted anchor={statistics['compensation_fitted_anchor']:.9g}; "
+                f"fit objective={statistics['compensation_fit_objective']}; "
+                f"fit exposure={statistics['compensation_fit_exposure_min_stops']:.9g}.."
+                f"{statistics['compensation_fit_exposure_max_stops']:.9g} stops @ "
+                f"{statistics['compensation_fit_exposure_step_stops']:.9g}; "
+                f"fit RMS={statistics['compensation_fit_rms_error']:.9g}; "
+                f"fit max={statistics['compensation_fit_maximum_error']:.9g}; "
+            )
         compensation_comment = (
             "ACES 2.0 inverse-view compensation; "
             f"profile={statistics['compensation_profile']}; "
@@ -54,11 +66,12 @@ def make_comments(
             f"intermediate round-trip max={statistics['compensation_intermediate_round_trip_max_error']:.9g}; "
             f"encoded round-trip max={statistics['compensation_encoded_display_round_trip_max_error']:.9g}; "
             f"post-scale encoded max={statistics['compensation_post_scale_display_max_error']:.9g}; "
+            + fit_comment
         )
     center_comment = (
         "center ACEScg=(1,1,1); "
         if not statistics.get("compensation_enabled")
-        else "published center ACEScg=(1,1,1); source neutral is low-Y; "
+        else "published center ACEScg=(1,1,1); source neutral is profile-specific; "
     )
     transform_comment = (
         "no transfer function, clipping, tone mapping, gamut mapping, "
@@ -121,68 +134,108 @@ def write_float_rgb_exr(
         "software": "make_modcam16hk_c3_log_caps_markers_colorchecker.py",
     }
     if statistics.get("compensation_enabled"):
-        header.update(
-            {
-                "compensationProfile": str(statistics["compensation_profile"]),
-                "compensationSourceGamut": str(
-                    statistics["compensation_source_gamut"]
-                ),
-                "compensationDisplay": str(statistics["compensation_display_name"]),
-                "compensationView": str(statistics["compensation_view_transform"]),
-                "compensationOCIOConfig": str(
-                    statistics["compensation_ocio_config_path"]
-                ),
-                "compensationOCIOCacheID": str(
-                    statistics["compensation_ocio_config_cache_id"]
-                ),
-                "compensationSourceY": float(
-                    statistics["compensation_solved_source_y"]
-                ),
-                "compensationIntermediateCenter": float(
-                    statistics["compensation_target_intermediate_center"]
-                ),
-                "compensationIntermediateCenterError": float(
-                    statistics["compensation_intermediate_center_max_error"]
-                ),
-                "compensationScale": float(statistics["compensation_scale_factor"]),
-                "compensationPostScaleMinimum": float(
-                    statistics["compensation_post_scale_minimum"]
-                ),
-                "compensationPostScaleMaximum": float(
-                    statistics["compensation_post_scale_maximum"]
-                ),
-                "compensationPostScaleNonfinite": int(
-                    statistics["compensation_post_scale_nonfinite_count"]
-                ),
-                "compensationPostScaleNegative": int(
-                    statistics["compensation_post_scale_negative_count"]
-                ),
-                "compensationRoundTripMax": float(
-                    statistics["compensation_intermediate_round_trip_max_error"]
-                ),
-                "compensationRoundTripCount": int(
-                    statistics[
-                        "compensation_intermediate_round_trip_pixels_above_tolerance"
-                    ]
-                ),
-                "compensationEncodedRoundTripMax": float(
-                    statistics["compensation_encoded_display_round_trip_max_error"]
-                ),
-                "compensationEncodedRoundTripCount": int(
-                    statistics[
-                        "compensation_encoded_display_round_trip_pixels_above_tolerance"
-                    ]
-                ),
-                "compensationPostScaleDisplayMax": float(
-                    statistics["compensation_post_scale_display_max_error"]
-                ),
-                "compensationPostScaleDisplayCount": int(
-                    statistics[
-                        "compensation_post_scale_display_pixels_above_tolerance"
-                    ]
-                ),
-            }
-        )
+        compensation_header = {
+            "compensationProfile": str(statistics["compensation_profile"]),
+            "compensationSourceGamut": str(statistics["compensation_source_gamut"]),
+            "compensationDisplay": str(statistics["compensation_display_name"]),
+            "compensationView": str(statistics["compensation_view_transform"]),
+            "compensationOCIOConfig": str(statistics["compensation_ocio_config_path"]),
+            "compensationOCIOCacheID": str(
+                statistics["compensation_ocio_config_cache_id"]
+            ),
+            "compensationSourceY": float(statistics["compensation_solved_source_y"]),
+            "compensationIntermediateCenter": float(
+                statistics["compensation_target_intermediate_center"]
+            ),
+            "compensationIntermediateCenterError": float(
+                statistics["compensation_intermediate_center_max_error"]
+            ),
+            "compensationScale": float(statistics["compensation_scale_factor"]),
+            "compensationPostScaleMinimum": float(
+                statistics["compensation_post_scale_minimum"]
+            ),
+            "compensationPostScaleMaximum": float(
+                statistics["compensation_post_scale_maximum"]
+            ),
+            "compensationPostScaleNonfinite": int(
+                statistics["compensation_post_scale_nonfinite_count"]
+            ),
+            "compensationPostScaleNegative": int(
+                statistics["compensation_post_scale_negative_count"]
+            ),
+            "compensationRoundTripMax": float(
+                statistics["compensation_intermediate_round_trip_max_error"]
+            ),
+            "compensationRoundTripCount": int(
+                statistics[
+                    "compensation_intermediate_round_trip_pixels_above_tolerance"
+                ]
+            ),
+            "compensationEncodedRoundTripMax": float(
+                statistics["compensation_encoded_display_round_trip_max_error"]
+            ),
+            "compensationEncodedRoundTripCount": int(
+                statistics[
+                    "compensation_encoded_display_round_trip_pixels_above_tolerance"
+                ]
+            ),
+            "compensationPostScaleDisplayMax": float(
+                statistics["compensation_post_scale_display_max_error"]
+            ),
+            "compensationPostScaleDisplayCount": int(
+                statistics["compensation_post_scale_display_pixels_above_tolerance"]
+            ),
+        }
+        if "compensation_fit_mode" in statistics:
+            compensation_header.update(
+                {
+                    "compensationFitMode": str(statistics["compensation_fit_mode"]),
+                    "compensationFittedAnchor": float(
+                        statistics["compensation_fitted_anchor"]
+                    ),
+                    "compensationFittedAnchorLog2": float(
+                        statistics["compensation_fitted_anchor_log2"]
+                    ),
+                    "compensationFitExposureMin": float(
+                        statistics["compensation_fit_exposure_min_stops"]
+                    ),
+                    "compensationFitExposureMax": float(
+                        statistics["compensation_fit_exposure_max_stops"]
+                    ),
+                    "compensationFitExposureStep": float(
+                        statistics["compensation_fit_exposure_step_stops"]
+                    ),
+                    "compensationFitObjective": str(
+                        statistics["compensation_fit_objective"]
+                    ),
+                    "compensationFitColorCount": int(
+                        statistics["compensation_fit_evaluated_color_count"]
+                    ),
+                    "compensationFitSampleCount": int(
+                        statistics["compensation_fit_evaluated_sample_count"]
+                    ),
+                    "compensationFitRMS": float(
+                        statistics["compensation_fit_rms_error"]
+                    ),
+                    "compensationFitMax": float(
+                        statistics["compensation_fit_maximum_error"]
+                    ),
+                    "compensationFitPerStopRMS": ",".join(
+                        f"{float(value):.9g}"
+                        for value in statistics["compensation_fit_per_stop_rms"]
+                    ),
+                    "compensationFitSearchEvaluations": int(
+                        statistics["compensation_fit_search_evaluation_count"]
+                    ),
+                    "compensationFitLegacyAnchor": float(
+                        statistics["compensation_fit_legacy_anchor"]
+                    ),
+                    "compensationFitLegacyRMS": float(
+                        statistics["compensation_fit_legacy_rms_error"]
+                    ),
+                }
+            )
+        header.update(compensation_header)
     channels = {"RGB": rgb_pixels}
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -69,9 +69,19 @@ enabled = true
 profiles = ["srgb_rec709_bt1886", "p3_rec2020_pq"]
 ocio_config_path = "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
 target_intermediate_center = 0.18
+# Automatic ACES-J fitting is the default. Set this to "manual" to retain the
+# explicit target_intermediate_center anchor and the legacy filename structure.
+fit_mode = "auto"
 round_trip_tolerance = 1.0e-5
 solver_tolerance = 1.0e-12
 solver_max_iterations = 100
+exposure_min_stops = -2.0
+exposure_max_stops = 2.0
+exposure_step_stops = 0.5
+anchor_search_tolerance = 1.0e-3
+anchor_search_max_iterations = 12
+anchor_search_initial_step_stops = 1.0
+anchor_search_max_stops = 8.0
 # Compensated palettes use independent, milder companding so their displayed
 # rings retain useful saturation after the ACES 2.0 inverse-view transform.
 srgb_chroma_companding_k = 2.5

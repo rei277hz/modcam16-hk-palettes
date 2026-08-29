@@ -1,5 +1,14 @@
 """Modular modCAM16-HK radial palette generator."""
 
+from .aces_jmh import (
+    REC709_D65_PRIMARIES_XY,
+    REC2020_D65_PRIMARIES_XY,
+    ACESJMhParams,
+    init_jmh_params,
+    output_j_from_xyz,
+    params_for_profile,
+    xyz_to_aces_j,
+)
 from .cam16_hk import AppearanceModel
 from .colorimetry import GAMUT_MATRICES
 from .config import (
@@ -16,6 +25,16 @@ from .config import (
     Config,
     default_config,
     load_config,
+)
+from .fitting import (
+    CompensationFitDiagnostics,
+    CompensationFitResult,
+    evaluate_aces_j_objective,
+    evaluate_anchor_objective,
+    fit_compensation_anchor,
+    fit_profile,
+    fit_profile_anchor,
+    unique_palette_colors,
 )
 from .ocio_compensation import (
     CompensationDiagnostics,
@@ -44,9 +63,14 @@ __all__ = [
     "DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K",
     "GAMUT_MATRICES",
     "PUBLISHED_CENTER_ACESCG",
+    "REC709_D65_PRIMARIES_XY",
+    "REC2020_D65_PRIMARIES_XY",
+    "ACESJMhParams",
     "AppearanceModel",
     "CompensationConfig",
     "CompensationDiagnostics",
+    "CompensationFitDiagnostics",
+    "CompensationFitResult",
     "CompensationProcessor",
     "CompensationProfile",
     "CompensationProfileConfig",
@@ -57,12 +81,22 @@ __all__ = [
     "build_palette",
     "compensate_foreground",
     "default_config",
+    "evaluate_aces_j_objective",
+    "evaluate_anchor_objective",
+    "fit_compensation_anchor",
+    "fit_profile",
+    "fit_profile_anchor",
+    "init_jmh_params",
     "load_compensation_processor",
     "load_config",
     "load_ocio_processors",
+    "output_j_from_xyz",
+    "params_for_profile",
     "render_palette_layers",
     "render_radial_palette_with_masks",
     "solve_neutral_y",
     "solve_profile_neutral_y",
     "solve_source_neutral_y",
+    "unique_palette_colors",
+    "xyz_to_aces_j",
 ]
