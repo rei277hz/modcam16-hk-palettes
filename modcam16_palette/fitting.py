@@ -183,6 +183,7 @@ def _scaled_inverse_colors(
     if values.size == 0:
         return np.empty((0, 3), dtype=np.float32)
     comparison = processor.source_comparison(values)
+    comparison = processor.project_target_to_limiting_gamut(comparison).xyz
     inverse = processor.target_inverse_values(comparison)
     inverse = np.asarray(inverse, dtype=np.float32)
     if inverse.shape != values.shape:

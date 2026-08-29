@@ -181,6 +181,21 @@ def print_palette_report(result: PaletteResult, config: Config) -> None:
             f"{stats['compensation_intermediate_round_trip_max_error']:.9g}"
         )
         print(
+            "  Intermediate round-trip normalized max: "
+            f"{stats['compensation_intermediate_round_trip_max_normalized_error']:.9g}"
+        )
+        print(
+            "  Intermediate round-trip tolerances: "
+            f"abs={config.compensation.round_trip_tolerance:.9g}, "
+            f"rel={config.compensation.round_trip_relative_tolerance:.9g}"
+        )
+        print(
+            "  Target limiting-gamut projection: "
+            f"{stats['compensation_target_gamut_projection_pixel_count']} pixels, "
+            f"max XYZ adjustment "
+            f"{stats['compensation_target_gamut_projection_max_error']:.9g}"
+        )
+        print(
             "  Post-scale encoded display max error: "
             f"{stats['compensation_post_scale_display_max_error']:.9g}"
         )

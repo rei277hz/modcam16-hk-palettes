@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from .aces_jmh import params_for_profile
 from .config import (
     COMPENSATION_PROFILE_DEFINITIONS,
     DEFAULT_OCIO_CONFIG_PATH,
@@ -55,6 +56,12 @@ class CompensationDiagnostics:
     post_scale_maximum: float
     post_scale_nonfinite_count: int
     post_scale_negative_count: int
+    # Appended for positional compatibility with the original diagnostics
+    # constructor used by external callers.
+    target_gamut_minimum_channel: float = 0.0
+    target_gamut_projection_max_error: float = 0.0
+    target_gamut_projection_pixel_count: int = 0
+    intermediate_round_trip_max_normalized_error: float = 0.0
 
     def as_statistics(self) -> dict[str, object]:
         return {
@@ -70,7 +77,11 @@ class CompensationDiagnostics:
             "compensation_scale_factor": self.scale_factor,
             "compensation_intermediate_center": self.intermediate_center,
             "compensation_intermediate_center_max_error": self.intermediate_center_max_error,
+            "compensation_target_gamut_minimum_channel": self.target_gamut_minimum_channel,
+            "compensation_target_gamut_projection_max_error": self.target_gamut_projection_max_error,
+            "compensation_target_gamut_projection_pixel_count": self.target_gamut_projection_pixel_count,
             "compensation_intermediate_round_trip_max_error": self.intermediate_round_trip_max_error,
+            "compensation_intermediate_round_trip_max_normalized_error": self.intermediate_round_trip_max_normalized_error,
             "compensation_intermediate_round_trip_pixels_above_tolerance": self.intermediate_round_trip_pixels_above_tolerance,
             "compensation_encoded_display_round_trip_max_error": self.encoded_display_round_trip_max_error,
             "compensation_encoded_display_round_trip_pixels_above_tolerance": self.encoded_display_round_trip_pixels_above_tolerance,
@@ -131,6 +142,70 @@ class CompensationProcessor:
 
     def forward_view(self, values: np.ndarray) -> np.ndarray:
         return self.target_forward_values(values)
+
+    def project_target_to_limiting_gamut(
+        self, values: np.ndarray
+    ) -> TargetGamutProjection:
+        """Project display XYZ onto this output transform's RGB gamut cone."""
+
+        return project_target_to_limiting_gamut(values, self.profile.name)
+
+
+@dataclass(frozen=True)
+class TargetGamutProjection:
+    """A display-reference target made representable by an ACES output view.
+
+    ACES output transforms return display XYZ constrained to their limiting RGB
+    gamut.  A source palette may use a different gamut whose boundary is not a
+    strict subset (notably P3-D65 versus Rec.2020 around the red primary).  In
+    that case an exact inverse does not exist.  ``xyz`` is the nearest point in
+    linear limiting-RGB coordinates, obtained by clamping negative channels to
+    zero; the source palette itself is not modified.
+    """
+
+    xyz: np.ndarray
+    minimum_channel: float
+    maximum_xyz_adjustment: float
+    projected_count: int
+
+
+def project_target_to_limiting_gamut(
+    values: np.ndarray, profile_name: str
+) -> TargetGamutProjection:
+    """Return display XYZ targets inside the profile's limiting gamut cone."""
+
+    source = np.ascontiguousarray(values, dtype=np.float32)
+    if source.ndim == 0 or source.shape[-1] != 3:
+        raise ValueError("Display XYZ arrays must have a final dimension of three.")
+    if not np.all(np.isfinite(source)):
+        raise ValueError("Display XYZ targets must be finite.")
+    if source.size == 0:
+        return TargetGamutProjection(source.copy(), 0.0, 0.0, 0)
+
+    params = params_for_profile(profile_name)
+    # Classify and project in float64, then quantize the resulting XYZ once for
+    # OCIO.  A float32 matrix round-trip can leave a projected zero channel at
+    # a small negative ulp, defeating the purpose of the projection.
+    xyz_to_rgb = np.asarray(params.xyz_to_rgb, dtype=np.float64)
+    rgb_to_xyz = np.asarray(params.rgb_to_xyz, dtype=np.float64)
+    limiting_rgb = np.einsum("ij,...j->...i", xyz_to_rgb, source.astype(np.float64))
+    projected_mask = np.any(limiting_rgb < 0.0, axis=-1)
+    projected = source.copy()
+    if np.any(projected_mask):
+        clipped_rgb = np.maximum(limiting_rgb[projected_mask], 0.0)
+        projected[projected_mask] = np.einsum("ij,...j->...i", rgb_to_xyz, clipped_rgb)
+        adjustment = projected[projected_mask].astype(np.float64) - source[
+            projected_mask
+        ].astype(np.float64)
+        maximum_adjustment = float(np.max(np.abs(adjustment)))
+    else:
+        maximum_adjustment = 0.0
+    return TargetGamutProjection(
+        xyz=projected,
+        minimum_channel=float(np.min(limiting_rgb)),
+        maximum_xyz_adjustment=maximum_adjustment,
+        projected_count=int(np.count_nonzero(projected_mask)),
+    )
 
 
 def _import_ocio() -> Any:
@@ -361,6 +436,13 @@ def compensate_foreground(
         or compensation.round_trip_tolerance <= 0.0
     ):
         raise ValueError("round_trip_tolerance must be finite and positive.")
+    if (
+        not np.isfinite(compensation.round_trip_relative_tolerance)
+        or compensation.round_trip_relative_tolerance < 0.0
+    ):
+        raise ValueError(
+            "round_trip_relative_tolerance must be finite and nonnegative."
+        )
 
     values = np.asarray(image, dtype=np.float32)
     mask = np.asarray(foreground_mask, dtype=bool)
@@ -374,10 +456,13 @@ def compensate_foreground(
     result = values.copy()
     source_values = values[mask]
     comparison_xyz = processor.source_comparison(source_values)
-    inverse_values = processor.target_inverse_values(comparison_xyz)
+    target_projection = processor.project_target_to_limiting_gamut(comparison_xyz)
+    target_xyz = target_projection.xyz
+    inverse_values = processor.target_inverse_values(target_xyz)
     reconstructed_xyz = processor.target_forward_values(inverse_values)
     for label, array in (
         ("source comparison", comparison_xyz),
+        ("limiting-gamut target", target_xyz),
         ("inverse", inverse_values),
         ("forward", reconstructed_xyz),
     ):
@@ -386,19 +471,30 @@ def compensate_foreground(
                 f"OCIO compensation produced non-finite {label} values for "
                 f"{processor.profile.name}."
             )
-    residual = reconstructed_xyz.astype(np.float64) - comparison_xyz.astype(np.float64)
+    residual = reconstructed_xyz.astype(np.float64) - target_xyz.astype(np.float64)
     residual_norm = np.max(np.abs(residual), axis=-1) if residual.size else np.empty(0)
     tolerance = float(compensation.round_trip_tolerance)
+    relative_tolerance = float(compensation.round_trip_relative_tolerance)
+    target_magnitude = np.abs(target_xyz.astype(np.float64))
+    round_trip_allowance = tolerance + relative_tolerance * target_magnitude
+    normalized_residual = np.abs(residual) / np.maximum(1.0, target_magnitude)
     round_trip_max = float(np.max(residual_norm)) if residual_norm.size else 0.0
-    round_trip_count = int(np.count_nonzero(residual_norm > tolerance))
+    round_trip_normalized_max = (
+        float(np.max(normalized_residual)) if normalized_residual.size else 0.0
+    )
+    round_trip_count = int(
+        np.count_nonzero(np.any(np.abs(residual) > round_trip_allowance, axis=-1))
+    )
     if round_trip_count:
         raise RuntimeError(
             f"OCIO intermediate round-trip exceeded tolerance for "
             f"{processor.profile.name}: max={round_trip_max:.9g}, "
-            f"count={round_trip_count}, tolerance={tolerance:.9g}."
+            f"normalized_max={round_trip_normalized_max:.9g}, "
+            f"count={round_trip_count}, absolute_tolerance={tolerance:.9g}, "
+            f"relative_tolerance={relative_tolerance:.9g}."
         )
 
-    encoded_source = processor.display_values(comparison_xyz)
+    encoded_source = processor.display_values(target_xyz)
     encoded_reconstructed = processor.display_values(reconstructed_xyz)
     if not np.all(np.isfinite(encoded_source)) or not np.all(
         np.isfinite(encoded_reconstructed)
@@ -486,10 +582,13 @@ def compensate_foreground(
             f"{processor.profile.name}."
         )
     intermediate_center_error = float(np.max(np.abs(intermediate_center - target)))
-    if intermediate_center_error > tolerance:
+    center_allowance = tolerance + relative_tolerance * abs(target)
+    if intermediate_center_error > center_allowance:
         raise RuntimeError(
             f"OCIO neutral solve exceeded tolerance for {processor.profile.name}: "
-            f"max={intermediate_center_error:.9g}, tolerance={tolerance:.9g}."
+            f"max={intermediate_center_error:.9g}, "
+            f"absolute_tolerance={tolerance:.9g}, "
+            f"relative_tolerance={relative_tolerance:.9g}."
         )
     diagnostics = CompensationDiagnostics(
         profile_name=processor.profile.name,
@@ -503,7 +602,11 @@ def compensate_foreground(
         scale_factor=float(scale_factor),
         intermediate_center=tuple(float(x) for x in intermediate_center),
         intermediate_center_max_error=intermediate_center_error,
+        target_gamut_minimum_channel=target_projection.minimum_channel,
+        target_gamut_projection_max_error=target_projection.maximum_xyz_adjustment,
+        target_gamut_projection_pixel_count=target_projection.projected_count,
         intermediate_round_trip_max_error=round_trip_max,
+        intermediate_round_trip_max_normalized_error=round_trip_normalized_max,
         intermediate_round_trip_pixels_above_tolerance=round_trip_count,
         encoded_display_round_trip_max_error=encoded_max,
         encoded_display_round_trip_pixels_above_tolerance=encoded_count,

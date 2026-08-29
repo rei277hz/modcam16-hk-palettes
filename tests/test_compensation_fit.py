@@ -23,6 +23,12 @@ from modcam16_palette.fitting import (
     evaluate_anchor_objective,
     unique_palette_colors,
 )
+from modcam16_palette.ocio_compensation import (
+    compensate_foreground,
+    load_compensation_processor,
+    project_target_to_limiting_gamut,
+    solve_neutral_y,
+)
 
 
 def _tiny_fit_config(output_dir, *, fit_mode="auto"):
@@ -88,6 +94,39 @@ def test_default_exposure_grid_has_nine_half_stop_samples():
         2.0,
     )
     assert config.compensation.exposure_grid == config.compensation.exposure_stops
+
+
+def test_target_projection_handles_p3_red_sliver_outside_rec2020():
+    """P3's red boundary is just outside the Rec.2020 limiting triangle."""
+
+    params = init_jmh_params(REC2020_D65_PRIMARIES_XY)
+    # A large P3-red-like XYZ value, expressed in the display-reference
+    # coordinates used by the ACES output transform.
+    p3_red_xyz = np.array([[3.9356625, 2.1430945, 0.02316724]], dtype=np.float32)
+    before = params.xyz_to_rgb @ p3_red_xyz[0].astype(np.float64)
+    assert before[2] < 0.0
+
+    projection = project_target_to_limiting_gamut(p3_red_xyz, "p3_rec2020_pq")
+    after = params.xyz_to_rgb @ projection.xyz[0].astype(np.float64)
+    assert projection.projected_count == 1
+    assert projection.maximum_xyz_adjustment > 0.0
+    assert after[2] >= 0.0
+    assert np.all(after[:2] >= 0.0)
+
+
+def test_round_trip_relative_tolerance_is_validated():
+    base = default_config()
+    assert base.compensation.round_trip_relative_tolerance == 2.0e-6
+    config = replace(
+        base,
+        compensation=replace(base.compensation, round_trip_relative_tolerance=0.0),
+    )
+    config.validate()
+    with pytest.raises(ValueError):
+        replace(
+            base,
+            compensation=replace(base.compensation, round_trip_relative_tolerance=-1.0),
+        ).validate()
 
 
 def test_invalid_exposure_grid_is_rejected():
@@ -280,6 +319,8 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
             header["compensationFitColorCount"] * 9
         )
         assert header["compensationFitRMS"] <= header["compensationFitLegacyRMS"]
+        assert header["compensationTargetGamutProjectionCount"] == 0
+        assert header["compensationRoundTripNormalizedMax"] >= 0.0
         assert "fitted anchor=" in header["comments"]
 
     with OpenEXR.File(str(ordinary[0])) as exr:
@@ -298,3 +339,42 @@ def test_manual_fit_keeps_legacy_anchor_and_filename(tmp_path):
     assert len(compensated) == 1
     assert "TargetY0p18_Scale5p55555555556" in compensated[0].name
     assert "ACESJFit" not in compensated[0].name
+
+
+def test_p3_hdr_compensation_projects_boundary_cap_and_completes():
+    """The Rec.2020-limited HDR inverse accepts the P3 red boundary cap."""
+
+    try:
+        base = default_config()
+        anchor = 4.068553612582953
+        compensation = replace(
+            base.compensation,
+            profiles=("p3_rec2020_pq",),
+            target_intermediate_center=anchor,
+            fit_mode="manual",
+        )
+        processor = load_compensation_processor(compensation, "p3_rec2020_pq")
+    except RuntimeError as exc:
+        if "PyOpenColorIO" in str(exc):
+            return
+        raise
+
+    source_y, _center = solve_neutral_y(
+        processor, compensation, target_intermediate_center=anchor
+    )
+    # This is the P3 hue-30 cap from the default HDR fit, represented as an
+    # ACEScg pixel. It has a negative Rec.2020 blue channel by about 4e-4.
+    image = np.array([[[5.8542004, 0.8500895, 0.04895351]]], dtype=np.float32)
+    mask = np.ones((1, 1), dtype=bool)
+    compensated, diagnostics = compensate_foreground(
+        image,
+        mask,
+        processor,
+        compensation,
+        source_y,
+        intermediate_center_target=anchor,
+    )
+    assert np.all(np.isfinite(compensated))
+    assert diagnostics.target_gamut_projection_pixel_count == 1
+    assert diagnostics.target_gamut_projection_max_error > 0.0
+    assert diagnostics.intermediate_round_trip_pixels_above_tolerance == 0

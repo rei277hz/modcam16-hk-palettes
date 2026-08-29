@@ -230,6 +230,11 @@ class CompensationConfig:
     anchor_search_max_iterations: int = 12
     anchor_search_initial_step_stops: float = 1.0
     anchor_search_max_stops: float = 8.0
+    # OCIO's CPU processors operate on float32 values.  The absolute
+    # round-trip tolerance remains the minimum allowance, while this relative
+    # term prevents otherwise harmless ulp-scale errors from being reported as
+    # failures for HDR values several times larger than one.
+    round_trip_relative_tolerance: float = 2.0e-6
 
     def __post_init__(self) -> None:
         # Normalize aliases for callers constructing the dataclass directly;
@@ -550,6 +555,13 @@ class Config:
             raise ValueError("target_intermediate_center must be finite and positive.")
         if not np.isfinite(c.round_trip_tolerance) or c.round_trip_tolerance <= 0.0:
             raise ValueError("round_trip_tolerance must be finite and positive.")
+        if (
+            not np.isfinite(c.round_trip_relative_tolerance)
+            or c.round_trip_relative_tolerance < 0.0
+        ):
+            raise ValueError(
+                "round_trip_relative_tolerance must be finite and nonnegative."
+            )
         if not np.isfinite(c.solver_tolerance) or c.solver_tolerance <= 0.0:
             raise ValueError("solver_tolerance must be finite and positive.")
         if not isinstance(c.solver_max_iterations, int) or c.solver_max_iterations <= 0:
@@ -693,6 +705,8 @@ def config_from_mapping(
             "fit_exposure_step_stops": "exposure_step_stops",
             "fit_search_tolerance": "anchor_search_tolerance",
             "fit_search_max_iterations": "anchor_search_max_iterations",
+            "relative_tolerance": "round_trip_relative_tolerance",
+            "round_trip_relative": "round_trip_relative_tolerance",
         },
     }
     unknown_sections = set(mapping) - set(sections)

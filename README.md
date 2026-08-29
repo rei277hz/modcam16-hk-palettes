@@ -36,6 +36,17 @@ not baked into the scene-linear EXR. Foreground palette pixels are normalized
 after inversion so the published center remains `(1, 1, 1)`; background and
 marker pixels are left untouched.
 
+P3-D65 is not a strict subset of Rec.2020: there is a very small sliver near
+the P3 red primary that produces a negative Rec.2020 blue channel. The source
+P3 cap remains at its configured safety inset from the P3 boundary, but such a
+display target has no exact inverse through a Rec.2020-limited output
+transform. The compensation path therefore projects only those target samples
+onto the nearest Rec.2020 RGB-cone face before applying the inverse. Projection counts
+and the maximum XYZ adjustment are recorded in the report and EXR metadata.
+The OCIO intermediate round-trip check uses its configured absolute tolerance
+plus a small relative allowance because the CPU transforms operate in float32
+and HDR intermediate values extend well above one.
+
 The compensated source palettes use their own logarithmic chroma companding:
 `sRGB-D65` defaults to `k=2.5` and `P3-D65` defaults to `k=4.0`.  These values
 are intentionally separate from the ordinary palette values (`10` and `12`),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from .cam16_hk import AppearanceModel
@@ -145,6 +146,13 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="maximum anchor-search iterations",
     )
+    parser.add_argument(
+        "--compensation-round-trip-relative-tolerance",
+        "--round-trip-relative-tolerance",
+        dest="compensation_round_trip_relative_tolerance",
+        type=float,
+        help="float32-aware relative allowance for ACES inverse round-trip checks",
+    )
     return parser
 
 
@@ -257,6 +265,10 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
         compensation["anchor_search_tolerance"] = args.compensation_fit_tolerance
     if getattr(args, "compensation_fit_iterations", None) is not None:
         compensation["anchor_search_max_iterations"] = args.compensation_fit_iterations
+    if getattr(args, "compensation_round_trip_relative_tolerance", None) is not None:
+        compensation["round_trip_relative_tolerance"] = (
+            args.compensation_round_trip_relative_tolerance
+        )
     for name, values in (
         ("output", output),
         ("palette", palette),
@@ -392,7 +404,9 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                     + ", ".join(f"{x:.9g}" for x in diagnostics.intermediate_center)
                 )
                 print(f"Created: {output_path.resolve()}")
-                print_palette_report(source_result, source_config)
+                print_palette_report(
+                    replace(source_result, statistics=statistics), source_config
+                )
     if verbose:
         print()
         print("=" * 92)

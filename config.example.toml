@@ -73,6 +73,9 @@ target_intermediate_center = 0.18
 # explicit target_intermediate_center anchor and the legacy filename structure.
 fit_mode = "auto"
 round_trip_tolerance = 1.0e-5
+# OCIO CPU transforms are float32. This relative term is added to the absolute
+# tolerance for HDR intermediate values larger than one.
+round_trip_relative_tolerance = 2.0e-6
 solver_tolerance = 1.0e-12
 solver_max_iterations = 100
 exposure_min_stops = -2.0
