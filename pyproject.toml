@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modcam16-palette"
+version = "0.1.0"
+description = "Equal-perceived-brightness modCAM16-HK radial palette generator"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "OpenEXR>=3.2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+modcam16-palette = "modcam16_palette.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["modcam16_palette*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

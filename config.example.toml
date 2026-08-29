@@ -1,0 +1,62 @@
+# All values shown here match the built-in defaults.
+
+[appearance]
+reference_white_luminance_nits = 200.0
+reference_background_ratio = 0.1
+reference_neutral_y = 1.0
+adapting_luminance_nits = 20.0
+surround_c = 0.525
+surround_n_c = 0.8
+degree_of_adaptation = 1.0
+hk_chroma_coefficient = 66.0
+
+[solver]
+c3_hue_sample_count = 3600
+c3_max_refinement_candidates = 16
+c3_refinement_iterations = 40
+c3_refinement_tolerance_degrees = 1.0e-7
+gamut_boundary_safety = 0.999999
+level_inclusion_relative_tolerance = 1.0e-10
+boundary_coarse_steps = 256
+boundary_binary_iterations = 72
+gamut_test_epsilon = 1.0e-12
+rendered_gamut_epsilon = 1.0e-9
+boundary_face_tolerance = 1.0e-7
+fp32_cone_validation_relative_epsilon = 2.0e-6
+hue_validation_minimum_c = 1.0e-8
+
+[palette]
+hue_count = 36
+chroma_level_count = 10
+srgb_chroma_companding_k = 10.0
+p3_chroma_companding_k = 12.0
+ap1_chroma_companding_k = 15.0
+cap_relative_height = 0.5
+c3_reference_domain = "continuous"
+hue_offset_degrees = 0.0
+clockwise = false
+
+[markers]
+enable_srgb_boundary_markers = true
+enable_p3_boundary_markers = false
+boundary_marker_block_overlap_pixels = 5.0
+boundary_marker_tangential_width_pixels = 12.0
+
+[colorchecker]
+enabled = true
+dataset = "official_after_2014"
+adaptation_method = "CAT02"
+include_caps_in_matching = true
+dot_radius_pixels = 5.0
+
+[raster]
+image_size = 2048
+outer_margin = 64.0
+center_radius = 112.0
+radial_gap_pixels = 7.0
+angular_gap_degrees = 0.9
+
+[output]
+directory = "."
+gamuts = ["srgb", "p3", "ap1"]
+compression = "zip"
