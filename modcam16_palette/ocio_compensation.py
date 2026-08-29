@@ -150,15 +150,19 @@ def _resolve_config_path(path: str | Path) -> Path:
         # The checked-in config lives beside the package in source checkouts;
         # this fallback also makes the default useful when invoked elsewhere.
         candidates.append(Path(__file__).resolve().parent.parent / requested)
-        # Wheel installs place the checked-in config in the platform data
-        # directory via ``tool.setuptools.data-files``.
-        if requested == DEFAULT_OCIO_CONFIG_PATH:
-            candidates.append(
-                Path(sysconfig.get_path("data"))
-                / "share"
-                / "modcam16-palette"
-                / requested.name
-            )
+    if requested.name == DEFAULT_OCIO_CONFIG_PATH.name:
+        # A TOML file may have resolved the default filename to an absolute
+        # sibling path.  If that sibling is absent, still locate the bundled
+        # project/wheel copy; an explicitly existing path always wins above.
+        candidates.append(
+            Path(__file__).resolve().parent.parent / DEFAULT_OCIO_CONFIG_PATH.name
+        )
+        candidates.append(
+            Path(sysconfig.get_path("data"))
+            / "share"
+            / "modcam16-palette"
+            / DEFAULT_OCIO_CONFIG_PATH.name
+        )
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
