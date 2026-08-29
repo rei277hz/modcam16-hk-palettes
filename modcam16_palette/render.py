@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 
-from .config import Config
+from .config import PUBLISHED_CENTER_ACESCG, Config
 from .palette import PaletteResult
 
 
@@ -86,8 +87,20 @@ def polar_position_to_image_xy(
     )
 
 
-def render_palette_layers(result: PaletteResult, config: Config) -> RenderedPalette:
-    """Rasterize the palette and retain foreground/overlay ownership masks."""
+def render_palette_layers(
+    result: PaletteResult,
+    config: Config,
+    *,
+    center_color: np.ndarray | Sequence[float] | None = None,
+) -> RenderedPalette:
+    """Rasterize the palette and retain foreground/overlay ownership masks.
+
+    ``center_color`` can override the center for a published or intermediate
+    render.  When omitted, the model neutral stored in ``PaletteResult`` is
+    used (or ACEScg white for a hand-built result without a neutral).  The
+    generation pipeline passes the published white explicitly for ordinary
+    outputs and the model neutral explicitly for compensation sources.
+    """
 
     config.validate()
     p = config.palette
@@ -160,13 +173,13 @@ def render_palette_layers(result: PaletteResult, config: Config) -> RenderedPale
     radial_half_gap = r.radial_gap_pixels * 0.5
 
     center_mask = radius <= r.center_radius - radial_half_gap
-    center_color = result.reference_neutral_acescg
     if center_color is None:
-        # Compatibility for callers constructing a PaletteResult manually.
-        center_color = np.ones(3, dtype=np.float64)
+        center_color = result.reference_neutral_acescg
+        if center_color is None:
+            center_color = PUBLISHED_CENTER_ACESCG
     center_color = np.asarray(center_color, dtype=np.float32)
     if center_color.shape != (3,) or not np.all(np.isfinite(center_color)):
-        raise ValueError("reference_neutral_acescg must be a finite RGB triplet.")
+        raise ValueError("center_color must be a finite RGB triplet.")
     image[center_mask] = center_color
     foreground_mask[center_mask] = True
 
@@ -307,21 +320,27 @@ def render_radial_palette(
     config: Config,
     *,
     return_masks: bool = False,
+    center_color: np.ndarray | Sequence[float] | None = None,
 ) -> np.ndarray | RenderedPalette:
     """Rasterize the palette, optionally returning ownership masks.
 
     ``return_masks=False`` preserves the original ndarray-returning API.
     ``return_masks=True`` is a shorthand for :func:`render_palette_layers` for
-    callers implementing post-render operations.
+    callers implementing post-render operations.  ``center_color`` defaults to
+    the model neutral; pass :data:`PUBLISHED_CENTER_ACESCG` for an ordinary
+    published white center or the model neutral for a compensation source.
     """
 
-    rendered = render_palette_layers(result, config)
+    rendered = render_palette_layers(result, config, center_color=center_color)
     return rendered if return_masks else rendered.image
 
 
 def render_radial_palette_with_masks(
-    result: PaletteResult, config: Config
+    result: PaletteResult,
+    config: Config,
+    *,
+    center_color: np.ndarray | Sequence[float] | None = None,
 ) -> RenderedPalette:
     """Explicit alias for code that needs foreground/overlay ownership."""
 
-    return render_palette_layers(result, config)
+    return render_palette_layers(result, config, center_color=center_color)

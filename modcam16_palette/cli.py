@@ -13,6 +13,7 @@ from .config import (
     COMPENSATION_PROFILE_CHOICES,
     COMPENSATION_PROFILE_DEFINITIONS,
     GAMUT_NAMES,
+    PUBLISHED_CENTER_ACESCG,
     Config,
     load_config,
 )
@@ -25,6 +26,11 @@ from .ocio_compensation import (
 from .palette import build_palette
 from .render import render_palette_layers, render_radial_palette
 from .report import print_generation_header, print_palette_report
+
+_PALETTE_COMPANDING_FIELD_BY_GAMUT = {
+    "sRGB-D65": "srgb_chroma_companding_k",
+    "P3-D65": "p3_chroma_companding_k",
+}
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -89,6 +95,20 @@ def _parser() -> argparse.ArgumentParser:
         help="compensation profile(s) to generate; repeat to select multiple",
     )
     parser.add_argument("--ocio-config", type=Path)
+    parser.add_argument(
+        "--compensation-srgb-k",
+        "--compensation-srgb-chroma-companding-k",
+        dest="compensation_srgb_k",
+        type=float,
+        help="log companding k for the compensated sRGB palette",
+    )
+    parser.add_argument(
+        "--compensation-p3-k",
+        "--compensation-p3-chroma-companding-k",
+        dest="compensation_p3_k",
+        type=float,
+        help="log companding k for the compensated P3 palette",
+    )
     return parser
 
 
@@ -185,6 +205,10 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
         )
     if args.ocio_config is not None:
         compensation["ocio_config_path"] = str(args.ocio_config)
+    if getattr(args, "compensation_srgb_k", None) is not None:
+        compensation["srgb_chroma_companding_k"] = args.compensation_srgb_k
+    if getattr(args, "compensation_p3_k", None) is not None:
+        compensation["p3_chroma_companding_k"] = args.compensation_p3_k
     for name, values in (
         ("output", output),
         ("palette", palette),
@@ -202,13 +226,10 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
     """Generate selected palettes and return their output paths."""
 
     config.validate()
-    # Ordinary published variants retain the legacy white-centered behavior.
-    # ``reference_neutral_y`` is used as a low-Y source only for an explicit
-    # compensation branch below.
-    ordinary_config = replace(
-        config,
-        appearance=replace(config.appearance, reference_neutral_y=1.0),
-    )
+    # Keep the model's configured neutral Y for ordinary palettes.  The
+    # published center is set explicitly at render time, so a custom neutral
+    # reference cannot leak into the white center patch.
+    ordinary_config = config
     model = AppearanceModel.from_config(ordinary_config.appearance)
     if verbose:
         print_generation_header(ordinary_config, model)
@@ -223,10 +244,14 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             print("=" * 92)
             print(f"Generating {gamut_name} C3-relative palette...")
             print(
-                f"Chroma-companding k: {config.palette.companding_by_gamut[gamut_name]:g}"
+                f"Chroma-companding k: {ordinary_config.palette.companding_by_gamut[gamut_name]:g}"
             )
         result = build_palette(gamut, ordinary_config, model)
-        image = render_radial_palette(result, ordinary_config)
+        image = render_radial_palette(
+            result,
+            ordinary_config,
+            center_color=PUBLISHED_CENTER_ACESCG,
+        )
         output_path = output_path_for_gamut(ordinary_config, gamut)
         write_float_rgb_exr(
             output_path, image, gamut_name, ordinary_config, result.statistics
@@ -254,6 +279,8 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
         processor_cache: dict[str, object] = {}
         for profile in eligible_profiles:
             gamut = GAMUT_MATRICES[profile.source_gamut]
+            companding_field = _PALETTE_COMPANDING_FIELD_BY_GAMUT[gamut.name]
+            compensated_k = compensation.companding_by_source_gamut[gamut.name]
             if verbose:
                 print()
                 print("=" * 92)
@@ -262,6 +289,7 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                 )
                 print(f"OCIO view: {profile.view_transform}")
                 print(f"OCIO display: {profile.display_name}")
+                print(f"Chroma-companding k: {compensated_k:g}")
             processor = processor_cache.get(profile.name)
             if processor is None:
                 processor = load_compensation_processor(compensation, profile.name)
@@ -274,6 +302,10 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                 )
             source_config = replace(
                 config,
+                palette=replace(
+                    config.palette,
+                    **{companding_field: compensated_k},
+                ),
                 appearance=replace(
                     config.appearance,
                     reference_neutral_y=source_y,
@@ -281,7 +313,11 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             )
             source_model = AppearanceModel.from_config(source_config.appearance)
             source_result = build_palette(gamut, source_config, source_model)
-            rendered = render_palette_layers(source_result, source_config)
+            rendered = render_palette_layers(
+                source_result,
+                source_config,
+                center_color=source_result.reference_neutral_acescg,
+            )
             image, diagnostics = compensate_foreground(
                 rendered.image,
                 rendered.foreground_mask,

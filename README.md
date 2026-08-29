@@ -36,6 +36,13 @@ not baked into the scene-linear EXR. Foreground palette pixels are normalized
 after inversion so the published center remains `(1, 1, 1)`; background and
 marker pixels are left untouched.
 
+The compensated source palettes use their own logarithmic chroma companding:
+`sRGB-D65` defaults to `k=2.5` and `P3-D65` defaults to `k=4.0`.  These values
+are intentionally separate from the ordinary palette values (`10` and `12`),
+which remain unchanged.  Override them with
+`--compensation-srgb-k` and `--compensation-p3-k`, or the corresponding keys
+in `[compensation]` in a TOML file.
+
 The supplied ACES 2.0 CG config has no AP1-specific output target, so the
 default run has two compensated variants (five files total); AP1 remains the
 ordinary scene-linear palette.
@@ -43,3 +50,8 @@ ordinary scene-linear palette.
 Disable variants with `--no-compensation`, select profiles with repeated
 `--compensation-profile`, or point at another OCIO config with `--ocio-config`.
 The checked-in `cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio` is the default.
+
+Ordinary palettes always publish an exact ACEScg white center `(1, 1, 1)`.
+That publishing value is independent of the CAM16 neutral-Y used to solve a
+palette; compensated source renders retain their low-Y model center until the
+inverse-view normalization step.

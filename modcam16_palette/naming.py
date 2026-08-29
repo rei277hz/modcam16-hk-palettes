@@ -92,7 +92,6 @@ def output_path_for_compensation(
     if not math.isfinite(float(source_y)) or float(source_y) <= 0.0:
         raise ValueError("source_y must be finite and positive.")
     white_tag = filename_number_tag(config.appearance.reference_white_luminance_nits)
-    companding_k = config.palette.companding_by_gamut[gamut.name]
     if gamut.name == "sRGB-D65":
         prefix = "sRGBGamutCone_C3"
     elif gamut.name == "P3-D65":
@@ -101,6 +100,12 @@ def output_path_for_compensation(
         raise ValueError(
             f"Compensation profile {profile.name} is not available for {gamut.name}."
         )
+    try:
+        companding_k = config.compensation.companding_by_source_gamut[gamut.name]
+    except KeyError as exc:
+        raise ValueError(
+            f"No compensated companding setting is available for {gamut.name}."
+        ) from exc
     layout = make_layout_filename_tag(config, companding_k)
     target_tag = filename_number_tag(config.compensation.target_intermediate_center)
     scale_tag = filename_number_tag(

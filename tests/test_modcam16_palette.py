@@ -7,6 +7,8 @@ from modcam16_palette.cli import generate
 from modcam16_palette.colorimetry import GAMUT_MATRICES, XYZ_D65_TO_ACESCG
 from modcam16_palette.config import (
     COMPENSATION_PROFILE_DEFINITIONS,
+    DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K,
+    DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K,
     default_config,
     load_config,
 )
@@ -21,7 +23,7 @@ from modcam16_palette.palette import (
     inverse_log_companded_chroma,
     make_log_companded_chroma_levels,
 )
-from modcam16_palette.render import render_palette_layers, render_radial_palette
+from modcam16_palette.render import render_palette_layers
 
 
 def small_config():
@@ -74,15 +76,78 @@ def test_small_palette_renders_exact_center():
     config = small_config()
     model = AppearanceModel.from_config(config.appearance)
     result = build_palette(GAMUT_MATRICES["ACEScg/AP1-D60"], config, model)
-    image = render_radial_palette(result, config)
+    rendered = render_palette_layers(result, config)
+    image = rendered.image
     assert image.shape == (512, 512, 3)
     assert image.dtype == np.float32
     assert np.array_equal(image[255, 255], np.ones(3, dtype=np.float32))
+    assert np.all(rendered.image[rendered.center_mask] == np.ones(3, dtype=np.float32))
     assert np.all(np.isfinite(image))
     assert result.cap_color_table.shape == (12, 3)
     assert result.statistics["total_palette_colors"] == (
         result.statistics["total_drawn_full_blocks"] + 12
     )
+
+
+def test_compensated_companding_defaults_are_independent_and_milder():
+    config = default_config()
+    assert config.compensation.srgb_chroma_companding_k == 2.5
+    assert config.compensation.p3_chroma_companding_k == 4.0
+    assert (
+        config.compensation.srgb_chroma_companding_k
+        == DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K
+    )
+    assert (
+        config.compensation.p3_chroma_companding_k
+        == DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K
+    )
+    assert config.compensation.srgb_chroma_companding_k < config.palette.srgb_chroma_companding_k
+    assert config.compensation.p3_chroma_companding_k < config.palette.p3_chroma_companding_k
+    assert config.palette.srgb_chroma_companding_k == 10.0
+    assert config.palette.p3_chroma_companding_k == 12.0
+
+
+def test_compensation_companding_toml_aliases_and_filename():
+    config = load_config(
+        overrides={
+            "compensation": {
+                "companding": {"srgb": 1.25, "p3": 3.75},
+            }
+        }
+    )
+    assert config.compensation.companding_by_source_gamut == {
+        "sRGB-D65": 1.25,
+        "P3-D65": 3.75,
+    }
+    path = output_path_for_compensation(
+        config,
+        GAMUT_MATRICES["P3-D65"],
+        COMPENSATION_PROFILE_DEFINITIONS["p3_rec2020_pq"],
+        0.145,
+    )
+    assert "LogK3p75" in path.name
+
+
+def test_generate_custom_neutral_still_publishes_white_center(tmp_path):
+    config = replace(
+        small_config(),
+        appearance=replace(default_config().appearance, reference_neutral_y=0.25),
+        output=replace(
+            small_config().output,
+            selected_gamuts=("sRGB-D65", "P3-D65", "ACEScg/AP1-D60"),
+            output_dir=tmp_path,
+        ),
+        compensation=replace(default_config().compensation, enabled=False),
+    )
+    paths = generate(config, verbose=False)
+    assert len(paths) == 3
+    import OpenEXR
+
+    for path in paths:
+        with OpenEXR.File(str(path)) as exr:
+            pixels = exr.channels()["RGB"].pixels
+            center_disk = pixels[220:292, 220:292]
+            assert np.all(center_disk == np.ones(3, dtype=np.float32))
 
 
 def test_boundary_markers_and_exr_output(tmp_path):
@@ -175,7 +240,12 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
 
     config = replace(
         default_config(),
-        palette=replace(default_config().palette, hue_count=12, chroma_level_count=3),
+        palette=replace(
+            default_config().palette,
+            hue_count=12,
+            chroma_level_count=3,
+            srgb_chroma_companding_k=compensation.srgb_chroma_companding_k,
+        ),
         solver=replace(
             default_config().solver,
             c3_hue_sample_count=120,
@@ -192,7 +262,11 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
     from modcam16_palette.colorimetry import GAMUT_MATRICES
 
     result = build_palette(GAMUT_MATRICES["sRGB-D65"], config)
-    rendered = render_palette_layers(result, config)
+    rendered = render_palette_layers(
+        result,
+        config,
+        center_color=result.reference_neutral_acescg,
+    )
     compensated, diagnostics = compensate_foreground(
         rendered.image,
         rendered.foreground_mask,
@@ -206,6 +280,7 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
     assert diagnostics.intermediate_round_trip_max_error < compensation.round_trip_tolerance
     assert diagnostics.post_scale_display_max_error >= 0.0
     assert diagnostics.post_scale_negative_count == 0
+    assert result.statistics["chroma_companding_k"] == compensation.srgb_chroma_companding_k
     path = output_path_for_compensation(
         config,
         GAMUT_MATRICES["sRGB-D65"],
@@ -213,6 +288,7 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
         source_y,
     )
     assert "ACES2InvODT_Rec709BT1886" in path.name
+    assert "LogK2p5" in path.name
 
 
 def test_ocio_processor_rejects_malformed_rgb_shapes():

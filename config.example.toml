@@ -72,3 +72,7 @@ target_intermediate_center = 0.18
 round_trip_tolerance = 1.0e-5
 solver_tolerance = 1.0e-12
 solver_max_iterations = 100
+# Compensated palettes use independent, milder companding so their displayed
+# rings retain useful saturation after the ACES 2.0 inverse-view transform.
+srgb_chroma_companding_k = 2.5
+p3_chroma_companding_k = 4.0

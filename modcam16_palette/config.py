@@ -74,6 +74,20 @@ COMPENSATION_PROFILE_ALIASES = (
 COMPENSATION_PROFILE_CHOICES = COMPENSATION_PROFILE_NAMES + COMPENSATION_PROFILE_ALIASES
 DEFAULT_OCIO_CONFIG_PATH = Path("cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio")
 
+# Compensation palettes are compared after an ACES 2.0 output transform.  The
+# output transform changes the perceived spacing of the source rings, so they
+# use a less aggressive logarithmic progression than the ordinary palettes.
+# The defaults are calibrated reference values, not a claim that one k is
+# optimal for every display, view transform, or number of rings.
+# Keep these independent from PaletteConfig: changing a compensated variant
+# must not silently change an ordinary/legacy output file.
+DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K = 2.5
+DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K = 4.0
+# Published palette centers are an ACEScg white patch.  This is deliberately
+# separate from the CAM16 model's neutral-Y reference, which may be different
+# for a source palette used by an inverse-view compensation profile.
+PUBLISHED_CENTER_ACESCG = (1.0, 1.0, 1.0)
+
 
 @dataclass(frozen=True)
 class AppearanceConfig:
@@ -178,6 +192,10 @@ class CompensationConfig:
     round_trip_tolerance: float = 1.0e-5
     solver_tolerance: float = 1.0e-12
     solver_max_iterations: int = 100
+    srgb_chroma_companding_k: float = (
+        DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K
+    )
+    p3_chroma_companding_k: float = DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K
 
     @property
     def selected_profiles(self) -> tuple[str, ...]:
@@ -190,6 +208,21 @@ class CompensationConfig:
         """Short alias for the configured OCIO profile path."""
 
         return self.ocio_config_path
+
+    @property
+    def companding_by_source_gamut(self) -> dict[str, float]:
+        """Return compensated chroma companding by source gamut."""
+
+        return {
+            "sRGB-D65": self.srgb_chroma_companding_k,
+            "P3-D65": self.p3_chroma_companding_k,
+        }
+
+    @property
+    def companding_by_gamut(self) -> dict[str, float]:
+        """Compatibility alias for :attr:`companding_by_source_gamut`."""
+
+        return self.companding_by_source_gamut
 
 
 @dataclass(frozen=True)
@@ -400,6 +433,11 @@ class Config:
             raise ValueError("compensation.profiles must not contain duplicates.")
         if not isinstance(c.ocio_config_path, (str, Path)):
             raise TypeError("compensation.ocio_config_path must be a path.")
+        for name, value in c.companding_by_source_gamut.items():
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} compensation companding k must be finite and nonnegative."
+                )
         if (
             not np.isfinite(c.target_intermediate_center)
             or c.target_intermediate_center <= 0.0
@@ -487,6 +525,10 @@ def config_from_mapping(
             "config_path": "ocio_config_path",
             "selected_profiles": "profiles",
             "profile_names": "profiles",
+            "srgb_k": "srgb_chroma_companding_k",
+            "p3_k": "p3_chroma_companding_k",
+            "srgb_companding_k": "srgb_chroma_companding_k",
+            "p3_companding_k": "p3_chroma_companding_k",
             "center": "target_intermediate_center",
             "tolerance": "round_trip_tolerance",
             "iterations": "solver_max_iterations",
@@ -530,6 +572,34 @@ def config_from_mapping(
                 if field_name in normalized_values:
                     raise ValueError(
                         f"Configuration section 'palette' contains both '{name}' companding and '{field_name}'."
+                    )
+                normalized_values[field_name] = value
+        if section == "compensation" and "companding" in normalized_values:
+            companding = normalized_values.pop("companding")
+            if not isinstance(companding, Mapping):
+                raise ValueError("compensation.companding must be a TOML table.")
+            gamut_aliases = {
+                "srgb": "srgb_chroma_companding_k",
+                "sRGB": "srgb_chroma_companding_k",
+                "sRGB-D65": "srgb_chroma_companding_k",
+                "srgb_k": "srgb_chroma_companding_k",
+                "srgb_chroma_companding_k": "srgb_chroma_companding_k",
+                "srgb_rec709_bt1886": "srgb_chroma_companding_k",
+                "p3": "p3_chroma_companding_k",
+                "P3": "p3_chroma_companding_k",
+                "P3-D65": "p3_chroma_companding_k",
+                "p3_k": "p3_chroma_companding_k",
+                "p3_chroma_companding_k": "p3_chroma_companding_k",
+                "p3_rec2020_pq": "p3_chroma_companding_k",
+            }
+            for name, value in companding.items():
+                if name not in gamut_aliases:
+                    raise ValueError(f"Unknown compensation.companding key: {name}")
+                field_name = gamut_aliases[name]
+                if field_name in normalized_values:
+                    raise ValueError(
+                        "Configuration section 'compensation' contains both "
+                        f"'{name}' companding and '{field_name}'."
                     )
                 normalized_values[field_name] = value
         if section == "output" and "selected_gamuts" in normalized_values:

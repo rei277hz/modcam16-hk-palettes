@@ -55,6 +55,11 @@ def print_generation_header(config: Config, model) -> None:
             "ACES 2.0 compensated profiles: "
             + ", ".join(compensation.profiles)
         )
+        print(
+            "Compensated chroma companding k: "
+            f"sRGB={compensation.srgb_chroma_companding_k:g}, "
+            f"P3={compensation.p3_chroma_companding_k:g}"
+        )
     else:
         print("ACES 2.0 compensated profiles: disabled")
 
