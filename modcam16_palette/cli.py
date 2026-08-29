@@ -4,14 +4,26 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from .cam16_hk import AppearanceModel
 from .colorimetry import GAMUT_MATRICES
-from .config import GAMUT_NAMES, Config, load_config
-from .naming import output_path_for_gamut
+from .config import (
+    COMPENSATION_PROFILE_CHOICES,
+    COMPENSATION_PROFILE_DEFINITIONS,
+    GAMUT_NAMES,
+    Config,
+    load_config,
+)
+from .naming import output_path_for_compensation, output_path_for_gamut
+from .ocio_compensation import (
+    compensate_foreground,
+    load_compensation_processor,
+    solve_neutral_y,
+)
 from .palette import build_palette
-from .render import render_radial_palette
+from .render import render_palette_layers, render_radial_palette
 from .report import print_generation_header, print_palette_report
 
 
@@ -64,6 +76,19 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument("--colorchecker-dot-radius", type=float)
+    parser.add_argument(
+        "--compensation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable/disable ACES 2.0 compensated variants",
+    )
+    parser.add_argument(
+        "--compensation-profile",
+        action="append",
+        choices=COMPENSATION_PROFILE_CHOICES,
+        help="compensation profile(s) to generate; repeat to select multiple",
+    )
+    parser.add_argument("--ocio-config", type=Path)
     return parser
 
 
@@ -85,6 +110,27 @@ def _canonical_gamuts(values: list[str] | None) -> tuple[str, ...] | None:
     return result
 
 
+def _canonical_compensation_profiles(
+    values: list[str] | None,
+) -> tuple[str, ...] | None:
+    if not values:
+        return None
+    aliases = {
+        "srgb": "srgb_rec709_bt1886",
+        "sRGB": "srgb_rec709_bt1886",
+        "rec709": "srgb_rec709_bt1886",
+        "rec709_bt1886": "srgb_rec709_bt1886",
+        "p3": "p3_rec2020_pq",
+        "P3": "p3_rec2020_pq",
+        "rec2020": "p3_rec2020_pq",
+        "rec2020_pq": "p3_rec2020_pq",
+    }
+    result = tuple(aliases.get(value, value) for value in values)
+    if len(set(result)) != len(result):
+        raise ValueError("Each compensation profile may be selected only once.")
+    return result
+
+
 def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object]]:
     overrides: dict[str, dict[str, object]] = {}
     output: dict[str, object] = {}
@@ -92,6 +138,7 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
     raster: dict[str, object] = {}
     markers: dict[str, object] = {}
     colorchecker: dict[str, object] = {}
+    compensation: dict[str, object] = {}
     if args.output_dir is not None:
         output["output_dir"] = str(args.output_dir)
     gamuts = _canonical_gamuts(args.gamut)
@@ -130,12 +177,21 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
         colorchecker["include_caps_in_matching"] = args.colorchecker_include_caps
     if args.colorchecker_dot_radius is not None:
         colorchecker["dot_radius_pixels"] = args.colorchecker_dot_radius
+    if args.compensation is not None:
+        compensation["enabled"] = args.compensation
+    if args.compensation_profile is not None:
+        compensation["profiles"] = list(
+            _canonical_compensation_profiles(args.compensation_profile)
+        )
+    if args.ocio_config is not None:
+        compensation["ocio_config_path"] = str(args.ocio_config)
     for name, values in (
         ("output", output),
         ("palette", palette),
         ("raster", raster),
         ("markers", markers),
         ("colorchecker", colorchecker),
+        ("compensation", compensation),
     ):
         if values:
             overrides[name] = values
@@ -146,9 +202,16 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
     """Generate selected palettes and return their output paths."""
 
     config.validate()
-    model = AppearanceModel.from_config(config.appearance)
+    # Ordinary published variants retain the legacy white-centered behavior.
+    # ``reference_neutral_y`` is used as a low-Y source only for an explicit
+    # compensation branch below.
+    ordinary_config = replace(
+        config,
+        appearance=replace(config.appearance, reference_neutral_y=1.0),
+    )
+    model = AppearanceModel.from_config(ordinary_config.appearance)
     if verbose:
-        print_generation_header(config, model)
+        print_generation_header(ordinary_config, model)
     paths: list[Path] = []
     # Import lazily so color math and tests do not require OpenEXR until writing.
     from .exr import write_float_rgb_exr
@@ -162,29 +225,109 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             print(
                 f"Chroma-companding k: {config.palette.companding_by_gamut[gamut_name]:g}"
             )
-        result = build_palette(gamut, config, model)
-        image = render_radial_palette(result, config)
-        output_path = output_path_for_gamut(config, gamut)
-        write_float_rgb_exr(output_path, image, gamut_name, config, result.statistics)
+        result = build_palette(gamut, ordinary_config, model)
+        image = render_radial_palette(result, ordinary_config)
+        output_path = output_path_for_gamut(ordinary_config, gamut)
+        write_float_rgb_exr(
+            output_path, image, gamut_name, ordinary_config, result.statistics
+        )
         paths.append(output_path)
         if verbose:
             print(f"Created: {output_path.resolve()}")
-            print_palette_report(result, config)
+            print_palette_report(result, ordinary_config)
+
+    # Compensation is profile-specific and only follows a selected source
+    # gamut.  This keeps ``--gamut ap1`` a one-file request while the default
+    # all-gamut request emits the ordinary three files plus two variants.
+    compensation = config.compensation
+    eligible_profiles = (
+        [
+            COMPENSATION_PROFILE_DEFINITIONS[name]
+            for name in compensation.profiles
+            if COMPENSATION_PROFILE_DEFINITIONS[name].source_gamut
+            in config.output.selected_gamuts
+        ]
+        if compensation.enabled
+        else []
+    )
+    if eligible_profiles:
+        processor_cache: dict[str, object] = {}
+        for profile in eligible_profiles:
+            gamut = GAMUT_MATRICES[profile.source_gamut]
+            if verbose:
+                print()
+                print("=" * 92)
+                print(
+                    f"Generating {profile.name} compensated {profile.source_gamut} palette..."
+                )
+                print(f"OCIO view: {profile.view_transform}")
+                print(f"OCIO display: {profile.display_name}")
+            processor = processor_cache.get(profile.name)
+            if processor is None:
+                processor = load_compensation_processor(compensation, profile.name)
+                processor_cache[profile.name] = processor
+            source_y, _intermediate_center = solve_neutral_y(processor, compensation)
+            if not 0.0 < source_y <= 1.0:
+                raise RuntimeError(
+                    f"Solved source neutral Y is outside the supported range for "
+                    f"{profile.name}: {source_y:.15g}"
+                )
+            source_config = replace(
+                config,
+                appearance=replace(
+                    config.appearance,
+                    reference_neutral_y=source_y,
+                ),
+            )
+            source_model = AppearanceModel.from_config(source_config.appearance)
+            source_result = build_palette(gamut, source_config, source_model)
+            rendered = render_palette_layers(source_result, source_config)
+            image, diagnostics = compensate_foreground(
+                rendered.image,
+                rendered.foreground_mask,
+                processor,
+                compensation,
+                source_y,
+                rendered.center_mask,
+            )
+            statistics = dict(source_result.statistics)
+            statistics.update(diagnostics.as_statistics())
+            output_path = output_path_for_compensation(
+                config, gamut, profile, source_y
+            )
+            write_float_rgb_exr(
+                output_path,
+                image,
+                gamut.name,
+                source_config,
+                statistics,
+            )
+            paths.append(output_path)
+            if verbose:
+                print(f"Solved source neutral Y: {source_y:.15g}")
+                print(
+                    "Intermediate center after inverse view: "
+                    + ", ".join(f"{x:.9g}" for x in diagnostics.intermediate_center)
+                )
+                print(f"Created: {output_path.resolve()}")
+                print_palette_report(source_result, source_config)
     if verbose:
         print()
         print("=" * 92)
         print(
             "All EXRs were written as scene-linear ACEScg/AP1, 32-bit float, ZIP-compressed."
         )
-        print("The center is exactly ACEScg (1, 1, 1).")
+        print("Ordinary palette centers are ACEScg (1, 1, 1).")
         print("Every hue has a thin gamut-boundary cap.")
         if config.colorchecker.enabled:
             print(
                 "ColorChecker dots mark unique nearest palette locations using saturation and hue only."
             )
-        print(
-            "No clipping, transfer function, tone mapping, gamut mapping, or display transform was applied."
-        )
+        if eligible_profiles:
+            print(
+                "Compensated variants inverse their ACES 2.0 view transform, then scale foreground colors to center (1, 1, 1)."
+            )
+        print("Ordinary variants have no display transform baked in.")
         print("Finite display peak luminance was not enforced.")
     return paths
 

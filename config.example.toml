@@ -60,3 +60,15 @@ angular_gap_degrees = 0.9
 directory = "."
 gamuts = ["srgb", "p3", "ap1"]
 compression = "zip"
+
+[compensation]
+# The default all-gamut run writes two additional variants (five files total):
+# sRGB/Rec.709 BT.1886 and P3/Rec.2020 PQ. The supplied config has no AP1
+# display target, so the AP1 palette remains ordinary scene-linear output.
+enabled = true
+profiles = ["srgb_rec709_bt1886", "p3_rec2020_pq"]
+ocio_config_path = "cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"
+target_intermediate_center = 0.18
+round_trip_tolerance = 1.0e-5
+solver_tolerance = 1.0e-12
+solver_max_iterations = 100

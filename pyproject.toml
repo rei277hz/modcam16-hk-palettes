@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",
     "OpenEXR>=3.2",
+    "opencolorio==2.5.2",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,9 @@ modcam16-palette = "modcam16_palette.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["modcam16_palette*"]
+
+[tool.setuptools.data-files]
+"share/modcam16-palette" = ["cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

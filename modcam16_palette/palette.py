@@ -41,6 +41,7 @@ class PaletteResult:
     palette_hues: np.ndarray
     valid_ring_indices: np.ndarray
     valid_hue_indices: np.ndarray
+    reference_neutral_acescg: np.ndarray | None = None
 
 
 def make_log_companded_chroma_levels(
@@ -172,6 +173,10 @@ def _build_statistics(
         "chroma_companding_k": float(config.palette.companding_by_gamut[gamut.name]),
         "target_j_hk": model.target_j_hk,
         "target_q_hk": model.target_q_hk,
+        "reference_neutral_y": float(config.appearance.reference_neutral_y),
+        "reference_neutral_acescg": colorimetry.apply_matrix(
+            colorimetry.XYZ_D65_TO_ACESCG, model.reference_neutral_xyz_d65
+        ),
         "relative_chroma_levels": relative_chroma_levels,
         "c3_raw": c3.value,
         "c3_hue": c3.hue,
@@ -230,12 +235,19 @@ def build_palette(
     companding_k = p.companding_by_gamut[gamut.name]
     relative_chroma_levels = make_log_companded_chroma_levels(n, companding_k)
     hue_angles = _make_hue_angles(config)
-    neutral_in_gamut = colorimetry.apply_matrix(
-        gamut.acescg_to_gamut_rgb, np.ones(3, dtype=np.float64)
+    reference_neutral_acescg = colorimetry.apply_matrix(
+        colorimetry.XYZ_D65_TO_ACESCG, model.reference_neutral_xyz_d65
     )
-    if not np.allclose(neutral_in_gamut, np.ones(3), atol=8.0e-6, rtol=0.0):
+    neutral_in_gamut = colorimetry.apply_matrix(
+        gamut.acescg_to_gamut_rgb, reference_neutral_acescg
+    )
+    expected_neutral = np.full(
+        3, config.appearance.reference_neutral_y, dtype=np.float64
+    )
+    if not np.allclose(neutral_in_gamut, expected_neutral, atol=8.0e-6, rtol=0.0):
         raise RuntimeError(
-            f"{gamut.name} neutral conversion failed:\n  Received: {neutral_in_gamut}"
+            f"{gamut.name} neutral conversion failed:\n"
+            f"  Expected: {expected_neutral}\n  Received: {neutral_in_gamut}"
         )
 
     rendered_cmax_raw = find_maximum_gamut_chroma_for_hues(
@@ -512,6 +524,7 @@ def build_palette(
 
     return PaletteResult(
         gamut=gamut,
+        reference_neutral_acescg=reference_neutral_acescg,
         color_table=color_table,
         block_valid_table=block_valid_table,
         cap_color_table=cap_color_table,

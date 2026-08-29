@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
 from .config import Config
 from .palette import PaletteResult
+
+
+@dataclass(frozen=True)
+class RenderedPalette:
+    """Rasterized palette plus masks used by post-render compensation."""
+
+    image: np.ndarray
+    foreground_mask: np.ndarray
+    center_mask: np.ndarray
+    overlay_mask: np.ndarray
 
 
 def draw_solid_dot(
@@ -34,6 +45,31 @@ def draw_solid_dot(
     image[y_min : y_max + 1, x_min : x_max + 1][mask] = color
 
 
+def _mark_dot_overlay(
+    foreground_mask: np.ndarray,
+    overlay_mask: np.ndarray,
+    center_x: float,
+    center_y: float,
+    radius: float,
+) -> None:
+    """Remove a background-colored dot from foreground ownership masks."""
+
+    height, width = foreground_mask.shape
+    x_min = max(0, math.floor(center_x - radius))
+    x_max = min(width - 1, math.ceil(center_x + radius))
+    y_min = max(0, math.floor(center_y - radius))
+    y_max = min(height - 1, math.ceil(center_y + radius))
+    if x_min > x_max or y_min > y_max:
+        return
+    x_coordinates = np.arange(x_min, x_max + 1, dtype=np.float64)
+    y_coordinates = np.arange(y_min, y_max + 1, dtype=np.float64)
+    local_x = x_coordinates[None, :] - center_x
+    local_y = y_coordinates[:, None] - center_y
+    mask = local_x * local_x + local_y * local_y <= radius * radius
+    foreground_mask[y_min : y_max + 1, x_min : x_max + 1][mask] = False
+    overlay_mask[y_min : y_max + 1, x_min : x_max + 1][mask] = True
+
+
 def polar_position_to_image_xy(
     image_center: float,
     radius: float,
@@ -50,8 +86,8 @@ def polar_position_to_image_xy(
     )
 
 
-def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
-    """Rasterize blocks, caps, boundary rectangles, and ColorChecker dots."""
+def render_palette_layers(result: PaletteResult, config: Config) -> RenderedPalette:
+    """Rasterize the palette and retain foreground/overlay ownership masks."""
 
     config.validate()
     p = config.palette
@@ -110,6 +146,8 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
     image = np.full(
         (image_size, image_size, 3), config.background_value, dtype=np.float32
     )
+    foreground_mask = np.zeros((image_size, image_size), dtype=bool)
+    overlay_mask = np.zeros((image_size, image_size), dtype=bool)
     coordinate = np.arange(image_size, dtype=np.float32) - np.float32(image_center)
     x = coordinate[None, :]
     y = coordinate[:, None]
@@ -122,7 +160,15 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
     radial_half_gap = r.radial_gap_pixels * 0.5
 
     center_mask = radius <= r.center_radius - radial_half_gap
-    image[center_mask] = np.ones(3, dtype=np.float32)
+    center_color = result.reference_neutral_acescg
+    if center_color is None:
+        # Compatibility for callers constructing a PaletteResult manually.
+        center_color = np.ones(3, dtype=np.float64)
+    center_color = np.asarray(center_color, dtype=np.float32)
+    if center_color.shape != (3,) or not np.all(np.isfinite(center_color)):
+        raise ValueError("reference_neutral_acescg must be a finite RGB triplet.")
+    image[center_mask] = center_color
+    foreground_mask[center_mask] = True
 
     ring_index = np.full((image_size, image_size), -1, dtype=np.int16)
     for current_ring in range(n):
@@ -150,6 +196,7 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
     image[complete_block_mask] = color_table[
         ring_index[complete_block_mask], hue_index[complete_block_mask]
     ]
+    foreground_mask[complete_block_mask] = True
 
     pixel_cap_after_count = cap_after_level_counts[hue_index]
     pixel_cap_base_radius = r.center_radius + pixel_cap_after_count.astype(
@@ -163,6 +210,7 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
         & (radius <= pixel_cap_outer_radius)
     )
     image[cap_mask] = cap_color_table[hue_index[cap_mask]]
+    foreground_mask[cap_mask] = True
 
     if np.any(boundary_marker_table):
         marker_radial_half_length = (
@@ -195,6 +243,8 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
         image[combined_marker_mask] = np.full(
             3, config.background_value, dtype=np.float32
         )
+        foreground_mask[combined_marker_mask] = False
+        overlay_mask[combined_marker_mask] = True
 
     if cc.enabled:
         full_locations = np.argwhere(colorchecker_full_marker_table)
@@ -212,6 +262,13 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
                 dot_y,
                 cc.dot_radius_pixels,
                 np.full(3, config.background_value, dtype=np.float32),
+            )
+            _mark_dot_overlay(
+                foreground_mask,
+                overlay_mask,
+                dot_x,
+                dot_y,
+                cc.dot_radius_pixels,
             )
         cap_locations = np.flatnonzero(colorchecker_cap_marker_table)
         for hue_location in cap_locations:
@@ -235,4 +292,36 @@ def render_radial_palette(result: PaletteResult, config: Config) -> np.ndarray:
                 cc.dot_radius_pixels,
                 np.full(3, config.background_value, dtype=np.float32),
             )
-    return image
+            _mark_dot_overlay(
+                foreground_mask,
+                overlay_mask,
+                dot_x,
+                dot_y,
+                cc.dot_radius_pixels,
+            )
+    return RenderedPalette(image, foreground_mask, center_mask, overlay_mask)
+
+
+def render_radial_palette(
+    result: PaletteResult,
+    config: Config,
+    *,
+    return_masks: bool = False,
+) -> np.ndarray | RenderedPalette:
+    """Rasterize the palette, optionally returning ownership masks.
+
+    ``return_masks=False`` preserves the original ndarray-returning API.
+    ``return_masks=True`` is a shorthand for :func:`render_palette_layers` for
+    callers implementing post-render operations.
+    """
+
+    rendered = render_palette_layers(result, config)
+    return rendered if return_masks else rendered.image
+
+
+def render_radial_palette_with_masks(
+    result: PaletteResult, config: Config
+) -> RenderedPalette:
+    """Explicit alias for code that needs foreground/overlay ownership."""
+
+    return render_palette_layers(result, config)

@@ -14,8 +14,10 @@ def print_generation_header(config: Config, model) -> None:
     a = config.appearance
     p = config.palette
     r = config.raster
+    selected = ", ".join(config.output.selected_gamuts)
     print(
-        "Generating sRGB-D65-, P3-D65-, and AP1-gamut-cone C3-relative modCAM16-HK palettes..."
+        "Generating C3-relative modCAM16-HK palettes for "
+        f"{selected}..."
     )
     print()
     print(f"H-K model: J_HK = sqrt(J^2 + {a.hk_chroma_coefficient:g} C)")
@@ -25,7 +27,11 @@ def print_generation_header(config: Config, model) -> None:
     print()
     print(f"Image size: {r.image_size} x {r.image_size}")
     print(f"Reference white: {a.reference_white_luminance_nits:.6f} cd/m^2")
-    print("Neutral ACEScg value: (1.0, 1.0, 1.0)")
+    print(
+        "Configured source neutral Y: "
+        f"{a.reference_neutral_y:.15g}"
+    )
+    print("Published ordinary neutral ACEScg value: (1.0, 1.0, 1.0)")
     print(
         f"Neutral physical luminance: {config.reference_neutral_luminance_nits:.6f} cd/m^2"
     )
@@ -43,6 +49,14 @@ def print_generation_header(config: Config, model) -> None:
     print()
     print(f"Hue sectors: {p.hue_count}")
     print(f"Complete chromatic levels: {p.chroma_level_count}")
+    compensation = config.compensation
+    if compensation.enabled and compensation.profiles:
+        print(
+            "ACES 2.0 compensated profiles: "
+            + ", ".join(compensation.profiles)
+        )
+    else:
+        print("ACES 2.0 compensated profiles: disabled")
 
 
 def print_colorchecker_assignments(result: PaletteResult, config: Config) -> None:
@@ -150,3 +164,27 @@ def print_palette_report(result: PaletteResult, config: Config) -> None:
     print(f"  Maximum J_HK error: {stats['j_hk_error']:.12g}")
     print(f"  Maximum C error: {stats['chroma_error']:.12g}")
     print(f"  Maximum hue error: {stats['hue_error']:.12g}°")
+    if stats.get("compensation_enabled"):
+        print()
+        print("ACES 2.0 compensation:")
+        print(f"  Profile: {stats['compensation_profile']}")
+        print(f"  Source neutral Y: {stats['compensation_solved_source_y']:.15g}")
+        print(
+            "  Intermediate center: "
+            + ", ".join(
+                f"{value:.9g}" for value in stats["compensation_intermediate_center"]
+            )
+        )
+        print(
+            "  Intermediate center max error: "
+            f"{stats['compensation_intermediate_center_max_error']:.9g}"
+        )
+        print(f"  Foreground scale: {stats['compensation_scale_factor']:.9g}")
+        print(
+            "  Intermediate round-trip max error: "
+            f"{stats['compensation_intermediate_round_trip_max_error']:.9g}"
+        )
+        print(
+            "  Post-scale encoded display max error: "
+            f"{stats['compensation_post_scale_display_max_error']:.9g}"
+        )

@@ -22,6 +22,60 @@ GAMUT_NAMES = (
 
 
 @dataclass(frozen=True)
+class CompensationProfileConfig:
+    """A named ACES 2.0 inverse-view compensation target.
+
+    The view transform operates from the ACES scene reference to the CIE
+    XYZ-D65 display reference.  ``display_name`` is retained for validation
+    and for encoded-display diagnostics; it is not inserted into the inverse
+    colorimetric transform itself.
+    """
+
+    name: str
+    source_gamut: str
+    display_name: str
+    view_transform: str
+    filename_tag: str
+
+
+CompensationProfile = CompensationProfileConfig
+
+
+COMPENSATION_PROFILE_DEFINITIONS = {
+    "srgb_rec709_bt1886": CompensationProfileConfig(
+        name="srgb_rec709_bt1886",
+        source_gamut="sRGB-D65",
+        display_name="Rec.1886 Rec.709 - Display",
+        view_transform="ACES 2.0 - SDR 100 nits (Rec.709)",
+        filename_tag="ACES2InvODT_Rec709BT1886",
+    ),
+    "p3_rec2020_pq": CompensationProfileConfig(
+        name="p3_rec2020_pq",
+        source_gamut="P3-D65",
+        display_name="Rec.2100-PQ - Display",
+        view_transform="ACES 2.0 - HDR 1000 nits (Rec.2020)",
+        filename_tag="ACES2InvODR_Rec2020PQ",
+    ),
+}
+COMPENSATION_PROFILE_NAMES = tuple(COMPENSATION_PROFILE_DEFINITIONS)
+COMPENSATION_PROFILES = COMPENSATION_PROFILE_DEFINITIONS
+# Accepted spelling variants for TOML and command-line configuration.  The
+# canonical names above remain the values stored in Config.
+COMPENSATION_PROFILE_ALIASES = (
+    "srgb",
+    "sRGB",
+    "rec709",
+    "rec709_bt1886",
+    "p3",
+    "P3",
+    "rec2020",
+    "rec2020_pq",
+)
+COMPENSATION_PROFILE_CHOICES = COMPENSATION_PROFILE_NAMES + COMPENSATION_PROFILE_ALIASES
+DEFAULT_OCIO_CONFIG_PATH = Path("cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio")
+
+
+@dataclass(frozen=True)
 class AppearanceConfig:
     reference_white_luminance_nits: float = 200.0
     reference_background_ratio: float = 20.0 / 200.0
@@ -114,6 +168,31 @@ class OutputConfig:
 
 
 @dataclass(frozen=True)
+class CompensationConfig:
+    """Settings for optional ACES 2.0 inverse-view palette variants."""
+
+    enabled: bool = True
+    profiles: tuple[str, ...] = COMPENSATION_PROFILE_NAMES
+    ocio_config_path: Path = DEFAULT_OCIO_CONFIG_PATH
+    target_intermediate_center: float = 0.18
+    round_trip_tolerance: float = 1.0e-5
+    solver_tolerance: float = 1.0e-12
+    solver_max_iterations: int = 100
+
+    @property
+    def selected_profiles(self) -> tuple[str, ...]:
+        """Compatibility/readability alias for the profile selection list."""
+
+        return self.profiles
+
+    @property
+    def ocio_path(self) -> Path:
+        """Short alias for the configured OCIO profile path."""
+
+        return self.ocio_config_path
+
+
+@dataclass(frozen=True)
 class Config:
     """Complete generator configuration.
 
@@ -128,6 +207,7 @@ class Config:
     colorchecker: ColorCheckerConfig = field(default_factory=ColorCheckerConfig)
     raster: RasterConfig = field(default_factory=RasterConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    compensation: CompensationConfig = field(default_factory=CompensationConfig)
 
     @property
     def reference_neutral_luminance_nits(self) -> float:
@@ -189,8 +269,11 @@ class Config:
             or a.reference_white_luminance_nits <= 0.0
         ):
             raise ValueError("reference_white_luminance_nits must be positive.")
-        if a.reference_neutral_y != 1.0:
-            raise ValueError("reference_neutral_y must be exactly one.")
+        if (
+            not np.isfinite(a.reference_neutral_y)
+            or not 0.0 < a.reference_neutral_y <= 1.0
+        ):
+            raise ValueError("reference_neutral_y must be finite and lie in (0, 1].")
         if not np.isfinite(a.reference_background_ratio):
             raise ValueError("reference_background_ratio must be finite.")
         if not 0.0 < self.background_luminance_nits < a.reference_white_luminance_nits:
@@ -298,6 +381,39 @@ class Config:
             raise TypeError("exr_compression must be a string.")
         if o.exr_compression.lower() != "zip":
             raise ValueError("Only ZIP OpenEXR compression is supported.")
+
+        c = self.compensation
+        if not isinstance(c.enabled, bool):
+            raise TypeError("compensation.enabled must be Boolean.")
+        if not isinstance(c.profiles, (tuple, list)):
+            raise TypeError("compensation.profiles must be a list or tuple.")
+        if not all(isinstance(name, str) for name in c.profiles):
+            raise TypeError("compensation.profiles entries must be strings.")
+        unknown_profiles = [
+            name for name in c.profiles if name not in COMPENSATION_PROFILE_DEFINITIONS
+        ]
+        if unknown_profiles:
+            raise ValueError(
+                "Unknown compensation profile(s): " + ", ".join(unknown_profiles)
+            )
+        if len(set(c.profiles)) != len(c.profiles):
+            raise ValueError("compensation.profiles must not contain duplicates.")
+        if not isinstance(c.ocio_config_path, (str, Path)):
+            raise TypeError("compensation.ocio_config_path must be a path.")
+        if (
+            not np.isfinite(c.target_intermediate_center)
+            or c.target_intermediate_center <= 0.0
+        ):
+            raise ValueError("target_intermediate_center must be finite and positive.")
+        if (
+            not np.isfinite(c.round_trip_tolerance)
+            or c.round_trip_tolerance <= 0.0
+        ):
+            raise ValueError("round_trip_tolerance must be finite and positive.")
+        if not np.isfinite(c.solver_tolerance) or c.solver_tolerance <= 0.0:
+            raise ValueError("solver_tolerance must be finite and positive.")
+        if not isinstance(c.solver_max_iterations, int) or c.solver_max_iterations <= 0:
+            raise ValueError("solver_max_iterations must be a positive integer.")
         return self
 
 
@@ -316,6 +432,11 @@ def _merge_dataclass(instance: Any, values: Mapping[str, Any], section: str) -> 
         converted["output_dir"] = Path(converted["output_dir"])
     if section == "output" and "selected_gamuts" in converted:
         converted["selected_gamuts"] = tuple(converted["selected_gamuts"])
+    if section == "compensation":
+        if "ocio_config_path" in converted:
+            converted["ocio_config_path"] = Path(converted["ocio_config_path"])
+        if "profiles" in converted:
+            converted["profiles"] = tuple(converted["profiles"])
     return replace(instance, **converted)
 
 
@@ -333,6 +454,7 @@ def config_from_mapping(
         "colorchecker",
         "raster",
         "output",
+        "compensation",
     )
     aliases = {
         "output": {
@@ -359,6 +481,15 @@ def config_from_mapping(
         },
         "raster": {
             "size": "image_size",
+        },
+        "compensation": {
+            "ocio_path": "ocio_config_path",
+            "config_path": "ocio_config_path",
+            "selected_profiles": "profiles",
+            "profile_names": "profiles",
+            "center": "target_intermediate_center",
+            "tolerance": "round_trip_tolerance",
+            "iterations": "solver_max_iterations",
         },
     }
     unknown_sections = set(mapping) - set(sections)
@@ -406,6 +537,11 @@ def config_from_mapping(
                 _normalize_gamut_name(name)
                 for name in normalized_values["selected_gamuts"]
             )
+        if section == "compensation" and "profiles" in normalized_values:
+            normalized_values["profiles"] = tuple(
+                _normalize_compensation_profile_name(name)
+                for name in normalized_values["profiles"]
+            )
         current = getattr(config, section)
         setattr_target = _merge_dataclass(current, normalized_values, section)
         config = replace(config, **{section: setattr_target})
@@ -430,12 +566,32 @@ def _normalize_gamut_name(name: str) -> str:
         raise ValueError(f"Unknown gamut: {name}") from exc
 
 
+def _normalize_compensation_profile_name(name: str) -> str:
+    aliases = {
+        "srgb": "srgb_rec709_bt1886",
+        "sRGB": "srgb_rec709_bt1886",
+        "rec709": "srgb_rec709_bt1886",
+        "rec709_bt1886": "srgb_rec709_bt1886",
+        "srgb_rec709_bt1886": "srgb_rec709_bt1886",
+        "p3": "p3_rec2020_pq",
+        "P3": "p3_rec2020_pq",
+        "rec2020": "p3_rec2020_pq",
+        "rec2020_pq": "p3_rec2020_pq",
+        "p3_rec2020_pq": "p3_rec2020_pq",
+    }
+    try:
+        return aliases[name]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"Unknown compensation profile: {name}") from exc
+
+
 def load_config(
     path: str | Path | None = None, overrides: Mapping[str, Any] | None = None
 ) -> Config:
     """Load defaults, an optional TOML file, then explicit overrides."""
 
     mapping: dict[str, Any] = {}
+    explicit_ocio_path = False
     if path is not None:
         import tomllib
 
@@ -443,7 +599,42 @@ def load_config(
         with config_path.open("rb") as handle:
             loaded = tomllib.load(handle)
         mapping.update(loaded)
+        compensation_mapping = loaded.get("compensation")
+        if isinstance(compensation_mapping, Mapping):
+            explicit_ocio_path = any(
+                key in compensation_mapping
+                for key in ("ocio_config_path", "ocio_path", "config_path")
+            )
     config = config_from_mapping(mapping)
+    if (
+        path is not None
+        and explicit_ocio_path
+        and not config.compensation.ocio_config_path.is_absolute()
+    ):
+        # Resolve a TOML-relative OCIO path against the TOML file location;
+        # command-line and default configurations remain relative to cwd.
+        config = replace(
+            config,
+            compensation=replace(
+                config.compensation,
+                ocio_config_path=(Path(path).resolve().parent / config.compensation.ocio_config_path),
+            ),
+        )
+    elif path is not None and not explicit_ocio_path:
+        # Keep the built-in default discoverable from a TOML launched in a
+        # different working directory; an explicitly supplied path above is
+        # always interpreted relative to that TOML file.
+        default_path = config.compensation.ocio_config_path
+        if not default_path.is_file():
+            sibling = Path(path).resolve().parent / default_path
+            if sibling.is_file():
+                config = replace(
+                    config,
+                    compensation=replace(
+                        config.compensation,
+                        ocio_config_path=sibling,
+                    ),
+                )
     if overrides:
         config = config_from_mapping(overrides, base=config)
     return config.validate()
