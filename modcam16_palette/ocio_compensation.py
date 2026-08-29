@@ -103,10 +103,10 @@ class CompensationProcessor:
     @staticmethod
     def _apply(processor: Any, values: np.ndarray) -> np.ndarray:
         array = np.ascontiguousarray(values, dtype=np.float32).copy()
+        if array.ndim == 0 or array.shape[-1] != 3:
+            raise ValueError("OCIO RGB arrays must have a final dimension of three.")
         if array.size == 0:
             return array
-        if array.shape[-1] != 3:
-            raise ValueError("OCIO RGB arrays must have a final dimension of three.")
         processor.applyRGB(array)
         return array
 

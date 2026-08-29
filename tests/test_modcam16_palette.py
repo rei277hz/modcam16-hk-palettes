@@ -213,3 +213,17 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
         source_y,
     )
     assert "ACES2InvODT_Rec709BT1886" in path.name
+
+
+def test_ocio_processor_rejects_malformed_rgb_shapes():
+    try:
+        processor = load_compensation_processor(
+            default_config().compensation, "srgb_rec709_bt1886"
+        )
+    except RuntimeError as exc:
+        if "PyOpenColorIO" in str(exc):
+            return
+        raise
+    for values in (np.empty((0,)), np.empty((0, 2)), np.array(1.0)):
+        with np.testing.assert_raises(ValueError):
+            processor.source_comparison(values)
