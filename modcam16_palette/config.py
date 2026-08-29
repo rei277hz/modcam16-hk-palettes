@@ -28,7 +28,8 @@ class CompensationProfileConfig:
     The view transform operates from the ACES scene reference to the CIE
     XYZ-D65 display reference.  ``display_name`` is retained for validation
     and for encoded-display diagnostics; it is not inserted into the inverse
-    colorimetric transform itself.
+    colorimetric transform itself.  The display peak fields describe the
+    finite linear-RGB range accepted by the view in that reference space.
     """
 
     name: str
@@ -36,6 +37,25 @@ class CompensationProfileConfig:
     display_name: str
     view_transform: str
     filename_tag: str
+    # ACES display-reference XYZ is normalized so 1.0 represents 100 cd/m^2.
+    # Keep both quantities explicit: the selected output transform, rather
+    # than its name, defines the finite linear-RGB volume that can be inverted.
+    display_peak_luminance_nits: float = 100.0
+    display_reference_luminance_nits: float = 100.0
+
+    @property
+    def limiting_rgb_maximum(self) -> float:
+        """Maximum reachable display-linear RGB channel for this view."""
+
+        peak = float(self.display_peak_luminance_nits)
+        reference = float(self.display_reference_luminance_nits)
+        if not np.isfinite(peak) or peak <= 0.0:
+            raise ValueError("display_peak_luminance_nits must be finite and positive.")
+        if not np.isfinite(reference) or reference <= 0.0:
+            raise ValueError(
+                "display_reference_luminance_nits must be finite and positive."
+            )
+        return peak / reference
 
 
 CompensationProfile = CompensationProfileConfig
@@ -48,6 +68,7 @@ COMPENSATION_PROFILE_DEFINITIONS = {
         display_name="Rec.1886 Rec.709 - Display",
         view_transform="ACES 2.0 - SDR 100 nits (Rec.709)",
         filename_tag="ACES2InvODT_Rec709BT1886",
+        display_peak_luminance_nits=100.0,
     ),
     "p3_rec2020_pq": CompensationProfileConfig(
         name="p3_rec2020_pq",
@@ -55,6 +76,7 @@ COMPENSATION_PROFILE_DEFINITIONS = {
         display_name="Rec.2100-PQ - Display",
         view_transform="ACES 2.0 - HDR 1000 nits (Rec.2020)",
         filename_tag="ACES2InvODR_Rec2020PQ",
+        display_peak_luminance_nits=1000.0,
     ),
 }
 COMPENSATION_PROFILE_NAMES = tuple(COMPENSATION_PROFILE_DEFINITIONS)

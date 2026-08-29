@@ -46,6 +46,15 @@ def make_comments(
         projection_max = float(
             statistics.get("compensation_target_gamut_projection_max_error", 0.0)
         )
+        projection_lower_count = int(
+            statistics.get("compensation_target_gamut_lower_projection_pixel_count", 0)
+        )
+        projection_upper_count = int(
+            statistics.get("compensation_target_gamut_upper_projection_pixel_count", 0)
+        )
+        display_peak = float(
+            statistics.get("compensation_target_display_peak_luminance_nits", 0.0)
+        )
         fit_comment = ""
         if "compensation_fit_mode" in statistics:
             fit_comment = (
@@ -67,7 +76,9 @@ def make_comments(
             f"intermediate center={statistics['compensation_target_intermediate_center']:.9g}; "
             f"intermediate center max error={statistics['compensation_intermediate_center_max_error']:.9g}; "
             f"target-gamut projected pixels={projection_count}; "
+            f"lower={projection_lower_count}; upper/peak={projection_upper_count}; "
             f"target-gamut projection max={projection_max:.9g}; "
+            f"display peak={display_peak:.9g} nits; "
             f"foreground scale={statistics['compensation_scale_factor']:.9g}; "
             f"OCIO config={statistics['compensation_ocio_config_path']}; "
             f"OCIO cache ID={statistics['compensation_ocio_config_cache_id']}; "
@@ -89,14 +100,14 @@ def make_comments(
         if not statistics.get("compensation_enabled")
         else "inverse ACES 2.0 view transform is baked into foreground colors; "
         "display encoding is not baked in; source targets outside the view's "
-        "limiting gamut are projected to its nearest RGB-cone face before inversion."
+        "reachable RGB volume are component-wise clamped before inversion."
     )
     gamut_comment = (
         f"content constrained to nonnegative linear {gamut_name} RGB gamut cone; "
         "no upper RGB bound; values above one permitted; "
         if not statistics.get("compensation_enabled")
         else f"source palette was constrained to the {gamut_name} RGB gamut cone; "
-        "source cap geometry is unchanged by target-limiting-gamut projection; "
+        "source cap geometry is unchanged by target-volume projection; "
         "inverse foreground values have no upper bound; "
     )
     return (
@@ -212,11 +223,30 @@ def write_float_rgb_exr(
             "compensationTargetGamutMinimum": float(
                 statistics.get("compensation_target_gamut_minimum_channel", 0.0)
             ),
+            "compensationTargetGamutMaximum": float(
+                statistics.get("compensation_target_gamut_maximum_channel", 0.0)
+            ),
+            "compensationTargetGamutMaximumLimit": float(
+                statistics.get("compensation_target_gamut_maximum_channel_limit", 0.0)
+            ),
             "compensationTargetGamutProjectionMax": float(
                 statistics.get("compensation_target_gamut_projection_max_error", 0.0)
             ),
             "compensationTargetGamutProjectionCount": int(
                 statistics.get("compensation_target_gamut_projection_pixel_count", 0)
+            ),
+            "compensationTargetGamutLowerProjectionCount": int(
+                statistics.get(
+                    "compensation_target_gamut_lower_projection_pixel_count", 0
+                )
+            ),
+            "compensationTargetGamutUpperProjectionCount": int(
+                statistics.get(
+                    "compensation_target_gamut_upper_projection_pixel_count", 0
+                )
+            ),
+            "compensationDisplayPeakNits": float(
+                statistics.get("compensation_target_display_peak_luminance_nits", 0.0)
             ),
         }
         if "compensation_fit_mode" in statistics:

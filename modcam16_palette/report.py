@@ -190,11 +190,20 @@ def print_palette_report(result: PaletteResult, config: Config) -> None:
             f"rel={config.compensation.round_trip_relative_tolerance:.9g}"
         )
         print(
-            "  Target limiting-gamut projection: "
+            "  Target display-volume projection: "
             f"{stats['compensation_target_gamut_projection_pixel_count']} pixels, "
+            f"lower={stats.get('compensation_target_gamut_lower_projection_pixel_count', 0)}, "
+            f"upper/peak={stats.get('compensation_target_gamut_upper_projection_pixel_count', 0)}, "
             f"max XYZ adjustment "
             f"{stats['compensation_target_gamut_projection_max_error']:.9g}"
         )
+        if "compensation_target_display_peak_luminance_nits" in stats:
+            print(
+                "  Display peak: "
+                f"{stats['compensation_target_display_peak_luminance_nits']:.9g} nits "
+                "("
+                f"linear RGB limit {stats.get('compensation_target_gamut_maximum_channel_limit', 0.0):.9g})"
+            )
         print(
             "  Post-scale encoded display max error: "
             f"{stats['compensation_post_scale_display_max_error']:.9g}"

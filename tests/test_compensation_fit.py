@@ -96,6 +96,17 @@ def test_default_exposure_grid_has_nine_half_stop_samples():
     assert config.compensation.exposure_grid == config.compensation.exposure_stops
 
 
+def test_compensation_profiles_define_finite_display_rgb_limits():
+    sdr = COMPENSATION_PROFILE_DEFINITIONS["srgb_rec709_bt1886"]
+    hdr = COMPENSATION_PROFILE_DEFINITIONS["p3_rec2020_pq"]
+    assert sdr.display_peak_luminance_nits == 100.0
+    assert sdr.display_reference_luminance_nits == 100.0
+    assert sdr.limiting_rgb_maximum == 1.0
+    assert hdr.display_peak_luminance_nits == 1000.0
+    assert hdr.display_reference_luminance_nits == 100.0
+    assert hdr.limiting_rgb_maximum == 10.0
+
+
 def test_target_projection_handles_p3_red_sliver_outside_rec2020():
     """P3's red boundary is just outside the Rec.2020 limiting triangle."""
 
@@ -112,6 +123,27 @@ def test_target_projection_handles_p3_red_sliver_outside_rec2020():
     assert projection.maximum_xyz_adjustment > 0.0
     assert after[2] >= 0.0
     assert np.all(after[:2] >= 0.0)
+    assert projection.lower_projected_count == 1
+    assert projection.upper_projected_count == 0
+
+
+def test_target_projection_handles_hdr_channel_above_1000_nit_peak():
+    params = init_jmh_params(REC2020_D65_PRIMARIES_XY)
+    limiting_rgb = np.array([[0.7705399, 0.14858342, 10.44053054]])
+    target_xyz = np.asarray(limiting_rgb @ params.rgb_to_xyz.T, dtype=np.float32)
+
+    projection = project_target_to_limiting_gamut(target_xyz, "p3_rec2020_pq")
+    projected_rgb = projection.xyz.astype(np.float64) @ params.xyz_to_rgb.T
+
+    assert projection.projected_count == 1
+    assert projection.lower_projected_count == 0
+    assert projection.upper_projected_count == 1
+    assert projection.maximum_channel > 10.0
+    assert projection.maximum_channel_limit == 10.0
+    assert projection.maximum_xyz_adjustment > 0.4
+    assert np.all(projected_rgb >= -1.0e-6)
+    assert np.all(projected_rgb <= 10.0 + 1.0e-6)
+    assert np.isclose(projected_rgb[0, 2], 10.0, atol=1.0e-6)
 
 
 def test_round_trip_relative_tolerance_is_validated():
@@ -320,6 +352,10 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
         )
         assert header["compensationFitRMS"] <= header["compensationFitLegacyRMS"]
         assert header["compensationTargetGamutProjectionCount"] == 0
+        assert header["compensationTargetGamutLowerProjectionCount"] == 0
+        assert header["compensationTargetGamutUpperProjectionCount"] == 0
+        assert header["compensationTargetGamutMaximumLimit"] == 1.0
+        assert header["compensationDisplayPeakNits"] == 100.0
         assert header["compensationRoundTripNormalizedMax"] >= 0.0
         assert "fitted anchor=" in header["comments"]
 
@@ -377,4 +413,47 @@ def test_p3_hdr_compensation_projects_boundary_cap_and_completes():
     assert np.all(np.isfinite(compensated))
     assert diagnostics.target_gamut_projection_pixel_count == 1
     assert diagnostics.target_gamut_projection_max_error > 0.0
+    assert diagnostics.intermediate_round_trip_pixels_above_tolerance == 0
+
+
+def test_p3_hdr_compensation_projects_1000_nit_peak_and_completes():
+    """A P3 target above the Rec.2020 1000-nit ceiling remains invertible."""
+
+    try:
+        base = default_config()
+        anchor = 4.341653734057282
+        compensation = replace(
+            base.compensation,
+            profiles=("p3_rec2020_pq",),
+            p3_chroma_companding_k=20.0,
+            target_intermediate_center=anchor,
+            fit_mode="manual",
+        )
+        processor = load_compensation_processor(compensation, "p3_rec2020_pq")
+    except RuntimeError as exc:
+        if "PyOpenColorIO" in str(exc):
+            return
+        raise
+
+    source_y, _center = solve_neutral_y(
+        processor, compensation, target_intermediate_center=anchor
+    )
+    # This ACEScg color maps to approximately (0.77054, 0.14858, 10.44053)
+    # in the Rec.2020 display-reference RGB coordinates.  The blue channel is
+    # above the 1000-nit peak and must be projected to exactly 10 before the
+    # inverse view transform.
+    image = np.array([[[0.8115921, 0.17345583, 10.141659]]], dtype=np.float32)
+    compensated, diagnostics = compensate_foreground(
+        image,
+        np.ones((1, 1), dtype=bool),
+        processor,
+        compensation,
+        source_y,
+        intermediate_center_target=anchor,
+    )
+    assert np.all(np.isfinite(compensated))
+    assert diagnostics.target_gamut_projection_pixel_count == 1
+    assert diagnostics.target_gamut_lower_projection_pixel_count == 0
+    assert diagnostics.target_gamut_upper_projection_pixel_count == 1
+    assert diagnostics.target_gamut_maximum_channel_limit == 10.0
     assert diagnostics.intermediate_round_trip_pixels_above_tolerance == 0

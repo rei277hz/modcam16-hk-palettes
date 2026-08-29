@@ -62,6 +62,11 @@ class CompensationDiagnostics:
     target_gamut_projection_max_error: float = 0.0
     target_gamut_projection_pixel_count: int = 0
     intermediate_round_trip_max_normalized_error: float = 0.0
+    target_gamut_maximum_channel: float = 0.0
+    target_gamut_maximum_channel_limit: float = 0.0
+    target_gamut_lower_projection_pixel_count: int = 0
+    target_gamut_upper_projection_pixel_count: int = 0
+    target_display_peak_luminance_nits: float = 0.0
 
     def as_statistics(self) -> dict[str, object]:
         return {
@@ -78,8 +83,13 @@ class CompensationDiagnostics:
             "compensation_intermediate_center": self.intermediate_center,
             "compensation_intermediate_center_max_error": self.intermediate_center_max_error,
             "compensation_target_gamut_minimum_channel": self.target_gamut_minimum_channel,
+            "compensation_target_gamut_maximum_channel": self.target_gamut_maximum_channel,
+            "compensation_target_gamut_maximum_channel_limit": self.target_gamut_maximum_channel_limit,
             "compensation_target_gamut_projection_max_error": self.target_gamut_projection_max_error,
             "compensation_target_gamut_projection_pixel_count": self.target_gamut_projection_pixel_count,
+            "compensation_target_gamut_lower_projection_pixel_count": self.target_gamut_lower_projection_pixel_count,
+            "compensation_target_gamut_upper_projection_pixel_count": self.target_gamut_upper_projection_pixel_count,
+            "compensation_target_display_peak_luminance_nits": self.target_display_peak_luminance_nits,
             "compensation_intermediate_round_trip_max_error": self.intermediate_round_trip_max_error,
             "compensation_intermediate_round_trip_max_normalized_error": self.intermediate_round_trip_max_normalized_error,
             "compensation_intermediate_round_trip_pixels_above_tolerance": self.intermediate_round_trip_pixels_above_tolerance,
@@ -146,7 +156,7 @@ class CompensationProcessor:
     def project_target_to_limiting_gamut(
         self, values: np.ndarray
     ) -> TargetGamutProjection:
-        """Project display XYZ onto this output transform's RGB gamut cone."""
+        """Project display XYZ into this output transform's RGB volume."""
 
         return project_target_to_limiting_gamut(values, self.profile.name)
 
@@ -156,43 +166,89 @@ class TargetGamutProjection:
     """A display-reference target made representable by an ACES output view.
 
     ACES output transforms return display XYZ constrained to their limiting RGB
-    gamut.  A source palette may use a different gamut whose boundary is not a
-    strict subset (notably P3-D65 versus Rec.2020 around the red primary).  In
-    that case an exact inverse does not exist.  ``xyz`` is the nearest point in
-    linear limiting-RGB coordinates, obtained by clamping negative channels to
-    zero; the source palette itself is not modified.
+    gamut and finite display peak.  A source palette may use a different gamut
+    whose boundary is not a strict subset (notably P3-D65 versus Rec.2020 around
+    the red primary), or it may request a channel above the selected view's
+    peak.  In either case an exact inverse does not exist.  ``xyz`` is obtained
+    by component-wise clamping in linear limiting-RGB coordinates to the
+    reachable display volume; the source palette itself is not modified.
     """
 
     xyz: np.ndarray
     minimum_channel: float
     maximum_xyz_adjustment: float
     projected_count: int
+    # Appended for positional compatibility with the original public result.
+    maximum_channel: float = 0.0
+    maximum_channel_limit: float = 0.0
+    lower_projected_count: int = 0
+    upper_projected_count: int = 0
+
+
+def _compensation_profile(profile_name: str) -> CompensationProfileConfig:
+    """Resolve a compensation profile name or accepted alias."""
+
+    try:
+        canonical_name = _normalize_compensation_profile_name(profile_name)
+    except ValueError:
+        canonical_name = profile_name
+    try:
+        return COMPENSATION_PROFILE_DEFINITIONS[canonical_name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown compensation profile: {profile_name}") from exc
 
 
 def project_target_to_limiting_gamut(
     values: np.ndarray, profile_name: str
 ) -> TargetGamutProjection:
-    """Return display XYZ targets inside the profile's limiting gamut cone."""
+    """Return display XYZ targets inside the profile's reachable RGB volume."""
 
     source = np.ascontiguousarray(values, dtype=np.float32)
     if source.ndim == 0 or source.shape[-1] != 3:
         raise ValueError("Display XYZ arrays must have a final dimension of three.")
     if not np.all(np.isfinite(source)):
         raise ValueError("Display XYZ targets must be finite.")
+    profile = _compensation_profile(profile_name)
+    maximum_channel = profile.limiting_rgb_maximum
+    reference_luminance = float(params_for_profile(profile.name).reference_luminance)
+    if not np.isclose(
+        profile.display_reference_luminance_nits,
+        reference_luminance,
+        atol=0.0,
+        rtol=0.0,
+    ):
+        raise ValueError(
+            f"Compensation profile {profile.name} uses "
+            f"{profile.display_reference_luminance_nits:g}-nit display-reference "
+            f"RGB, but its ACES JMh parameters use {reference_luminance:g} nits."
+        )
+    if not np.isfinite(maximum_channel) or maximum_channel <= 0.0:
+        raise ValueError(
+            f"Compensation profile {profile.name} has an invalid display RGB maximum."
+        )
     if source.size == 0:
-        return TargetGamutProjection(source.copy(), 0.0, 0.0, 0)
+        return TargetGamutProjection(
+            source.copy(),
+            0.0,
+            0.0,
+            0,
+            maximum_channel=0.0,
+            maximum_channel_limit=maximum_channel,
+        )
 
-    params = params_for_profile(profile_name)
+    params = params_for_profile(profile.name)
     # Classify and project in float64, then quantize the resulting XYZ once for
     # OCIO.  A float32 matrix round-trip can leave a projected zero channel at
     # a small negative ulp, defeating the purpose of the projection.
     xyz_to_rgb = np.asarray(params.xyz_to_rgb, dtype=np.float64)
     rgb_to_xyz = np.asarray(params.rgb_to_xyz, dtype=np.float64)
     limiting_rgb = np.einsum("ij,...j->...i", xyz_to_rgb, source.astype(np.float64))
-    projected_mask = np.any(limiting_rgb < 0.0, axis=-1)
+    lower_mask = np.any(limiting_rgb < 0.0, axis=-1)
+    upper_mask = np.any(limiting_rgb > maximum_channel, axis=-1)
+    projected_mask = lower_mask | upper_mask
     projected = source.copy()
     if np.any(projected_mask):
-        clipped_rgb = np.maximum(limiting_rgb[projected_mask], 0.0)
+        clipped_rgb = np.clip(limiting_rgb[projected_mask], 0.0, maximum_channel)
         projected[projected_mask] = np.einsum("ij,...j->...i", rgb_to_xyz, clipped_rgb)
         adjustment = projected[projected_mask].astype(np.float64) - source[
             projected_mask
@@ -205,6 +261,10 @@ def project_target_to_limiting_gamut(
         minimum_channel=float(np.min(limiting_rgb)),
         maximum_xyz_adjustment=maximum_adjustment,
         projected_count=int(np.count_nonzero(projected_mask)),
+        maximum_channel=float(np.max(limiting_rgb)),
+        maximum_channel_limit=float(maximum_channel),
+        lower_projected_count=int(np.count_nonzero(lower_mask)),
+        upper_projected_count=int(np.count_nonzero(upper_mask)),
     )
 
 
@@ -603,8 +663,13 @@ def compensate_foreground(
         intermediate_center=tuple(float(x) for x in intermediate_center),
         intermediate_center_max_error=intermediate_center_error,
         target_gamut_minimum_channel=target_projection.minimum_channel,
+        target_gamut_maximum_channel=target_projection.maximum_channel,
+        target_gamut_maximum_channel_limit=target_projection.maximum_channel_limit,
         target_gamut_projection_max_error=target_projection.maximum_xyz_adjustment,
         target_gamut_projection_pixel_count=target_projection.projected_count,
+        target_gamut_lower_projection_pixel_count=target_projection.lower_projected_count,
+        target_gamut_upper_projection_pixel_count=target_projection.upper_projected_count,
+        target_display_peak_luminance_nits=processor.profile.display_peak_luminance_nits,
         intermediate_round_trip_max_error=round_trip_max,
         intermediate_round_trip_max_normalized_error=round_trip_normalized_max,
         intermediate_round_trip_pixels_above_tolerance=round_trip_count,

@@ -40,12 +40,20 @@ P3-D65 is not a strict subset of Rec.2020: there is a very small sliver near
 the P3 red primary that produces a negative Rec.2020 blue channel. The source
 P3 cap remains at its configured safety inset from the P3 boundary, but such a
 display target has no exact inverse through a Rec.2020-limited output
-transform. The compensation path therefore projects only those target samples
-onto the nearest Rec.2020 RGB-cone face before applying the inverse. Projection counts
-and the maximum XYZ adjustment are recorded in the report and EXR metadata.
-The OCIO intermediate round-trip check uses its configured absolute tolerance
-plus a small relative allowance because the CPU transforms operate in float32
-and HDR intermediate values extend well above one.
+transform. The selected output view also has a finite peak: display-reference
+RGB is relative to 100 nits, so the SDR 100-nit view is bounded by `[0, 1]` and
+the HDR 1000-nit view by `[0, 10]`. A high fitted anchor can place a source
+target above that upper face even though it remains valid in the source P3
+gamut cone. The compensation path clamps each limiting-RGB channel of an
+unreachable target to the selected view's bounded RGB volume before applying
+the inverse. This does not move the source palette's gamut-boundary caps;
+instead, it chooses a bounded display target that the inverse output transform
+can represent. Separate lower-gamut and upper-peak projection counts,
+the original channel extrema, and the maximum XYZ adjustment are recorded in
+the report and EXR metadata. The OCIO intermediate round-trip check uses its
+configured absolute tolerance plus a small relative allowance because the CPU
+transforms operate in float32 and HDR intermediate values extend well above
+one.
 
 The compensated source palettes use their own logarithmic chroma companding:
 `sRGB-D65` defaults to `k=2.5` and `P3-D65` defaults to `k=4.0`.  These values

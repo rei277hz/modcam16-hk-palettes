@@ -423,8 +423,11 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             print(
                 "Compensated variants inverse their ACES 2.0 view transform, then scale foreground colors to center (1, 1, 1)."
             )
+            print(
+                "Compensation targets are bounded by each selected view's limiting gamut and finite display peak."
+            )
         print("Ordinary variants have no display transform baked in.")
-        print("Finite display peak luminance was not enforced.")
+        print("Ordinary palette gamut cones have no upper RGB bound.")
     return paths
 
 
