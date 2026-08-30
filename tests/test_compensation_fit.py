@@ -80,18 +80,16 @@ def test_aces_j_neutral_is_reference_white_for_both_profiles():
             params.xyz_to_j(np.ones(2))
 
 
-def test_default_exposure_grid_has_nine_half_stop_samples():
+def test_default_exposure_grid_matches_release_example():
     config = default_config()
     assert config.compensation.exposure_stops == (
+        -3.0,
+        -2.5,
         -2.0,
         -1.5,
         -1.0,
         -0.5,
         0.0,
-        0.5,
-        1.0,
-        1.5,
-        2.0,
     )
     assert config.compensation.exposure_grid == config.compensation.exposure_stops
 
@@ -164,8 +162,8 @@ def test_round_trip_relative_tolerance_is_validated():
 def test_invalid_exposure_grid_is_rejected():
     base = default_config()
     for change in (
-        {"exposure_step_stops": 0.3},
-        {"exposure_max_stops": -2.0},
+        {"exposure_step_stops": 0.4},
+        {"exposure_max_stops": -4.0},
         {"exposure_step_stops": 0.0},
     ):
         config = replace(base, compensation=replace(base.compensation, **change))
@@ -344,11 +342,11 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
         assert pixels.dtype == np.float32
         assert np.array_equal(pixels[128, 128], np.ones(3, dtype=np.float32))
         assert header["compensationFitMode"] == "auto"
-        assert header["compensationFitExposureMin"] == -2.0
-        assert header["compensationFitExposureMax"] == 2.0
+        assert header["compensationFitExposureMin"] == -3.0
+        assert header["compensationFitExposureMax"] == 0.0
         assert header["compensationFitExposureStep"] == 0.5
         assert header["compensationFitSampleCount"] == (
-            header["compensationFitColorCount"] * 9
+            header["compensationFitColorCount"] * 7
         )
         assert header["compensationFitRMS"] <= header["compensationFitLegacyRMS"]
         assert header["compensationTargetGamutProjectionCount"] == 0

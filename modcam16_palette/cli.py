@@ -331,8 +331,18 @@ def _overrides_from_args(args: argparse.Namespace) -> dict[str, dict[str, object
     return overrides
 
 
-def generate(config: Config, *, verbose: bool = True) -> list[Path]:
-    """Generate selected palettes and return their output paths."""
+def generate(
+    config: Config,
+    *,
+    verbose: bool = True,
+    simple_names: bool = False,
+) -> list[Path]:
+    """Generate selected palettes and return their output paths.
+
+    ``simple_names`` is intended for release artifacts.  It keeps the normal
+    descriptive filenames unchanged while allowing a release wrapper to emit
+    short, stable names for the fixed five-palette distribution.
+    """
 
     config.validate()
     # Keep the model's configured neutral Y for ordinary palettes.  The
@@ -361,7 +371,9 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
             ordinary_config,
             center_color=PUBLISHED_CENTER_ACESCG,
         )
-        output_path = output_path_for_gamut(ordinary_config, gamut)
+        output_path = output_path_for_gamut(
+            ordinary_config, gamut, simple_name=simple_names
+        )
         write_float_rgb_exr(
             output_path, image, gamut_name, ordinary_config, result.statistics
         )
@@ -487,6 +499,7 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
                 source_y,
                 intermediate_anchor=fit.intermediate_anchor,
                 fit_mode=fit.diagnostics.fit_mode,
+                simple_name=simple_names,
             )
             write_float_rgb_exr(
                 output_path,
@@ -530,6 +543,81 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
         print("Ordinary variants have no display transform baked in.")
         print("Ordinary palette gamut cones have no upper RGB bound.")
     return paths
+
+
+def generate_release(
+    config_path: str | Path = Path("config.release.toml"),
+    *,
+    output_dir: str | Path | None = None,
+    verbose: bool = True,
+) -> list[Path]:
+    """Generate the fixed five-palette release set.
+
+    The release configuration intentionally remains a TOML file so the exact
+    release settings are reviewable and reproducible.  Release output uses
+    short names selected by :func:`generate`, while ordinary invocations keep
+    their descriptive setting-bearing names.
+    """
+
+    config = load_config(config_path)
+    if output_dir is not None:
+        config = replace(
+            config,
+            output=replace(config.output, output_dir=Path(output_dir)),
+        )
+    expected_profiles = ("srgb_rec709_bt1886", "p3_rec2020_pq")
+    if config.output.selected_gamuts != GAMUT_NAMES:
+        raise ValueError(
+            "Release configuration must select sRGB-D65, P3-D65, and ACEScg/AP1-D60."
+        )
+    if not config.compensation.enabled:
+        raise ValueError("Release configuration must enable compensation.")
+    if config.compensation.profiles != expected_profiles:
+        raise ValueError(
+            "Release configuration must select the sRGB and P3 release profiles."
+        )
+
+    paths = generate(config, verbose=verbose, simple_names=True)
+    if len(paths) != 5:
+        raise RuntimeError(
+            f"Release generation produced {len(paths)} palettes; expected exactly 5."
+        )
+    names = [path.name for path in paths]
+    if len(set(names)) != len(names):
+        raise RuntimeError("Release generation produced duplicate output names.")
+    if any(len(path.stem.split("_")) > 3 for path in paths):
+        raise RuntimeError("Release output names must contain at most three segments.")
+    return paths
+
+
+def release_main(argv: Sequence[str] | None = None) -> int:
+    """CLI wrapper for :func:`generate_release`."""
+
+    parser = argparse.ArgumentParser(
+        prog="make_release.py",
+        description="Generate the five-palette modCAM16-HK release set.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config.release.toml"),
+        help="release TOML configuration (default: config.release.toml)",
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--quiet", action="store_true", help="suppress generation diagnostics")
+    args = parser.parse_args(argv)
+    try:
+        paths = generate_release(
+            args.config,
+            output_dir=args.output_dir,
+            verbose=not args.quiet,
+        )
+    except (TypeError, ValueError, RuntimeError, OSError) as exc:
+        raise SystemExit(f"error: {exc}") from exc
+    if args.quiet:
+        for path in paths:
+            print(path)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -11,6 +11,7 @@ from .aces_jmh import (
     xyz_to_aces_j,
 )
 from .cam16_hk import AppearanceModel
+from .cli import generate_release
 from .colorchecker import (
     COLORCHECKER_ASSIGNMENT_POLICY,
     COMPENSATED_COLORCHECKER_ASSIGNMENT_POLICY,
@@ -110,6 +111,7 @@ __all__ = [
     "fit_compensation_anchor",
     "fit_profile",
     "fit_profile_anchor",
+    "generate_release",
     "init_jmh_params",
     "jmh_to_cartesian",
     "load_compensation_processor",

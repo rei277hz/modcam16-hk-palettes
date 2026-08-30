@@ -69,7 +69,7 @@ candidate is evaluated over the same exposure grid, sent through the selected
 forward view, and compared with the fixed D65 targets in normalized Cartesian
 ACES `JMh`.  Each patch is matched independently, so a candidate location may
 be reused.  The built-in ColorChecker marker grid is inclusive `-5` to `+5`
-stops in `0.25`-stop increments (41 samples) for both palette kinds.
+stops in `0.1`-stop increments (101 samples) for both palette kinds.
 
 The grid can be tuned with the `colorchecker.compensated_marker_exposure_*`
 TOML keys (or the neutral `colorchecker.exposure_*` aliases) and the
@@ -147,6 +147,24 @@ Generation prints the solved model, gamut-boundary, ColorChecker, and (when
 enabled) ACES compensation diagnostics.  A full-resolution continuous-boundary
 run can take substantially longer than the small example above.
 
+## Release Build
+
+The checked-in `config.release.toml` is byte-for-byte identical to
+`config.example.toml` and is the reproducible five-palette release input.  Run
+the release entry point to generate all three direct palettes and the two
+configured ACES 2.0 variants:
+
+```sh
+python3 make_release.py
+```
+
+The same function is available as `modcam16_palette.generate_release()` and
+the installed `modcam16-palette-release` command.  Release files use the short
+names `sRGB_Direct_Palette.exr`, `P3_Direct_Palette.exr`,
+`AP1_Direct_Palette.exr`, `sRGB_ACES2_SDR.exr`, and `P3_ACES2_HDR.exr`; each
+name has no more than three underscore-separated segments.  Use
+`--output-dir` to place the set in another directory.
+
 ## Configuration
 
 Configuration is read from TOML first; explicit command-line values override
@@ -163,28 +181,27 @@ gamuts = ["ap1"]
 enabled = false
 ```
 
-The example file is intentionally an example, not a dump of
-`default_config()`.  For example, it asks for 48 hues and 12 chroma levels,
-uses a six-pixel ColorChecker dot, and supplies its own compensated companding
-and marker-grid values.  Values omitted from a TOML file retain the
-built-in defaults.  Useful built-in palette defaults are:
+The example file is the canonical release configuration and its values are
+the built-in defaults.  Values omitted from a TOML file retain those same
+defaults.  Useful built-in palette defaults are:
 
 | Setting | Default |
 | --- | ---: |
 | Reference white | 200 nits |
-| Hue sectors | 36 |
-| Complete chroma levels | 10 |
-| Ordinary companding `k` (sRGB / P3 / AP1) | 10 / 12 / 15 |
+| Hue sectors | 48 |
+| Complete chroma levels | 12 |
+| Ordinary companding `k` (sRGB / P3 / AP1) | 12 / 13 / 15 |
 | Cap height | 0.5 of a full block |
 | sRGB boundary rectangles | enabled |
 | P3 boundary rectangles | disabled |
-| ColorChecker dots | enabled, official-after-2014 data |
-| Compensation fitting | automatic, `-2..+2` stops at `0.5` stop |
-| Compensated companding `k` (sRGB / P3) | 2.5 / 4.0 |
+| ColorChecker dots | enabled, official-after-2014 data, 6-pixel radius |
+| ColorChecker matching grid | `-5..+5` stops at `0.1` stop (101 samples) |
+| Compensation fitting | automatic, `-3..0` stops at `0.5` stop |
+| Compensated companding `k` (sRGB / P3) | 2.0 / 20.0 |
 
 The numeric `target_intermediate_center` is retained for manual/legacy
 compensation.  In the default `fit_mode = "auto"`, one anchor is fitted per
-profile from the nine exposure samples `-2, -1.5, ..., 2` stops.  Set
+profile from the seven exposure samples `-3, -2.5, ..., 0` stops.  Set
 `fit_mode = "manual"` (or use `--compensation-fit-mode manual`) to use the
 explicit anchor instead.
 
@@ -291,9 +308,8 @@ The implementation was checked against the supplied papers and the maintained
   constant term.  Those entries are treated as an apparent
   typesetting/source inconsistency: the retained `0.1475` coefficient and a
   single `+1` agree with the maintained `colour-science` Hellwig code and are
-  locked by regression tests here.  Numerical behavior is intentionally not
-  changed by this documentation audit; no public API, CLI option, or output
-  schema is changed.
+  locked by regression tests here.  The release defaults and the documented
+  ColorChecker exposure-matching API are covered by regression tests.
 
 ## References
 

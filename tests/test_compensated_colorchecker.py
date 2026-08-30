@@ -51,10 +51,10 @@ def _matching_inputs(candidate_count=1):
 def test_compensated_marker_grid_is_inclusive_and_configurable():
     config = default_config()
     stops = config.colorchecker.compensated_marker_exposure_stops
-    assert len(stops) == 41
+    assert len(stops) == 101
     assert stops[0] == -5.0
     assert stops[-1] == 5.0
-    assert np.allclose(np.diff(stops), 0.25)
+    assert np.allclose(np.diff(stops), 0.1)
 
     invalid = replace(
         config,

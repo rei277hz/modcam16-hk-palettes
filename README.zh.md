@@ -53,7 +53,7 @@ Q_HK = (2 / c) (J_HK / 100) A_W
 普通 ColorChecker 点在源修订版 modCAM16-HK 饱和度/色相空间中通过曝光扫描分配；普通匹配不使用 ACES。
 补偿点在固定逆视图颜色后分配：每个候选点使用同一曝光网格评估，经过所选正向视图变换，然后在归一化的笛卡尔 ACES `JMh` 中与固定 D65 目标比较。
 每个色块独立匹配，因此候选位置可以重复使用。
-内置的 ColorChecker 标记网格对两种调色板都包含从 `-5` 到 `+5` 档、步长为 `0.25` 档的所有值（41 个样本）。
+内置的 ColorChecker 标记网格对两种调色板都包含从 `-5` 到 `+5` 档、步长为 `0.1` 档的所有值（101 个样本）。
 
 可以使用 `colorchecker.compensated_marker_exposure_*` TOML 键（或中性的 `colorchecker.exposure_*` 别名）以及对应的 CLI 标志调整网格。
 辅助脚本 [`scripts/analyze_compensated_cc18_grid.py`](scripts/analyze_compensated_cc18_grid.py) 将配置的网格与更细的参考网格进行比较。
@@ -119,6 +119,20 @@ python3 make_modcam16-hk_palettes4.0.py \
 生成过程会打印求解得到的模型、色域边界、ColorChecker 以及（启用时）ACES 补偿诊断信息。
 完整分辨率的连续边界运行可能比上面的小示例耗时显著更长。
 
+## 发布构建
+
+签入的 `config.release.toml` 与 `config.example.toml` 按字节完全相同，并作为可复现的五调色板发布输入。
+运行发布入口会生成全部 3 个直接调色板和配置的 2 个 ACES 2.0 变体：
+
+```sh
+python3 make_release.py
+```
+
+同一个函数也可通过 `modcam16_palette.generate_release()` 和已安装的 `modcam16-palette-release` 命令使用。
+发布文件使用短名称 `sRGB_Direct_Palette.exr`、`P3_Direct_Palette.exr`、
+`AP1_Direct_Palette.exr`、`sRGB_ACES2_SDR.exr` 和 `P3_ACES2_HDR.exr`；每个名称最多包含 3 个下划线分隔段。
+使用 `--output-dir` 可将文件放到其他目录。
+
 ## 配置
 
 配置首先从 TOML 读取；显式的命令行值会覆盖它。
@@ -134,26 +148,26 @@ gamuts = ["ap1"]
 enabled = false
 ```
 
-示例文件有意作为示例，而不是 `default_config()` 的转储。
-例如，它要求 48 个色相和 12 个色度等级，使用六像素的 ColorChecker 点，并提供自己的补偿压缩和标记网格值。
-TOML 文件中省略的值会保留内置默认值。
+示例文件是规范的发布配置，其中的值就是内置默认值。
+TOML 文件中省略的值会保留这些默认值。
 内置调色板默认值如下：
 
 | 设置 | 默认值 |
 | --- | ---: |
 | 参考白 | 200 nit |
-| 色相扇区 | 36 |
-| 完整色度等级 | 10 |
-| 普通压缩 `k`（sRGB / P3 / AP1） | 10 / 12 / 15 |
+| 色相扇区 | 48 |
+| 完整色度等级 | 12 |
+| 普通压缩 `k`（sRGB / P3 / AP1） | 12 / 13 / 15 |
 | 边界帽高度 | 一个完整色块的 0.5 |
 | sRGB 边界矩形 | 启用 |
 | P3 边界矩形 | 禁用 |
-| ColorChecker 点 | 启用，使用 official-after-2014 数据 |
-| 补偿拟合 | 自动，`-2..+2` 档，步长 `0.5` 档 |
-| 补偿压缩 `k`（sRGB / P3） | 2.5 / 4.0 |
+| ColorChecker 点 | 启用，使用 official-after-2014 数据，半径 6 像素 |
+| ColorChecker 匹配网格 | `-5..+5` 档，步长 `0.1` 档（101 个样本） |
+| 补偿拟合 | 自动，`-3..0` 档，步长 `0.5` 档 |
+| 补偿压缩 `k`（sRGB / P3） | 2.0 / 20.0 |
 
 数值型 `target_intermediate_center` 会为手动/旧版补偿保留。
-在默认的 `fit_mode = "auto"` 中，每个配置文件根据 9 个曝光样本 `-2, -1.5, ..., 2` 档拟合一个锚点。
+在默认的 `fit_mode = "auto"` 中，每个配置文件根据 7 个曝光样本 `-3, -2.5, ..., 0` 档拟合一个锚点。
 将 `fit_mode = "manual"`（或使用 `--compensation-fit-mode manual`）设为手动模式即可使用显式锚点。
 
 规范的补偿配置文件 ID 是 `srgb_rec709_bt1886`（ACES 2.0 SDR 100 nit Rec.709，带 BT.1886 诊断）和 `p3_rec2020_pq`（ACES 2.0 HDR 1000 nit Rec.2020，带 Rec.2100-PQ 诊断）。
@@ -237,7 +251,7 @@ modCAM16HK_<white>nit_<gamut>GamutCone_C3_<levels>Step_LogK<k>_Cap<height>_<mark
 - XCR 表中展示的修订版 CAM16 项与实现一致：修正后的偏心率 `e_t`、`M = 43 N_c e_t sqrt(a^2 + b^2)`、`C = 35 M / A_W`、`s = 100 M / Q`、`J = 100 (A/A_W)^(c z)` 以及 `Q = (2/c) (J/100) A_W`。
 - 调色板栅格化、径向环和边界帽几何、色域边界求解、ColorChecker 放置以及 ACES 逆视图补偿都是本项目的扩展。该仓库不声称实现完整的 XCR 工具包或所有 XCR 分析和可视化功能。
 - 2022 年的加法模型 `J_HK = J + f(h) C^0.587` 属于相关工作，并不是这些调色板使用的模型。
-- XCR 表 1 打印了 `0.1457` 的正弦系数，而且似乎重复了常数项。我们将这些条目视为排版/源材料不一致：保留的 `0.1475` 系数和单个 `+1` 与维护中的 `colour-science` Hellwig 代码一致，并由此处的回归测试锁定。本次文档审计不会改变数值行为；不会改变公共 API、CLI 选项或输出模式。
+- XCR 表 1 打印了 `0.1457` 的正弦系数，而且似乎重复了常数项。我们将这些条目视为排版/源材料不一致：保留的 `0.1475` 系数和单个 `+1` 与维护中的 `colour-science` Hellwig 代码一致，并由此处的回归测试锁定。发布默认值和文档化的 ColorChecker 曝光匹配 API 也由回归测试覆盖。
 
 ## 参考资料
 

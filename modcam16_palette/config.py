@@ -97,14 +97,14 @@ COMPENSATION_PROFILE_CHOICES = COMPENSATION_PROFILE_NAMES + COMPENSATION_PROFILE
 DEFAULT_OCIO_CONFIG_PATH = Path("cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio")
 
 # Compensation palettes are compared after an ACES 2.0 output transform.  The
-# output transform changes the perceived spacing of the source rings, so they
-# use a less aggressive logarithmic progression than the ordinary palettes.
-# The defaults are calibrated reference values, not a claim that one k is
-# optimal for every display, view transform, or number of rings.
+# output transform changes the perceived spacing of the source rings, so their
+# companding values remain independent from the ordinary palette values.  The
+# defaults below are the release reference values; they are not a claim that
+# one k is optimal for every display, view transform, or number of rings.
 # Keep these independent from PaletteConfig: changing a compensated variant
 # must not silently change an ordinary/legacy output file.
-DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K = 2.5
-DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K = 4.0
+DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K = 2.0
+DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K = 20.0
 # Published palette centers are an ACEScg white patch.  This is deliberately
 # separate from the CAM16 model's neutral-Y reference, which may be different
 # for a source palette used by an inverse-view compensation profile.
@@ -165,10 +165,10 @@ class SolverConfig:
 
 @dataclass(frozen=True)
 class PaletteConfig:
-    hue_count: int = 36
-    chroma_level_count: int = 10
-    srgb_chroma_companding_k: float = 10.0
-    p3_chroma_companding_k: float = 12.0
+    hue_count: int = 48
+    chroma_level_count: int = 12
+    srgb_chroma_companding_k: float = 12.0
+    p3_chroma_companding_k: float = 13.0
     ap1_chroma_companding_k: float = 15.0
     cap_relative_height: float = 0.5
     c3_reference_domain: str = "continuous"
@@ -207,7 +207,7 @@ class ColorCheckerConfig:
     dataset: str = "official_after_2014"
     adaptation_method: str = "CAT02"
     include_caps_in_matching: bool = True
-    dot_radius_pixels: float = 5.0
+    dot_radius_pixels: float = 6.0
     # Exposure sampling used by ColorChecker matching for both ordinary/direct
     # and ACES 2.0 compensated palettes.  Keep this independent from the
     # compensation anchor-fitting grid: marker matching asks which stored
@@ -216,7 +216,7 @@ class ColorCheckerConfig:
     # ``compensated_marker_*`` names are retained for TOML/API compatibility.
     compensated_marker_exposure_min_stops: float = -5.0
     compensated_marker_exposure_max_stops: float = 5.0
-    compensated_marker_exposure_step_stops: float = 0.25
+    compensated_marker_exposure_step_stops: float = 0.1
 
     @property
     def compensated_marker_exposure_stops(self) -> tuple[float, ...]:
@@ -241,7 +241,7 @@ class ColorCheckerConfig:
                 "ColorChecker marker exposure span must be an integer multiple of step."
             )
         # linspace makes the requested upper endpoint exact despite binary
-        # floating-point representation of quarter-stop increments.
+        # floating-point representation of fractional-stop increments.
         return tuple(
             float(value)
             for value in np.linspace(
@@ -294,8 +294,8 @@ class CompensationConfig:
     # New fitting controls follow the legacy fields so positional construction
     # by older callers keeps its original meaning.
     fit_mode: str = "auto"
-    exposure_min_stops: float = -2.0
-    exposure_max_stops: float = 2.0
+    exposure_min_stops: float = -3.0
+    exposure_max_stops: float = 0.0
     exposure_step_stops: float = 0.5
     anchor_search_tolerance: float = 1.0e-3
     anchor_search_max_iterations: int = 12

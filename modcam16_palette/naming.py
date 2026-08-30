@@ -13,6 +13,19 @@ from .config import (
     _normalize_compensation_profile_name,
 )
 
+# Release artifacts intentionally use short, stable names.  Keep each stem to
+# at most three underscore-delimited segments so the five files are easy to
+# identify in file browsers and downstream delivery scripts.
+RELEASE_DIRECT_FILENAMES = {
+    "sRGB-D65": "sRGB_Direct_Palette.exr",
+    "P3-D65": "P3_Direct_Palette.exr",
+    "ACEScg/AP1-D60": "AP1_Direct_Palette.exr",
+}
+RELEASE_COMPENSATED_FILENAMES = {
+    "srgb_rec709_bt1886": "sRGB_ACES2_SDR.exr",
+    "p3_rec2020_pq": "P3_ACES2_HDR.exr",
+}
+
 
 def filename_number_tag(value: float) -> str:
     text = f"{float(value):.12g}"
@@ -46,7 +59,18 @@ def make_layout_filename_tag(config: Config, companding_k: float) -> str:
     )
 
 
-def output_path_for_gamut(config: Config, gamut: GamutMatrices) -> Path:
+def output_path_for_gamut(
+    config: Config,
+    gamut: GamutMatrices,
+    *,
+    simple_name: bool = False,
+) -> Path:
+    if simple_name:
+        try:
+            filename = RELEASE_DIRECT_FILENAMES[gamut.name]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported release gamut: {gamut.name}") from exc
+        return config.output.output_dir / filename
     tag = filename_number_tag(config.appearance.reference_white_luminance_nits)
     companding_k = config.palette.companding_by_gamut[gamut.name]
     if gamut.name == "sRGB-D65":
@@ -73,6 +97,7 @@ def output_path_for_compensation(
     *,
     intermediate_anchor: float | None = None,
     fit_mode: str | None = None,
+    simple_name: bool = False,
 ) -> Path:
     """Build a distinct filename for an ACES 2.0 compensated palette."""
 
@@ -92,6 +117,14 @@ def output_path_for_compensation(
             f"Compensation profile {profile.name} targets {profile.source_gamut}, "
             f"not {gamut.name}."
         )
+    if simple_name:
+        try:
+            filename = RELEASE_COMPENSATED_FILENAMES[profile.name]
+        except KeyError as exc:
+            raise ValueError(
+                f"Unsupported release compensation profile: {profile.name}"
+            ) from exc
+        return config.output.output_dir / filename
     if not math.isfinite(float(source_y)) or float(source_y) <= 0.0:
         raise ValueError("source_y must be finite and positive.")
     white_tag = filename_number_tag(config.appearance.reference_white_luminance_nits)

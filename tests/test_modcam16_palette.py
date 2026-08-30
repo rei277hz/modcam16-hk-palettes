@@ -119,10 +119,10 @@ def test_small_palette_renders_exact_center():
     )
 
 
-def test_compensated_companding_defaults_are_independent_and_milder():
+def test_release_companding_defaults_are_independent():
     config = default_config()
-    assert config.compensation.srgb_chroma_companding_k == 2.5
-    assert config.compensation.p3_chroma_companding_k == 4.0
+    assert config.compensation.srgb_chroma_companding_k == 2.0
+    assert config.compensation.p3_chroma_companding_k == 20.0
     assert (
         config.compensation.srgb_chroma_companding_k
         == DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K
@@ -131,16 +131,8 @@ def test_compensated_companding_defaults_are_independent_and_milder():
         config.compensation.p3_chroma_companding_k
         == DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K
     )
-    assert (
-        config.compensation.srgb_chroma_companding_k
-        < config.palette.srgb_chroma_companding_k
-    )
-    assert (
-        config.compensation.p3_chroma_companding_k
-        < config.palette.p3_chroma_companding_k
-    )
-    assert config.palette.srgb_chroma_companding_k == 10.0
-    assert config.palette.p3_chroma_companding_k == 12.0
+    assert config.palette.srgb_chroma_companding_k == 12.0
+    assert config.palette.p3_chroma_companding_k == 13.0
 
 
 def test_compensation_companding_toml_aliases_and_filename():
@@ -209,7 +201,9 @@ def test_additional_gamut_constraint_shrinks_p3_boundary_in_modcam16_hk():
     assert np.all(constrained_rgb >= -config.solver.rendered_gamut_epsilon)
 
     cap_count = config.palette.hue_count
-    hue_30_cap = -cap_count + 3
+    hue_step = 360.0 / cap_count
+    hue_30_index = round(30.0 / hue_step)
+    hue_30_cap = -cap_count + hue_30_index
     assert (
         constrained.palette_chroma[hue_30_cap]
         < unconstrained.palette_chroma[hue_30_cap]
@@ -296,7 +290,7 @@ def test_compensation_toml_aliases_and_disable(tmp_path):
 def test_default_output_names_are_stable():
     config = default_config()
     assert output_path_for_gamut(config, GAMUT_MATRICES["ACEScg/AP1-D60"]).name == (
-        "modCAM16HK_200nit_AP1GamutCone_C3_10Step_LogK15_Cap0p5_"
+        "modCAM16HK_200nit_AP1GamutCone_C3_12Step_LogK15_Cap0p5_"
         "sRGBRectMarkers_CC18OfficialDots_ACEScg_Radial_32f.exr"
     )
 
@@ -384,7 +378,7 @@ def test_ocio_compensation_profiles_and_foreground_ownership(tmp_path):
         source_y,
     )
     assert "ACES2InvODT_Rec709BT1886" in path.name
-    assert "LogK2p5" in path.name
+    assert "LogK2" in path.name
 
 
 def test_ocio_processor_rejects_malformed_rgb_shapes():
