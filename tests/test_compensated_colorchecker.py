@@ -4,10 +4,13 @@ import numpy as np
 import pytest
 
 from modcam16_palette.aces_jmh import jmh_to_cartesian
+from modcam16_palette.cam16_hk import AppearanceModel
 from modcam16_palette.cli import _overrides_from_args, _parser
 from modcam16_palette.colorchecker import (
     COMPENSATED_COLORCHECKER_MATCHING_MODE,
+    DIRECT_COLORCHECKER_MATCHING_MODE,
     build_compensated_colorchecker_marker_assignments,
+    build_direct_colorchecker_marker_assignments,
     get_colorchecker_targets,
 )
 from modcam16_palette.config import default_config
@@ -165,6 +168,52 @@ def test_compensated_matching_allows_candidate_reuse_across_patches():
     assert not np.any(caps)
     assert unique == 1
     assert "candidate locations may be reused" in metadata["colorchecker_assignment_policy"]
+
+
+def test_direct_matching_uses_modcam16_exposure_sweep_without_aces():
+    """Direct matching searches exposure in source CAM16, not ACES JMh."""
+
+    base_config = default_config()
+    cc = replace(
+        base_config.colorchecker,
+        compensated_marker_exposure_min_stops=-1.0,
+        compensated_marker_exposure_max_stops=1.0,
+        compensated_marker_exposure_step_stops=1.0,
+        include_caps_in_matching=False,
+    )
+    model = AppearanceModel.from_config(base_config.appearance)
+    targets = get_colorchecker_targets(cc, model)
+
+    # Put the candidate one stop below the first fixed target.  Omitting the
+    # optional XYZ argument exercises the legacy reconstruction path; the
+    # winning +1 EV sample should recover the target in source CAM16.
+    candidate_xyz = targets.xyz_d65[:1] / 2.0
+    candidate_appearance = model.xyz_d65_to_attributes(candidate_xyz)
+    full, caps, assignments, unique, metadata = (
+        build_direct_colorchecker_marker_assignments(
+            candidate_appearance,
+            candidate_appearance["C"],
+            1.0,
+            np.array([0.5]),
+            np.array([0], dtype=np.int64),
+            np.array([0], dtype=np.int64),
+            np.array([0.0]),
+            model,
+            cc,
+        )
+    )
+
+    assert assignments[0]["matching_mode"] == DIRECT_COLORCHECKER_MATCHING_MODE
+    assert assignments[0]["ev_stops"] == 1.0
+    assert assignments[0]["distance"] < 1.0e-6
+    assert metadata["colorchecker_candidate_count"] == 1
+    assert metadata["colorchecker_exposure_sample_count"] == 3
+    assert metadata["colorchecker_evaluation_count"] == 18 * 1 * 3
+    assert "ACES" not in str(metadata["colorchecker_matching_mode"])
+    assert "ACES" not in str(metadata["colorchecker_distance_metric"])
+    assert full[0, 0]
+    assert not np.any(caps)
+    assert unique == 1
 
 
 def test_compensated_targets_remain_fixed_d65_xyz():

@@ -208,18 +208,19 @@ class ColorCheckerConfig:
     adaptation_method: str = "CAT02"
     include_caps_in_matching: bool = True
     dot_radius_pixels: float = 5.0
-    # Exposure sampling used only when matching CC18 markers on an ACES 2.0
-    # compensated palette.  Keep this independent from the compensation
-    # anchor-fitting grid: marker matching asks which stored palette cell is
-    # closest after the forward view transform, while anchor fitting asks how
-    # to normalize the palette itself.
+    # Exposure sampling used by ColorChecker matching for both ordinary/direct
+    # and ACES 2.0 compensated palettes.  Keep this independent from the
+    # compensation anchor-fitting grid: marker matching asks which stored
+    # palette cell is closest over an exposure sweep, while anchor fitting
+    # asks how to normalize the compensated palette itself.  The longer
+    # ``compensated_marker_*`` names are retained for TOML/API compatibility.
     compensated_marker_exposure_min_stops: float = -5.0
     compensated_marker_exposure_max_stops: float = 5.0
     compensated_marker_exposure_step_stops: float = 0.25
 
     @property
     def compensated_marker_exposure_stops(self) -> tuple[float, ...]:
-        """Return the inclusive compensated-marker exposure sample grid."""
+        """Return the inclusive ColorChecker marker exposure sample grid."""
 
         span = (
             float(self.compensated_marker_exposure_max_stops)
@@ -232,12 +233,12 @@ class ColorCheckerConfig:
             or step <= 0.0
             or span <= 0.0
         ):
-            raise ValueError("Invalid compensated-marker exposure grid.")
+            raise ValueError("Invalid ColorChecker marker exposure grid.")
         ratio = span / step
         count = round(ratio)
         if count < 1 or not np.isclose(ratio, count, atol=1.0e-9, rtol=0.0):
             raise ValueError(
-                "Compensated-marker exposure span must be an integer multiple of step."
+                "ColorChecker marker exposure span must be an integer multiple of step."
             )
         # linspace makes the requested upper endpoint exact despite binary
         # floating-point representation of quarter-stop increments.
@@ -250,6 +251,12 @@ class ColorCheckerConfig:
                 dtype=np.float64,
             )
         )
+
+    @property
+    def marker_exposure_stops(self) -> tuple[float, ...]:
+        """Neutral alias for the ColorChecker exposure sweep grid."""
+
+        return self.compensated_marker_exposure_stops
 
 
 @dataclass(frozen=True)
@@ -768,6 +775,13 @@ def config_from_mapping(
         "colorchecker": {
             "include_caps": "include_caps_in_matching",
             "dot_radius": "dot_radius_pixels",
+            # Neutral names apply to both direct and compensated palettes.
+            "exposure_min": "compensated_marker_exposure_min_stops",
+            "exposure_max": "compensated_marker_exposure_max_stops",
+            "exposure_step": "compensated_marker_exposure_step_stops",
+            "marker_exposure_min_stops": "compensated_marker_exposure_min_stops",
+            "marker_exposure_max_stops": "compensated_marker_exposure_max_stops",
+            "marker_exposure_step_stops": "compensated_marker_exposure_step_stops",
             "compensated_exposure_min": "compensated_marker_exposure_min_stops",
             "compensated_exposure_max": "compensated_marker_exposure_max_stops",
             "compensated_exposure_step": "compensated_marker_exposure_step_stops",

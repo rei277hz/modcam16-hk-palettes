@@ -1,4 +1,5 @@
-# All values shown here match the built-in defaults.
+# Complete example configuration. Some values are illustrative and differ
+# from the built-in defaults; omitted settings use those defaults.
 
 [appearance]
 reference_white_luminance_nits = 200.0
@@ -28,8 +29,8 @@ hue_validation_minimum_c = 1.0e-8
 [palette]
 hue_count = 48
 chroma_level_count = 12
-srgb_chroma_companding_k = 10.0
-p3_chroma_companding_k = 12.0
+srgb_chroma_companding_k = 12.0
+p3_chroma_companding_k = 13.0
 ap1_chroma_companding_k = 15.0
 cap_relative_height = 0.5
 c3_reference_domain = "continuous"
@@ -48,8 +49,9 @@ dataset = "official_after_2014"
 adaptation_method = "CAT02"
 include_caps_in_matching = true
 dot_radius_pixels = 6.0
-# Compensated CC18 markers search the stored candidate colors over this
-# inclusive EV grid after the selected ACES 2.0 forward view transform.
+# Direct and compensated CC18 markers search candidates over this shared
+# inclusive EV grid. Direct matching stays in modCAM16-HK; compensated
+# matching additionally uses the selected ACES 2.0 forward view transform.
 compensated_marker_exposure_min_stops = -5.0
 compensated_marker_exposure_max_stops = 5.0
 compensated_marker_exposure_step_stops = 0.1
@@ -92,5 +94,5 @@ anchor_search_initial_step_stops = 1.0
 anchor_search_max_stops = 8.0
 # Compensated palettes use independent, milder companding so their displayed
 # rings retain useful saturation after the ACES 2.0 inverse-view transform.
-srgb_chroma_companding_k = 2.5
+srgb_chroma_companding_k = 2.0
 p3_chroma_companding_k = 20.0

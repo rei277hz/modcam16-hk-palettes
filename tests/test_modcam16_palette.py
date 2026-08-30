@@ -3,7 +3,7 @@ from dataclasses import replace
 import numpy as np
 
 from modcam16_palette.aces_jmh import params_for_profile
-from modcam16_palette.cam16_hk import AppearanceModel
+from modcam16_palette.cam16_hk import AppearanceModel, hellwig_eccentricity_factor
 from modcam16_palette.cli import generate
 from modcam16_palette.colorimetry import GAMUT_MATRICES, XYZ_D65_TO_ACESCG
 from modcam16_palette.config import (
@@ -69,6 +69,35 @@ def test_neutral_appearance_and_inverse():
         XYZ_D65_TO_ACESCG @ model.reference_neutral_xyz_d65,
         np.ones(3),
         atol=8.0e-6,
+        rtol=0.0,
+    )
+
+
+def test_hk_equations_and_eccentricity_coefficient_regression():
+    """Keep the published H-K equations and Hellwig eccentricity stable."""
+
+    config = default_config()
+    model = AppearanceModel.from_config(config.appearance)
+    chroma = np.array([0.0, 20.0], dtype=np.float64)
+    hue = np.array([0.0, 90.0], dtype=np.float64)
+    xyz = model.chroma_hue_to_xyz_d65(chroma, hue)
+    attributes = model.xyz_d65_to_attributes(xyz)
+
+    assert config.appearance.hk_chroma_coefficient == 66.0
+    expected_j_hk = np.sqrt(attributes["J"] ** 2 + 66.0 * attributes["C"])
+    expected_q_hk = (
+        2.0 / config.appearance.surround_c * (expected_j_hk / 100.0) * model.cam_a_w
+    )
+    assert np.allclose(attributes["J_HK"], expected_j_hk, atol=1.0e-12, rtol=0.0)
+    assert np.allclose(attributes["Q_HK"], expected_q_hk, atol=1.0e-12, rtol=0.0)
+
+    # At h=90 degrees the Fourier terms reduce to 1 + 0.0258 + 0.0289
+    # - 0.1475 - 0.0385 = 0.8687.  This guards the retained source value
+    # against the 0.1457 transcription found in the XCR table.
+    assert np.isclose(
+        hellwig_eccentricity_factor(np.array([90.0]))[0],
+        0.8687,
+        atol=1.0e-12,
         rtol=0.0,
     )
 

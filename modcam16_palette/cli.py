@@ -85,25 +85,34 @@ def _parser() -> argparse.ArgumentParser:
         "--colorchecker-compensated-exposure-min",
         "--colorchecker-compensated-exposure-min-stops",
         "--compensated-marker-exposure-min",
+        "--colorchecker-exposure-min",
+        "--colorchecker-exposure-min-stops",
+        "--colorchecker-marker-exposure-min",
         dest="colorchecker_compensated_exposure_min",
         type=float,
-        help="minimum exposure sample for compensated CC18 matching (stops)",
+        help="minimum exposure sample for ColorChecker matching (stops)",
     )
     parser.add_argument(
         "--colorchecker-compensated-exposure-max",
         "--colorchecker-compensated-exposure-max-stops",
         "--compensated-marker-exposure-max",
+        "--colorchecker-exposure-max",
+        "--colorchecker-exposure-max-stops",
+        "--colorchecker-marker-exposure-max",
         dest="colorchecker_compensated_exposure_max",
         type=float,
-        help="maximum exposure sample for compensated CC18 matching (stops)",
+        help="maximum exposure sample for ColorChecker matching (stops)",
     )
     parser.add_argument(
         "--colorchecker-compensated-exposure-step",
         "--colorchecker-compensated-exposure-step-stops",
         "--compensated-marker-exposure-step",
+        "--colorchecker-exposure-step",
+        "--colorchecker-exposure-step-stops",
+        "--colorchecker-marker-exposure-step",
         dest="colorchecker_compensated_exposure_step",
         type=float,
-        help="exposure spacing for compensated CC18 matching (stops)",
+        help="exposure spacing for ColorChecker matching (stops)",
     )
     parser.add_argument(
         "--compensation",
@@ -509,7 +518,7 @@ def generate(config: Config, *, verbose: bool = True) -> list[Path]:
         print("Every hue has a thin gamut-boundary cap.")
         if config.colorchecker.enabled:
             print(
-                "Ordinary ColorChecker dots use source saturation/hue; compensated dots use exposure-aware post-view ACES JMh matching."
+                "Direct ColorChecker dots use exposure-aware source modCAM16 matching; compensated dots use exposure-aware post-view ACES JMh matching."
             )
         if eligible_profiles:
             print(

@@ -6,6 +6,10 @@ import math
 
 import numpy as np
 
+from .colorchecker import (
+    COMPENSATED_COLORCHECKER_MATCHING_MODE,
+    DIRECT_COLORCHECKER_MATCHING_MODE,
+)
 from .config import Config
 from .palette import PaletteResult
 
@@ -64,11 +68,19 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
     matching_mode = stats.get(
         "colorchecker_matching_mode", "source CAM16 saturation/hue"
     )
-    if matching_mode == "post-view ACES JMh exposure":
-        print(
-            "  Metric: Euclidean normalized Cartesian ACES JMh after the "
-            "forward view transform"
-        )
+    is_compensated = matching_mode == COMPENSATED_COLORCHECKER_MATCHING_MODE
+    is_exposure = is_compensated or matching_mode == DIRECT_COLORCHECKER_MATCHING_MODE
+    if is_exposure:
+        if is_compensated:
+            print(
+                "  Metric: Euclidean normalized Cartesian ACES JMh after the "
+                "forward view transform"
+            )
+        else:
+            print(
+                "  Metric: Euclidean source modCAM16 saturation/hue distance; "
+                "brightness excluded"
+            )
         print(
             "  Assignment: independent closest-distance match per patch; "
             "candidate locations may be reused"
@@ -96,7 +108,7 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
             )
         else:
             location_text = "boundary cap"
-        if matching_mode == "post-view ACES JMh exposure":
+        if is_compensated:
             print(
                 f"  {assignment['patch_name']:<16} -> {location_text}, "
                 f"sector={assignment['palette_sector_hue']:6.1f}°, "
@@ -112,6 +124,16 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
                 f"{assignment['candidate_M']:.3f}, "
                 f"{assignment['candidate_post_view_hue']:.2f}°); "
                 f"d={assignment['distance']:.6f}"
+            )
+        elif is_exposure:
+            print(
+                f"  {assignment['patch_name']:<16} "
+                f"target h={assignment['target_hue']:7.2f}°, s={assignment['target_saturation']:8.3f} "
+                f"-> {location_text}, sector={assignment['palette_sector_hue']:6.1f}°, "
+                f"C/C3={assignment['candidate_relative_chroma']:7.3%}, "
+                f"match h={assignment['candidate_exposure_hue']:7.2f}°, "
+                f"s={assignment['candidate_exposure_saturation']:8.3f}, "
+                f"d={assignment['distance']:.4f}, EV={assignment['ev_stops']:+.2f}"
             )
         else:
             print(

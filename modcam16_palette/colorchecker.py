@@ -230,6 +230,369 @@ def circular_hue_error(
     return np.abs((actual_degrees - expected_degrees + 180.0) % 360.0 - 180.0)
 
 
+DIRECT_COLORCHECKER_MATCHING_MODE = "source CAM16 saturation/hue exposure"
+DIRECT_COLORCHECKER_DISTANCE_METRIC = (
+    "Euclidean source modCAM16 distance in (s*cos(h), s*sin(h)); "
+    "brightness excluded"
+)
+COLORCHECKER_ASSIGNMENT_POLICY = (
+    "independent per-patch minimum Euclidean source CAM16 saturation/hue "
+    "distance over the exposure grid; candidate locations may be reused"
+)
+
+
+def _colorchecker_exposure_metadata(
+    matching_mode: str,
+    distance_metric: str,
+    assignment_policy: str,
+    exposure_stops: tuple[float, ...],
+) -> dict[str, object]:
+    """Build the common diagnostic fields for an exposure-sweep matcher."""
+
+    return {
+        "colorchecker_matching_mode": matching_mode,
+        "colorchecker_exposure_min_stops": (
+            float(exposure_stops[0]) if exposure_stops else 0.0
+        ),
+        "colorchecker_exposure_max_stops": (
+            float(exposure_stops[-1]) if exposure_stops else 0.0
+        ),
+        "colorchecker_exposure_step_stops": (
+            float(exposure_stops[1] - exposure_stops[0])
+            if len(exposure_stops) > 1
+            else 0.0
+        ),
+        "colorchecker_exposure_stops": exposure_stops,
+        "colorchecker_exposure_sample_count": len(exposure_stops),
+        "colorchecker_candidate_count": 0,
+        "colorchecker_evaluation_count": 0,
+        "colorchecker_distance_metric": distance_metric,
+        "colorchecker_assignment_policy": assignment_policy,
+    }
+
+
+def _normalise_colorchecker_candidates(
+    palette_appearance: dict[str, np.ndarray],
+    palette_chroma: np.ndarray,
+    valid_ring_indices: np.ndarray,
+    valid_hue_indices: np.ndarray,
+    hue_count: int,
+    include_caps: bool,
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Validate and normalize the logical candidate arrays shared by matchers."""
+
+    valid_ring_indices = np.asarray(valid_ring_indices, dtype=np.int64)
+    valid_hue_indices = np.asarray(valid_hue_indices, dtype=np.int64)
+    if valid_ring_indices.shape != valid_hue_indices.shape:
+        raise ValueError("Valid ring and hue index arrays must have equal shape.")
+    full_candidate_count = len(valid_ring_indices)
+    cap_candidate_count = hue_count if include_caps else 0
+    candidate_count = full_candidate_count + cap_candidate_count
+    if candidate_count <= 0:
+        raise RuntimeError("No drawable palette candidates exist for ColorChecker matching.")
+
+    candidate_hue = np.asarray(palette_appearance.get("h", ()), dtype=np.float64)
+    candidate_saturation = np.asarray(
+        palette_appearance.get("s", ()), dtype=np.float64
+    )
+    if candidate_hue.ndim != 1 or candidate_hue.shape[0] < candidate_count:
+        raise ValueError("palette_appearance['h'] does not contain all candidates.")
+    if (
+        candidate_saturation.ndim != 1
+        or candidate_saturation.shape[0] < candidate_count
+    ):
+        raise ValueError("palette_appearance['s'] does not contain all candidates.")
+    candidate_hue = candidate_hue[:candidate_count]
+    candidate_saturation = candidate_saturation[:candidate_count]
+    if not np.all(np.isfinite(candidate_hue)) or not np.all(
+        np.isfinite(candidate_saturation)
+    ):
+        raise ValueError("Palette candidate appearance values must be finite.")
+
+    candidate_chroma = np.asarray(palette_chroma, dtype=np.float64)
+    if candidate_chroma.ndim != 1 or candidate_chroma.shape[0] < candidate_count:
+        raise ValueError("palette_chroma does not contain all candidates.")
+    candidate_chroma = candidate_chroma[:candidate_count]
+    if not np.all(np.isfinite(candidate_chroma)):
+        raise ValueError("Palette candidate chroma values must be finite.")
+    candidate_ring = np.concatenate(
+        (
+            valid_ring_indices,
+            np.full(cap_candidate_count, -1, dtype=np.int64),
+        )
+    )
+    candidate_hue_index = np.concatenate(
+        (
+            valid_hue_indices,
+            np.arange(cap_candidate_count, dtype=np.int64),
+        )
+    )
+    return (
+        candidate_count,
+        candidate_hue,
+        candidate_saturation,
+        candidate_chroma,
+        candidate_ring,
+        candidate_hue_index,
+    )
+
+
+def build_direct_colorchecker_marker_assignments(
+    palette_appearance: dict[str, np.ndarray],
+    palette_chroma: np.ndarray,
+    c3_raw: float,
+    relative_chroma_levels: np.ndarray,
+    valid_ring_indices: np.ndarray,
+    valid_hue_indices: np.ndarray,
+    hue_angles: np.ndarray,
+    model: AppearanceModel,
+    config: ColorCheckerConfig,
+    *,
+    candidate_xyz_d65: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, object]], int, dict[str, object]]:
+    """Match direct-palette ColorChecker dots with a modCAM16 exposure sweep.
+
+    Direct palettes never enter an ACES view transform.  Candidate XYZ-D65
+    values are multiplied by each configured exposure multiplier and evaluated
+    with the same revised CAM16-HK model that built the palette.  Matching is
+    performed in source CAM16 saturation/hue Cartesian coordinates, preserving
+    the historical direct-palette metric while making exposure handling
+    consistent with compensated markers.
+
+    ``candidate_xyz_d65`` is optional for callers using the historical API. If
+    omitted, the candidate XYZ values are reconstructed from the supplied
+    CAM16-HK appearance arrays when possible.
+    """
+
+    level_count = len(relative_chroma_levels)
+    hue_count = len(hue_angles)
+    full_marker_table = np.zeros((level_count, hue_count), dtype=bool)
+    cap_marker_table = np.zeros(hue_count, dtype=bool)
+    exposure_stops = tuple(config.marker_exposure_stops)
+    metadata = _colorchecker_exposure_metadata(
+        DIRECT_COLORCHECKER_MATCHING_MODE,
+        DIRECT_COLORCHECKER_DISTANCE_METRIC,
+        COLORCHECKER_ASSIGNMENT_POLICY,
+        exposure_stops,
+    )
+    if not config.enabled:
+        return full_marker_table, cap_marker_table, [], 0, metadata
+    if not exposure_stops:
+        raise RuntimeError("ColorChecker exposure grid is empty.")
+
+    (
+        candidate_count,
+        candidate_hue,
+        candidate_saturation,
+        candidate_chroma,
+        candidate_ring,
+        candidate_hue_index,
+    ) = _normalise_colorchecker_candidates(
+        palette_appearance,
+        palette_chroma,
+        valid_ring_indices,
+        valid_hue_indices,
+        hue_count,
+        config.include_caps_in_matching,
+    )
+
+    if candidate_xyz_d65 is not None:
+        candidate_xyz = np.asarray(candidate_xyz_d65, dtype=np.float64)
+        if candidate_xyz.ndim != 2 or candidate_xyz.shape[-1] != 3:
+            raise ValueError("candidate_xyz_d65 must have shape N x 3.")
+        if candidate_xyz.shape[0] < candidate_count:
+            raise ValueError("candidate_xyz_d65 does not contain all candidates.")
+        candidate_xyz = candidate_xyz[:candidate_count]
+        if not np.all(np.isfinite(candidate_xyz)):
+            raise ValueError("Candidate XYZ-D65 values must be finite.")
+    else:
+        # Reconstruct direct candidate XYZ values for legacy callers.  The
+        # palette builder supplies explicit XYZ values, but the original public
+        # function accepted only appearance/chroma arrays.  Those candidates
+        # are samples on the model's constant-J_HK locus, so the model neutral
+        # target is the correct reconstruction when J_HK was not supplied.
+        candidate_cam_chroma = np.asarray(
+            palette_appearance.get("C", candidate_chroma), dtype=np.float64
+        )
+        if (
+            candidate_cam_chroma.ndim != 1
+            or candidate_cam_chroma.shape[0] < candidate_count
+        ):
+            raise ValueError("palette_appearance['C'] does not contain all candidates.")
+        candidate_cam_chroma = candidate_cam_chroma[:candidate_count]
+        if not np.all(np.isfinite(candidate_cam_chroma)):
+            raise ValueError("Palette candidate CAM16 chroma values must be finite.")
+
+        candidate_j_hk = palette_appearance.get("J_HK")
+        if candidate_j_hk is None:
+            candidate_j = palette_appearance.get("J")
+            if candidate_j is not None:
+                candidate_j = np.asarray(candidate_j, dtype=np.float64)
+                if candidate_j.ndim != 1 or candidate_j.shape[0] < candidate_count:
+                    raise ValueError("palette_appearance['J'] does not contain all candidates.")
+                candidate_j = candidate_j[:candidate_count]
+                candidate_j_hk = np.sqrt(
+                    np.maximum(
+                        candidate_j * candidate_j
+                        + model.config.hk_chroma_coefficient * candidate_cam_chroma,
+                        0.0,
+                    )
+                )
+        if candidate_j_hk is None:
+            candidate_j_hk = np.full(candidate_count, model.target_j_hk, dtype=np.float64)
+        else:
+            candidate_j_hk = np.asarray(candidate_j_hk, dtype=np.float64)
+            if candidate_j_hk.ndim == 0:
+                candidate_j_hk = np.full(
+                    candidate_count, float(candidate_j_hk), dtype=np.float64
+                )
+            elif candidate_j_hk.ndim != 1 or candidate_j_hk.shape[0] < candidate_count:
+                raise ValueError("palette_appearance['J_HK'] does not contain all candidates.")
+            else:
+                candidate_j_hk = candidate_j_hk[:candidate_count]
+        if not np.all(np.isfinite(candidate_j_hk)):
+            raise ValueError("Palette candidate J_HK values must be finite.")
+        if np.all(candidate_j_hk == candidate_j_hk[0]):
+            candidate_xyz = model.modcam16_hk_to_xyz_d65(
+                float(candidate_j_hk[0]), candidate_cam_chroma, candidate_hue
+            )
+        else:
+            # The model inverse historically takes one scalar J_HK because
+            # palette construction uses a constant perceived-brightness locus.
+            # Preserve support for legacy callers that provide varying values.
+            candidate_xyz = np.stack(
+                tuple(
+                    model.modcam16_hk_to_xyz_d65(float(j_hk), chroma, hue)
+                    for j_hk, chroma, hue in zip(
+                        candidate_j_hk, candidate_cam_chroma, candidate_hue,
+                        strict=True,
+                    )
+                ),
+                axis=0,
+            )
+        if not np.all(np.isfinite(candidate_xyz)):
+            raise ValueError("Reconstructed candidate XYZ-D65 values must be finite.")
+
+    targets = get_colorchecker_targets(config, model)
+    target_hue = np.asarray(targets.appearance["h"], dtype=np.float64)
+    target_saturation = np.asarray(targets.appearance["s"], dtype=np.float64)
+    target_coordinates = saturation_hue_cartesian(target_saturation, target_hue)
+    multipliers = np.exp2(np.asarray(exposure_stops, dtype=np.float64))
+    if not np.all(np.isfinite(multipliers)):
+        raise ValueError("ColorChecker exposure stops produce non-finite multipliers.")
+
+    if candidate_xyz is None:
+        candidate_hue_sweep = np.broadcast_to(
+            candidate_hue[:, None], (candidate_count, len(exposure_stops))
+        )
+        candidate_saturation_sweep = np.broadcast_to(
+            candidate_saturation[:, None], (candidate_count, len(exposure_stops))
+        )
+    else:
+        exposed_xyz = candidate_xyz[:, None, :] * multipliers[None, :, None]
+        exposed_appearance = model.xyz_d65_to_attributes(
+            exposed_xyz.reshape(-1, 3)
+        )
+        candidate_hue_sweep = np.asarray(
+            exposed_appearance["h"], dtype=np.float64
+        ).reshape(candidate_count, len(exposure_stops))
+        candidate_saturation_sweep = np.asarray(
+            exposed_appearance["s"], dtype=np.float64
+        ).reshape(candidate_count, len(exposure_stops))
+        if not np.all(np.isfinite(candidate_hue_sweep)) or not np.all(
+            np.isfinite(candidate_saturation_sweep)
+        ):
+            raise RuntimeError("CAM16 exposure sweep produced non-finite attributes.")
+
+    candidate_coordinates = saturation_hue_cartesian(
+        candidate_saturation_sweep, candidate_hue_sweep
+    )
+    difference = candidate_coordinates[None, ...] - target_coordinates[:, None, None, :]
+    distances = np.sqrt(np.sum(difference * difference, axis=-1))
+    if not np.all(np.isfinite(distances)):
+        raise RuntimeError("CAM16 ColorChecker matching produced non-finite distances.")
+
+    assignments: list[dict[str, object]] = []
+    for patch_index, patch_name in enumerate(targets.names):
+        patch_distances = distances[patch_index]
+        best_flat_index = int(np.argmin(patch_distances))
+        best_candidate, best_exposure = (
+            int(index)
+            for index in np.unravel_index(best_flat_index, patch_distances.shape)
+        )
+        best_distance = float(patch_distances[best_candidate, best_exposure])
+        ring_index = int(candidate_ring[best_candidate])
+        hue_index = int(candidate_hue_index[best_candidate])
+        if ring_index >= 0:
+            candidate_type = "block"
+            full_marker_table[ring_index, hue_index] = True
+            level_number: int | None = ring_index + 1
+            relative_chroma = float(relative_chroma_levels[ring_index])
+        else:
+            candidate_type = "cap"
+            cap_marker_table[hue_index] = True
+            level_number = None
+            if not np.isfinite(c3_raw) or c3_raw <= 0.0:
+                raise ValueError("c3_raw must be finite and positive for cap matching.")
+            relative_chroma = float(candidate_chroma[best_candidate] / c3_raw)
+        selected_hue = float(candidate_hue_sweep[best_candidate, best_exposure])
+        selected_saturation = float(
+            candidate_saturation_sweep[best_candidate, best_exposure]
+        )
+        assignment: dict[str, object] = {
+            "patch_index": patch_index,
+            "patch_name": patch_name,
+            "matching_mode": DIRECT_COLORCHECKER_MATCHING_MODE,
+            "target_hue": float(target_hue[patch_index]),
+            "target_saturation": float(target_saturation[patch_index]),
+            "candidate_index": best_candidate,
+            "candidate_type": candidate_type,
+            "ring_index": ring_index if ring_index >= 0 else None,
+            "level_number": level_number,
+            "hue_index": hue_index,
+            "palette_sector_hue": float(hue_angles[hue_index]),
+            # Preserve the historical direct-assignment fields as the
+            # unexposed palette appearance.  The winning sweep sample is
+            # available explicitly for diagnostics.
+            "candidate_hue": float(candidate_hue[best_candidate]),
+            "candidate_saturation": float(candidate_saturation[best_candidate]),
+            "candidate_exposure_hue": selected_hue,
+            "candidate_exposure_saturation": selected_saturation,
+            "candidate_source_hue": float(candidate_hue[best_candidate]),
+            "candidate_source_saturation": float(
+                candidate_saturation[best_candidate]
+            ),
+            "candidate_chroma": float(candidate_chroma[best_candidate]),
+            "candidate_relative_chroma": relative_chroma,
+            "ev_stops": float(exposure_stops[best_exposure]),
+            "exposure_multiplier": float(multipliers[best_exposure]),
+            "distance": best_distance,
+        }
+        if candidate_xyz is not None:
+            selected_xyz = candidate_xyz[best_candidate] * multipliers[best_exposure]
+            assignment["candidate_xyz_d65"] = tuple(
+                float(value) for value in selected_xyz
+            )
+            assignment["candidate_base_xyz_d65"] = tuple(
+                float(value) for value in candidate_xyz[best_candidate]
+            )
+        assignments.append(assignment)
+
+    unique_count = int(np.count_nonzero(full_marker_table)) + int(
+        np.count_nonzero(cap_marker_table)
+    )
+    metadata.update(
+        {
+            "colorchecker_candidate_count": candidate_count,
+            "colorchecker_evaluation_count": len(targets.names)
+            * candidate_count
+            * len(exposure_stops),
+            "colorchecker_unique_marker_count": unique_count,
+        }
+    )
+    return full_marker_table, cap_marker_table, assignments, unique_count, metadata
+
+
 def build_colorchecker_marker_assignments(
     palette_appearance: dict[str, np.ndarray],
     palette_chroma: np.ndarray,
@@ -240,80 +603,29 @@ def build_colorchecker_marker_assignments(
     hue_angles: np.ndarray,
     model: AppearanceModel,
     config: ColorCheckerConfig,
+    *,
+    candidate_xyz_d65: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, object]], int]:
-    """Match patches in saturation/hue space and return unique dot locations."""
+    """Backward-compatible four-value wrapper for direct matching.
 
-    level_count = len(relative_chroma_levels)
-    hue_count = len(hue_angles)
-    full_marker_table = np.zeros((level_count, hue_count), dtype=bool)
-    cap_marker_table = np.zeros(hue_count, dtype=bool)
-    if not config.enabled:
-        return full_marker_table, cap_marker_table, [], 0
+    New callers that need exposure-grid metadata can use
+    :func:`build_direct_colorchecker_marker_assignments` directly.  Keeping
+    this wrapper preserves the original public return shape.
+    """
 
-    full_candidate_count = len(valid_ring_indices)
-    candidate_count = full_candidate_count + (
-        hue_count if config.include_caps_in_matching else 0
+    result = build_direct_colorchecker_marker_assignments(
+        palette_appearance,
+        palette_chroma,
+        c3_raw,
+        relative_chroma_levels,
+        valid_ring_indices,
+        valid_hue_indices,
+        hue_angles,
+        model,
+        config,
+        candidate_xyz_d65=candidate_xyz_d65,
     )
-    if candidate_count <= 0:
-        raise RuntimeError(
-            "No drawable palette candidates exist for ColorChecker matching."
-        )
-    candidate_hue = np.asarray(
-        palette_appearance["h"][:candidate_count], dtype=np.float64
-    )
-    candidate_saturation = np.asarray(
-        palette_appearance["s"][:candidate_count], dtype=np.float64
-    )
-    candidate_chroma = np.asarray(palette_chroma[:candidate_count], dtype=np.float64)
-    candidate_coordinates = saturation_hue_cartesian(
-        candidate_saturation, candidate_hue
-    )
-    targets = get_colorchecker_targets(config, model)
-    target_hue = np.asarray(targets.appearance["h"], dtype=np.float64)
-    target_saturation = np.asarray(targets.appearance["s"], dtype=np.float64)
-    target_coordinates = saturation_hue_cartesian(target_saturation, target_hue)
-    assignments: list[dict[str, object]] = []
-    for patch_index, patch_name in enumerate(targets.names):
-        difference = candidate_coordinates - target_coordinates[patch_index]
-        distance_squared = np.sum(difference * difference, axis=-1)
-        best_index = int(np.argmin(distance_squared))
-        distance = float(np.sqrt(distance_squared[best_index]))
-        if best_index < full_candidate_count:
-            candidate_type = "block"
-            ring_index = int(valid_ring_indices[best_index])
-            hue_index = int(valid_hue_indices[best_index])
-            full_marker_table[ring_index, hue_index] = True
-            level_number = ring_index + 1
-            relative_chroma = float(relative_chroma_levels[ring_index])
-        else:
-            candidate_type = "cap"
-            hue_index = best_index - full_candidate_count
-            ring_index = None
-            cap_marker_table[hue_index] = True
-            level_number = None
-            relative_chroma = float(candidate_chroma[best_index] / c3_raw)
-        assignments.append(
-            {
-                "patch_index": patch_index,
-                "patch_name": patch_name,
-                "target_hue": float(target_hue[patch_index]),
-                "target_saturation": float(target_saturation[patch_index]),
-                "candidate_type": candidate_type,
-                "ring_index": ring_index,
-                "level_number": level_number,
-                "hue_index": hue_index,
-                "palette_sector_hue": float(hue_angles[hue_index]),
-                "candidate_hue": float(candidate_hue[best_index]),
-                "candidate_saturation": float(candidate_saturation[best_index]),
-                "candidate_chroma": float(candidate_chroma[best_index]),
-                "candidate_relative_chroma": relative_chroma,
-                "distance": distance,
-            }
-        )
-    unique_count = int(np.count_nonzero(full_marker_table)) + int(
-        np.count_nonzero(cap_marker_table)
-    )
-    return full_marker_table, cap_marker_table, assignments, unique_count
+    return result[:4]
 
 
 COMPENSATED_COLORCHECKER_MATCHING_MODE = "post-view ACES JMh exposure"

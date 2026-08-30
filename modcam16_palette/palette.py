@@ -11,7 +11,7 @@ from . import colorimetry
 from .cam16_hk import CAM16_RESPONSE_LOWER, CAM16_RESPONSE_UPPER, AppearanceModel
 from .colorchecker import (
     build_boundary_marker_tables,
-    build_colorchecker_marker_assignments,
+    build_direct_colorchecker_marker_assignments,
     circular_hue_error,
 )
 from .colorimetry import GamutMatrices
@@ -296,10 +296,32 @@ def _build_statistics(
         "combined_marker_count": combined_marker_count,
         "marker_overlap_count": marker_overlap_count,
         "marker_boundary_cmax": marker_boundary_cmax,
-        "colorchecker_matching_mode": "source CAM16 saturation/hue",
+        # The direct matcher replaces these defaults with its complete
+        # exposure-grid metadata below.  Keeping defaults here makes the
+        # statistics schema stable for disabled/legacy callers.
+        "colorchecker_matching_mode": "source CAM16 saturation/hue exposure",
         "colorchecker_distance_metric": (
             "Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded"
         ),
+        "colorchecker_assignment_policy": (
+            "independent per-patch minimum Euclidean source CAM16 saturation/hue "
+            "distance over the exposure grid; candidate locations may be reused"
+        ),
+        "colorchecker_exposure_min_stops": float(
+            config.colorchecker.compensated_marker_exposure_min_stops
+        ),
+        "colorchecker_exposure_max_stops": float(
+            config.colorchecker.compensated_marker_exposure_max_stops
+        ),
+        "colorchecker_exposure_step_stops": float(
+            config.colorchecker.compensated_marker_exposure_step_stops
+        ),
+        "colorchecker_exposure_stops": config.colorchecker.marker_exposure_stops,
+        "colorchecker_exposure_sample_count": len(
+            config.colorchecker.marker_exposure_stops
+        ),
+        "colorchecker_candidate_count": 0,
+        "colorchecker_evaluation_count": 0,
         "colorchecker_assignments": colorchecker_assignments,
         "colorchecker_unique_marker_count": colorchecker_unique_marker_count,
         "colorchecker_full_marker_count": int(
@@ -522,7 +544,8 @@ def build_palette(
         colorchecker_cap_marker_table,
         colorchecker_assignments,
         colorchecker_unique_marker_count,
-    ) = build_colorchecker_marker_assignments(
+        colorchecker_metadata,
+    ) = build_direct_colorchecker_marker_assignments(
         appearance_round_trip,
         all_chroma,
         c3.value,
@@ -532,6 +555,7 @@ def build_palette(
         hue_angles,
         model,
         config.colorchecker,
+        candidate_xyz_d65=all_xyz_d65,
     )
 
     all_acescg_float64 = colorimetry.apply_matrix(
@@ -643,6 +667,7 @@ def build_palette(
         chroma_error=chroma_error,
         hue_error=hue_error,
     )
+    statistics.update(colorchecker_metadata)
     statistics["minimum_stored_channel"] = minimum_stored_channel
     statistics["maximum_below_zero"] = max(0.0, -minimum_stored_channel)
     statistics["cap_cam16_minimum_response"] = float(np.min(cap_cam16_cone_rgb))

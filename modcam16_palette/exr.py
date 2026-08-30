@@ -7,6 +7,10 @@ from pathlib import Path
 import numpy as np
 import OpenEXR
 
+from .colorchecker import (
+    COMPENSATED_COLORCHECKER_MATCHING_MODE,
+    DIRECT_COLORCHECKER_MATCHING_MODE,
+)
 from .config import Config
 
 
@@ -29,7 +33,7 @@ def make_comments(
         matching_mode = str(
             statistics.get("colorchecker_matching_mode", "source CAM16 saturation/hue")
         )
-        if matching_mode == "post-view ACES JMh exposure":
+        if matching_mode == COMPENSATED_COLORCHECKER_MATCHING_MODE:
             colorchecker_comment = (
                 f"ColorChecker dataset={cc.dataset}; "
                 f"ColorChecker adaptation={cc.adaptation_method}; "
@@ -37,6 +41,16 @@ def make_comments(
                 "compensated matching uses post-view ACES JMh over the configured "
                 "exposure grid with independent per-patch nearest matching; "
                 "candidate locations may be reused; "
+                f"ColorChecker dot radius={cc.dot_radius_pixels:g} pixels; "
+            )
+        elif matching_mode == DIRECT_COLORCHECKER_MATCHING_MODE:
+            colorchecker_comment = (
+                f"ColorChecker dataset={cc.dataset}; "
+                f"ColorChecker adaptation={cc.adaptation_method}; "
+                "first eighteen chromatic patches only; "
+                "direct matching uses revised modCAM16 saturation and hue "
+                "over the configured exposure grid with independent "
+                "per-patch nearest matching; candidate locations may be reused; "
                 f"ColorChecker dot radius={cc.dot_radius_pixels:g} pixels; "
             )
         else:
@@ -183,8 +197,10 @@ def write_float_rgb_exr(
         # Keep the legacy metadata value for generated-file compatibility.
         "software": "make_modcam16hk_c3_log_caps_markers_colorchecker.py",
     }
-    if config.colorchecker.enabled and statistics.get("colorchecker_matching_mode") == (
-        "post-view ACES JMh exposure"
+    matching_mode = str(statistics.get("colorchecker_matching_mode", ""))
+    if config.colorchecker.enabled and matching_mode in (
+        DIRECT_COLORCHECKER_MATCHING_MODE,
+        COMPENSATED_COLORCHECKER_MATCHING_MODE,
     ):
         assignments = statistics.get("colorchecker_assignments", ())
         header.update(
@@ -207,36 +223,43 @@ def write_float_rgb_exr(
                 ),
             }
         )
-        if statistics["colorchecker_matching_mode"] == ("post-view ACES JMh exposure"):
+        header.update(
+            {
+                "colorCheckerMatchExposureMin": float(
+                    statistics["colorchecker_exposure_min_stops"]
+                ),
+                "colorCheckerMatchExposureMax": float(
+                    statistics["colorchecker_exposure_max_stops"]
+                ),
+                "colorCheckerMatchExposureStep": float(
+                    statistics["colorchecker_exposure_step_stops"]
+                ),
+                "colorCheckerMatchExposureSamples": int(
+                    statistics["colorchecker_exposure_sample_count"]
+                ),
+                "colorCheckerMatchEVs": ",".join(
+                    f"{float(assignment['ev_stops']):.6g}"
+                    for assignment in assignments
+                    if "ev_stops" in assignment
+                ),
+                "colorCheckerMatchDistances": ",".join(
+                    f"{float(assignment['distance']):.9g}"
+                    for assignment in assignments
+                    if "distance" in assignment
+                ),
+                "colorCheckerMatchCandidates": ",".join(
+                    str(int(assignment["candidate_index"]))
+                    for assignment in assignments
+                    if "candidate_index" in assignment
+                ),
+            }
+        )
+        # ACES JMh diagnostics belong only to compensated matching.  Direct
+        # palettes intentionally remain entirely in the revised modCAM16
+        # comparison space and do not advertise an ACES matching transform.
+        if matching_mode == COMPENSATED_COLORCHECKER_MATCHING_MODE:
             header.update(
                 {
-                    "colorCheckerMatchExposureMin": float(
-                        statistics["colorchecker_exposure_min_stops"]
-                    ),
-                    "colorCheckerMatchExposureMax": float(
-                        statistics["colorchecker_exposure_max_stops"]
-                    ),
-                    "colorCheckerMatchExposureStep": float(
-                        statistics["colorchecker_exposure_step_stops"]
-                    ),
-                    "colorCheckerMatchExposureSamples": int(
-                        statistics["colorchecker_exposure_sample_count"]
-                    ),
-                    "colorCheckerMatchEVs": ",".join(
-                        f"{float(assignment['ev_stops']):.6g}"
-                        for assignment in assignments
-                        if "ev_stops" in assignment
-                    ),
-                    "colorCheckerMatchDistances": ",".join(
-                        f"{float(assignment['distance']):.9g}"
-                        for assignment in assignments
-                        if "distance" in assignment
-                    ),
-                    "colorCheckerMatchCandidates": ",".join(
-                        str(int(assignment["candidate_index"]))
-                        for assignment in assignments
-                        if "candidate_index" in assignment
-                    ),
                     "colorCheckerMatchCandidateJMh": ";".join(
                         ",".join(
                             f"{float(value):.9g}"
@@ -247,7 +270,8 @@ def write_float_rgb_exr(
                     ),
                     "colorCheckerMatchTargetJMh": ";".join(
                         ",".join(
-                            f"{float(value):.9g}" for value in assignment["target_jmh"]
+                            f"{float(value):.9g}"
+                            for value in assignment["target_jmh"]
                         )
                         for assignment in assignments
                         if "target_jmh" in assignment

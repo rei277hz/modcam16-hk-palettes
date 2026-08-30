@@ -12,9 +12,14 @@ from .aces_jmh import (
 )
 from .cam16_hk import AppearanceModel
 from .colorchecker import (
+    COLORCHECKER_ASSIGNMENT_POLICY,
     COMPENSATED_COLORCHECKER_ASSIGNMENT_POLICY,
     COMPENSATED_COLORCHECKER_MATCHING_MODE,
+    DIRECT_COLORCHECKER_DISTANCE_METRIC,
+    DIRECT_COLORCHECKER_MATCHING_MODE,
+    build_colorchecker_marker_assignments,
     build_compensated_colorchecker_marker_assignments,
+    build_direct_colorchecker_marker_assignments,
 )
 from .colorimetry import GAMUT_MATRICES
 from .config import (
@@ -64,6 +69,7 @@ from .render import (
 )
 
 __all__ = [
+    "COLORCHECKER_ASSIGNMENT_POLICY",
     "COMPENSATED_COLORCHECKER_ASSIGNMENT_POLICY",
     "COMPENSATED_COLORCHECKER_MATCHING_MODE",
     "COMPENSATION_PROFILES",
@@ -72,6 +78,8 @@ __all__ = [
     "COMPENSATION_PROFILE_NAMES",
     "DEFAULT_COMPENSATION_P3_CHROMA_COMPANDING_K",
     "DEFAULT_COMPENSATION_SRGB_CHROMA_COMPANDING_K",
+    "DIRECT_COLORCHECKER_DISTANCE_METRIC",
+    "DIRECT_COLORCHECKER_MATCHING_MODE",
     "GAMUT_MATRICES",
     "PUBLISHED_CENTER_ACESCG",
     "REC709_D65_PRIMARIES_XY",
@@ -90,7 +98,9 @@ __all__ = [
     "RenderedPalette",
     "TargetGamutProjection",
     "apply_inverse_view_compensation",
+    "build_colorchecker_marker_assignments",
     "build_compensated_colorchecker_marker_assignments",
+    "build_direct_colorchecker_marker_assignments",
     "build_palette",
     "compensate_candidate_colors",
     "compensate_foreground",
