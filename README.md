@@ -98,6 +98,21 @@ python3 make_release.py
 
 This generates the same five palette variants using `config.release.toml`.
 
+## Licensing
+
+Unless a file or directory says otherwise, the original source code and tests
+in this repository are licensed under Apache-2.0; see [`LICENSE`](LICENSE).
+The five generated release palette EXRs published on this repository's GitHub
+Releases page are dedicated to the public domain under CC0-1.0; see
+[`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt).  The release assets include a
+copy of that notice for standalone distribution.  The bundled
+ACES OCIO configuration is third-party material under its upstream
+BSD-3-Clause license; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+The CC0 dedication covers only rights held in the generated palette artifacts;
+it does not grant rights in third-party ColorChecker names/data, ACES marks or
+transforms, or other referenced material.  Demo artwork and screenshots are
+separate media and are not covered by the palette CC0 dedication.
+
 ## References
 
 1. Hellwig, L., Stolitzka, D., and Fairchild, M. D. “The brightness of chromatic stimuli.” *Color Research & Application* (2024). [doi:10.1002/col.22910](https://doi.org/10.1002/col.22910)

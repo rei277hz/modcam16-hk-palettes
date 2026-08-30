@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "modcam16-palette"
 version = "0.1.0"
 description = "Equal-perceived-brightness modCAM16-HK radial palette generator"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24",

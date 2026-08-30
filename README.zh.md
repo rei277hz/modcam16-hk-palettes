@@ -98,6 +98,15 @@ python3 make_release.py
 
 该命令使用 `config.release.toml` 生成相同的五个调色盘版本。
 
+## 许可
+
+除非文件或目录另有说明，本仓库中的原创源代码和测试代码采用 Apache-2.0 许可，详见
+[`LICENSE`](LICENSE)。GitHub Releases 页面上发布的五个调色盘 EXR 文件依据 CC0-1.0 放弃到公有领域，详见
+[`LICENSE-CC0-1.0.txt`](LICENSE-CC0-1.0.txt)。发布资产中应附带该声明的副本，便于独立分发。
+随附的 ACES OCIO 配置属于第三方材料，遵循其上游 BSD-3-Clause 许可，详见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。CC0 放弃仅适用于本项目对生成调色盘产物拥有的权利；不授予对第三方
+ColorChecker 名称/数据、ACES 标志或变换以及其他引用材料的权利。演示作品和截图是独立媒体，不包含在调色盘的 CC0 放弃范围内。
+
 ## 参考文献
 
 1. Hellwig, L., Stolitzka, D., and Fairchild, M. D. “The brightness of chromatic stimuli.” *Color Research & Application* (2024). [doi:10.1002/col.22910](https://doi.org/10.1002/col.22910)
