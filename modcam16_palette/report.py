@@ -80,7 +80,9 @@ def print_colorchecker_assignments(result: PaletteResult, config: Config) -> Non
             f"{stats.get('colorchecker_exposure_step_stops', 0.0):g}"
         )
     else:
-        print("  Metric: Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded")
+        print(
+            "  Metric: Euclidean distance in (s*cos(h), s*sin(h)); brightness excluded"
+        )
     print(f"  Dataset: {config.colorchecker.dataset}")
     print(f"  Chromatic adaptation: {config.colorchecker.adaptation_method} -> D65")
     print(
@@ -202,6 +204,12 @@ def print_palette_report(result: PaletteResult, config: Config) -> None:
         print("ACES 2.0 compensation:")
         print(f"  Profile: {stats['compensation_profile']}")
         print(f"  Source neutral Y: {stats['compensation_solved_source_y']:.15g}")
+        source_constraints = tuple(stats.get("additional_gamut_constraints", ()))
+        if source_constraints:
+            print(
+                "  Additional source gamut constraints: "
+                + ", ".join(str(name) for name in source_constraints)
+            )
         print(
             "  Intermediate center: "
             + ", ".join(

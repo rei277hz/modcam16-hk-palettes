@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -92,12 +93,40 @@ def _make_hue_angles(config: Config) -> np.ndarray:
     )
 
 
+def _normalize_additional_gamut_constraints(
+    constraints: Sequence[tuple[str, np.ndarray]] | None,
+) -> tuple[tuple[str, np.ndarray], ...]:
+    """Validate extra XYZ-D65 RGB cones applied to per-hue palette limits."""
+
+    if constraints is None:
+        return ()
+    normalized: list[tuple[str, np.ndarray]] = []
+    for item in constraints:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise TypeError(
+                "additional_gamut_constraints entries must be (name, matrix) pairs."
+            )
+        name, matrix = item
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(
+                "Additional gamut constraint names must be non-empty strings."
+            )
+        matrix_value = np.asarray(matrix, dtype=np.float64)
+        if matrix_value.shape != (3, 3) or not np.all(np.isfinite(matrix_value)):
+            raise ValueError(
+                f"Additional gamut constraint {name!r} must have a finite 3x3 matrix."
+            )
+        normalized.append((name, matrix_value.copy()))
+    return tuple(normalized)
+
+
 def _validate_raw_boundaries(
     gamut: GamutMatrices,
     model: AppearanceModel,
     config: Config,
     hue_angles: np.ndarray,
     rendered_cmax_raw: np.ndarray,
+    additional_gamut_constraints: Sequence[tuple[str, np.ndarray]] = (),
 ) -> tuple[np.ndarray, dict[str, int]]:
     solver = config.solver
     raw_boundary_xyz = model.modcam16_hk_to_xyz_d65(
@@ -115,21 +144,79 @@ def _validate_raw_boundaries(
             f"  Gamut: {gamut.name}\n  Hue: {hue_angles[bad_hue]:.8f}°\n"
             f"  RGB: {raw_boundary_rgb[bad_hue]}\n  Channel index: {bad_channel}"
         )
-    raw_face_distance = np.min(np.abs(raw_boundary_rgb), axis=-1)
-    if np.any(raw_face_distance > solver.boundary_face_tolerance):
-        bad_hue = int(np.argmax(raw_face_distance))
+
+    # An additional constraint can be the limiting cone for a hue.  In that
+    # case the source-gamut RGB is still strictly positive, so requiring every
+    # source RGB triplet to touch a zero face would reject the intended
+    # intersection boundary.  Validate that each boundary touches at least
+    # one of the configured cones instead.
+    boundary_constraints = (
+        (gamut.name, gamut.xyz_d65_to_gamut_rgb),
+        *tuple(additional_gamut_constraints),
+    )
+    boundary_rgbs = [raw_boundary_rgb]
+    for _name, matrix in additional_gamut_constraints:
+        boundary_rgbs.append(colorimetry.apply_matrix(matrix, raw_boundary_xyz))
+    all_boundary_rgb = np.stack(boundary_rgbs, axis=0)
+    if not np.all(
+        is_inside_linear_rgb_gamut_cone(
+            all_boundary_rgb, epsilon=solver.gamut_test_epsilon
+        )
+    ):
+        bad_constraint, bad_hue, bad_channel = np.argwhere(
+            all_boundary_rgb < -solver.gamut_test_epsilon
+        )[0]
+        constraint_name = boundary_constraints[int(bad_constraint)][0]
+        raise RuntimeError(
+            "Raw Cmax boundary lies outside a gamut cone:\n"
+            f"  Gamut: {constraint_name}\n  Hue: {hue_angles[bad_hue]:.8f}°\n"
+            f"  RGB: {all_boundary_rgb[bad_constraint, bad_hue]}\n"
+            f"  Channel index: {bad_channel}"
+        )
+    face_distances = np.min(np.abs(all_boundary_rgb), axis=-1)
+    effective_face_distance = np.min(face_distances, axis=0)
+    if np.any(effective_face_distance > solver.boundary_face_tolerance):
+        bad_hue = int(np.argmax(effective_face_distance))
+        active_constraint = int(np.argmin(face_distances[:, bad_hue]))
+        constraint_name = boundary_constraints[active_constraint][0]
         raise RuntimeError(
             "Raw Cmax failed to reach a zero-channel boundary:\n"
-            f"  Gamut: {gamut.name}\n  Hue: {hue_angles[bad_hue]:.8f}°\n"
-            f"  RGB: {raw_boundary_rgb[bad_hue]}\n"
-            f"  Face distance: {raw_face_distance[bad_hue]:.12g}"
+            f"  Gamut: {constraint_name}\n  Hue: {hue_angles[bad_hue]:.8f}°\n"
+            f"  RGB: {all_boundary_rgb[active_constraint, bad_hue]}\n"
+            f"  Face distance: {effective_face_distance[bad_hue]:.12g}"
         )
-    active_indices = np.argmin(np.abs(raw_boundary_rgb), axis=-1)
-    labels = ("R=0", "G=0", "B=0")
-    counts = {
-        label: int(np.count_nonzero(active_indices == index))
-        for index, label in enumerate(labels)
-    }
+
+    # Preserve the legacy R/G/B keys when there is no extra constraint.  For
+    # an intersection, expose the limiting cone in the diagnostic key so a
+    # report can distinguish (for example) a Rec.2020 B=0 boundary from a
+    # P3 B=0 boundary.
+    if additional_gamut_constraints:
+        active_constraint_indices = np.argmin(face_distances, axis=0)
+        active_channel_indices = np.array(
+            [
+                int(np.argmin(np.abs(all_boundary_rgb[c, h])))
+                for h, c in enumerate(active_constraint_indices)
+            ],
+            dtype=np.int64,
+        )
+        labels = ("R=0", "G=0", "B=0")
+        counts = {
+            f"{boundary_constraints[c][0]}:{labels[channel]}": int(
+                np.count_nonzero(
+                    (active_constraint_indices == c)
+                    & (active_channel_indices == channel)
+                )
+            )
+            for c in range(len(boundary_constraints))
+            for channel in range(3)
+        }
+    else:
+        active_indices = np.argmin(np.abs(raw_boundary_rgb), axis=-1)
+        labels = ("R=0", "G=0", "B=0")
+        counts = {
+            label: int(np.count_nonzero(active_indices == index))
+            for index, label in enumerate(labels)
+        }
     return raw_boundary_rgb, counts
 
 
@@ -150,6 +237,7 @@ def _build_statistics(
     total_possible_full_blocks: int,
     total_palette_colors: int,
     boundary_adjusted_count: int,
+    additional_gamut_constraints: Sequence[tuple[str, np.ndarray]],
     active_face_counts: dict[str, int],
     raw_boundary_rgb: np.ndarray,
     stored_maximum_channel: float,
@@ -194,6 +282,9 @@ def _build_statistics(
         "total_possible_full_blocks": total_possible_full_blocks,
         "total_palette_colors": total_palette_colors,
         "boundary_adjusted_count": boundary_adjusted_count,
+        "additional_gamut_constraints": tuple(
+            name for name, _matrix in additional_gamut_constraints
+        ),
         "active_face_counts": active_face_counts,
         "raw_boundary_maximum_channel": float(np.max(raw_boundary_rgb)),
         "stored_maximum_channel": stored_maximum_channel,
@@ -227,11 +318,23 @@ def build_palette(
     gamut: GamutMatrices,
     config: Config,
     model: AppearanceModel | None = None,
+    *,
+    additional_gamut_constraints: Sequence[tuple[str, np.ndarray]] | None = None,
 ) -> PaletteResult:
-    """Build one complete palette while retaining the legacy numerical order."""
+    """Build one complete palette while retaining the legacy numerical order.
+
+    ``additional_gamut_constraints`` applies extra nonnegative RGB cones to
+    the per-hue constant-``J_HK`` boundary.  It is useful when a source gamut
+    is slightly wider than the limiting gamut of a downstream view transform;
+    colors are then reduced in modCAM16-HK chroma before conversion to RGB.
+    The source gamut remains the C3 reference domain.
+    """
 
     config.validate()
     model = AppearanceModel.from_config(config.appearance) if model is None else model
+    additional_gamut_constraints = _normalize_additional_gamut_constraints(
+        additional_gamut_constraints
+    )
     p = config.palette
     solver = config.solver
     n = p.chroma_level_count
@@ -254,12 +357,31 @@ def build_palette(
             f"  Expected: {expected_neutral}\n  Received: {neutral_in_gamut}"
         )
 
-    rendered_cmax_raw = find_maximum_gamut_chroma_for_hues(
+    source_cmax_raw = find_maximum_gamut_chroma_for_hues(
         hue_angles, gamut.xyz_d65_to_gamut_rgb, model, solver, gamut.name
+    )
+    rendered_cmax_raw = source_cmax_raw.copy()
+    for constraint_name, constraint_matrix in additional_gamut_constraints:
+        constraint_cmax = find_maximum_gamut_chroma_for_hues(
+            hue_angles,
+            constraint_matrix,
+            model,
+            solver,
+            constraint_name,
+        )
+        rendered_cmax_raw = np.minimum(rendered_cmax_raw, constraint_cmax)
+    # The continuous C3 domain is defined by the source gamut and remains the
+    # stable reference scale for compensated palettes.  In the explicitly
+    # rendered domain, however, the additional intersection constraint is part
+    # of the requested sampled boundary and must determine C3 as well.
+    c3_boundary = (
+        rendered_cmax_raw
+        if p.c3_reference_domain == "rendered"
+        else source_cmax_raw
     )
     c3 = determine_c3(
         hue_angles,
-        rendered_cmax_raw,
+        c3_boundary,
         gamut,
         model,
         p,
@@ -360,7 +482,12 @@ def build_palette(
         )
 
     raw_boundary_rgb, active_face_counts = _validate_raw_boundaries(
-        gamut, model, config, hue_angles, rendered_cmax_raw
+        gamut,
+        model,
+        config,
+        hue_angles,
+        rendered_cmax_raw,
+        additional_gamut_constraints,
     )
 
     appearance_round_trip = model.xyz_d65_to_attributes(all_xyz_d65)
@@ -496,6 +623,7 @@ def build_palette(
         total_possible_full_blocks=total_possible_full_blocks,
         total_palette_colors=total_palette_colors,
         boundary_adjusted_count=int(np.count_nonzero(boundary_adjusted_table)),
+        additional_gamut_constraints=additional_gamut_constraints,
         active_face_counts=active_face_counts,
         raw_boundary_rgb=raw_boundary_rgb,
         stored_maximum_channel=maximum_stored_channel,

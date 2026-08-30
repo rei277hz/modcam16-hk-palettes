@@ -2,6 +2,7 @@ from dataclasses import replace
 
 import numpy as np
 
+from modcam16_palette.aces_jmh import params_for_profile
 from modcam16_palette.cam16_hk import AppearanceModel
 from modcam16_palette.cli import generate
 from modcam16_palette.colorimetry import GAMUT_MATRICES, XYZ_D65_TO_ACESCG
@@ -132,6 +133,60 @@ def test_compensation_companding_toml_aliases_and_filename():
         0.145,
     )
     assert "LogK3p75" in path.name
+
+
+def test_additional_gamut_constraint_shrinks_p3_boundary_in_modcam16_hk():
+    """A downstream Rec.2020 cone can replace the tiny P3-red sliver."""
+
+    base = default_config()
+    config = replace(
+        base,
+        palette=replace(base.palette, chroma_level_count=1),
+        solver=replace(
+            base.solver,
+            c3_hue_sample_count=120,
+            c3_max_refinement_candidates=4,
+            boundary_coarse_steps=64,
+            boundary_binary_iterations=40,
+        ),
+        markers=replace(
+            base.markers,
+            enable_srgb_boundary_markers=False,
+            enable_p3_boundary_markers=False,
+        ),
+        colorchecker=replace(base.colorchecker, enabled=False),
+    )
+    model = AppearanceModel.from_config(config.appearance)
+    p3 = GAMUT_MATRICES["P3-D65"]
+    rec2020_matrix = params_for_profile("p3_rec2020_pq").xyz_to_rgb
+
+    unconstrained = build_palette(p3, config, model)
+    constrained = build_palette(
+        p3,
+        config,
+        model,
+        additional_gamut_constraints=(("Rec.2020-D65", rec2020_matrix),),
+    )
+
+    def target_rgb(result):
+        xyz = model.modcam16_hk_to_xyz_d65(
+            model.target_j_hk, result.palette_chroma, result.palette_hues
+        )
+        return xyz @ rec2020_matrix.T
+
+    unconstrained_rgb = target_rgb(unconstrained)
+    constrained_rgb = target_rgb(constrained)
+    assert np.count_nonzero(np.any(unconstrained_rgb < 0.0, axis=-1)) == 1
+    assert np.all(constrained_rgb >= -config.solver.rendered_gamut_epsilon)
+
+    cap_count = config.palette.hue_count
+    hue_30_cap = -cap_count + 3
+    assert (
+        constrained.palette_chroma[hue_30_cap]
+        < unconstrained.palette_chroma[hue_30_cap]
+    )
+    assert constrained_rgb[hue_30_cap, 2] >= 0.0
+    assert constrained.statistics["additional_gamut_constraints"] == ("Rec.2020-D65",)
 
 
 def test_generate_custom_neutral_still_publishes_white_center(tmp_path):

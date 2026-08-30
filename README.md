@@ -54,23 +54,24 @@ CLI options. `scripts/analyze_compensated_cc18_grid.py` compares the configured
 grid with a finer reference grid when tuning these defaults.
 
 P3-D65 is not a strict subset of Rec.2020: there is a very small sliver near
-the P3 red primary that produces a negative Rec.2020 blue channel. The source
-P3 cap remains at its configured safety inset from the P3 boundary, but such a
-display target has no exact inverse through a Rec.2020-limited output
-transform. The selected output view also has a finite peak: display-reference
-RGB is relative to 100 nits, so the SDR 100-nit view is bounded by `[0, 1]` and
-the HDR 1000-nit view by `[0, 10]`. A high fitted anchor can place a source
-target above that upper face even though it remains valid in the source P3
-gamut cone. The compensation path clamps each limiting-RGB channel of an
-unreachable target to the selected view's bounded RGB volume before applying
-the inverse. This does not move the source palette's gamut-boundary caps;
-instead, it chooses a bounded display target that the inverse output transform
-can represent. Separate lower-gamut and upper-peak projection counts,
-the original channel extrema, and the maximum XYZ adjustment are recorded in
-the report and EXR metadata. The OCIO intermediate round-trip check uses its
-configured absolute tolerance plus a small relative allowance because the CPU
-transforms operate in float32 and HDR intermediate values extend well above
-one.
+the P3 red primary that produces a negative Rec.2020 blue channel. For the
+compensated P3 profile, each rendered hue uses the lower of its P3-D65 and
+Rec.2020-D65 constant-`J_HK` chroma limits. The affected cap is therefore
+reduced along the same modCAM16-HK hue and perceived-brightness path until it
+reaches the Rec.2020 zero-channel face, with the configured boundary safety
+inset. Ordinary P3 output remains constrained only by P3-D65.
+
+The selected output view also has a finite peak: display-reference RGB is
+relative to 100 nits, so the SDR 100-nit view is bounded by `[0, 1]` and the
+HDR 1000-nit view by `[0, 10]`. A high fitted anchor can place a source target
+above that upper face even though it remains valid in the source gamut cone.
+The compensation path retains its component-wise bounded-volume projection as
+a numerical safeguard and for finite-peak violations before applying the
+inverse. Separate lower-gamut and upper-peak projection counts, the original
+channel extrema, and the maximum XYZ adjustment are recorded in the report and
+EXR metadata. The OCIO intermediate round-trip check uses its configured
+absolute tolerance plus a small relative allowance because the CPU transforms
+operate in float32 and HDR intermediate values extend well above one.
 
 The compensated source palettes use their own logarithmic chroma companding:
 `sRGB-D65` defaults to `k=2.5` and `P3-D65` defaults to `k=4.0`.  These values

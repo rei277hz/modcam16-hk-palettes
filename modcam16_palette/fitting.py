@@ -171,6 +171,31 @@ def _source_config_for_anchor(
     )
 
 
+def _source_gamut_constraints(
+    profile: CompensationProfileConfig,
+) -> tuple[tuple[str, np.ndarray], ...]:
+    """Return downstream gamut cones that must bound a source palette.
+
+    The P3 source gamut is a tiny bit wider than the Rec.2020 limiting
+    triangle near its red primary.  Constraining that source in the same
+    constant-``J_HK`` model prevents the inverse-view path from having to
+    repair a negative Rec.2020 channel later.  The matrix comes from the
+    selected profile's ACES JMh parameters, whose XYZ convention matches the
+    display-reference target used by the compensation processor.
+    """
+
+    if profile.name == "p3_rec2020_pq":
+        return (
+            (
+                "Rec.2020-D65",
+                np.asarray(
+                    params_for_profile(profile.name).xyz_to_rgb, dtype=np.float64
+                ),
+            ),
+        )
+    return ()
+
+
 def _scaled_inverse_colors(
     colors: np.ndarray,
     processor: CompensationProcessor,
@@ -287,7 +312,12 @@ def _candidate_factory(
         config, gamut, source_y, compensated_k, anchor
     )
     source_model = AppearanceModel.from_config(source_config.appearance)
-    palette = build_palette(gamut, source_config, source_model)
+    palette = build_palette(
+        gamut,
+        source_config,
+        source_model,
+        additional_gamut_constraints=_source_gamut_constraints(profile),
+    )
     colors = unique_palette_colors(palette)
     scaled = _scaled_inverse_colors(colors, processor, anchor)
     rms, maximum, per_stop = evaluate_anchor_objective(

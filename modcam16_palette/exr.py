@@ -116,12 +116,25 @@ def make_comments(
         "display encoding is not baked in; source targets outside the view's "
         "reachable RGB volume are component-wise clamped before inversion."
     )
+    source_constraint_names = tuple(
+        str(name) for name in statistics.get("additional_gamut_constraints", ())
+    )
+    source_constraint_comment = (
+        " additional source boundary constraints="
+        + ", ".join(source_constraint_names)
+        + ";"
+        if source_constraint_names
+        else ""
+    )
     gamut_comment = (
         f"content constrained to nonnegative linear {gamut_name} RGB gamut cone; "
         "no upper RGB bound; values above one permitted; "
         if not statistics.get("compensation_enabled")
-        else f"source palette was constrained to the {gamut_name} RGB gamut cone; "
-        "source cap geometry is unchanged by target-volume projection; "
+        else f"source palette was constrained to the {gamut_name} RGB gamut cone;"
+        + source_constraint_comment
+        + " "
+        "source cap geometry includes any downstream boundary constraints; "
+        "target-volume projection does not alter the source palette; "
         "inverse foreground values have no upper bound; "
     )
     return (
@@ -176,9 +189,7 @@ def write_float_rgb_exr(
         assignments = statistics.get("colorchecker_assignments", ())
         header.update(
             {
-                "colorCheckerMatchMode": str(
-                    statistics["colorchecker_matching_mode"]
-                ),
+                "colorCheckerMatchMode": str(statistics["colorchecker_matching_mode"]),
                 "colorCheckerMatchMetric": str(
                     statistics.get("colorchecker_distance_metric", "")
                 ),
@@ -196,9 +207,7 @@ def write_float_rgb_exr(
                 ),
             }
         )
-        if statistics["colorchecker_matching_mode"] == (
-            "post-view ACES JMh exposure"
-        ):
+        if statistics["colorchecker_matching_mode"] == ("post-view ACES JMh exposure"):
             header.update(
                 {
                     "colorCheckerMatchExposureMin": float(
@@ -238,8 +247,7 @@ def write_float_rgb_exr(
                     ),
                     "colorCheckerMatchTargetJMh": ";".join(
                         ",".join(
-                            f"{float(value):.9g}"
-                            for value in assignment["target_jmh"]
+                            f"{float(value):.9g}" for value in assignment["target_jmh"]
                         )
                         for assignment in assignments
                         if "target_jmh" in assignment
@@ -250,6 +258,9 @@ def write_float_rgb_exr(
         compensation_header = {
             "compensationProfile": str(statistics["compensation_profile"]),
             "compensationSourceGamut": str(statistics["compensation_source_gamut"]),
+            "compensationSourceBoundaryConstraints": ",".join(
+                str(name) for name in statistics.get("additional_gamut_constraints", ())
+            ),
             "compensationDisplay": str(statistics["compensation_display_name"]),
             "compensationView": str(statistics["compensation_view_transform"]),
             "compensationOCIOConfig": str(statistics["compensation_ocio_config_path"]),
