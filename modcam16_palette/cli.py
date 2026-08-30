@@ -21,7 +21,11 @@ from .config import (
     load_config,
 )
 from .fitting import fit_profile
-from .naming import output_path_for_compensation, output_path_for_gamut
+from .naming import (
+    RELEASE_FILENAME_PATTERN,
+    output_path_for_compensation,
+    output_path_for_gamut,
+)
 from .ocio_compensation import (
     compensate_candidate_colors,
     compensate_foreground,
@@ -34,7 +38,7 @@ from .report import print_generation_header, print_palette_report
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="make_modcam16-hk_palettes4.0.py",
+        prog="make_modcam16-hk_palettes.py",
         description="Generate equal-perceived-brightness modCAM16-HK radial palettes.",
     )
     parser.add_argument("--config", type=Path, help="TOML configuration file")
@@ -585,8 +589,11 @@ def generate_release(
     names = [path.name for path in paths]
     if len(set(names)) != len(names):
         raise RuntimeError("Release generation produced duplicate output names.")
-    if any(len(path.stem.split("_")) > 3 for path in paths):
-        raise RuntimeError("Release output names must contain at most three segments.")
+    if any(RELEASE_FILENAME_PATTERN.fullmatch(path.name) is None for path in paths):
+        raise RuntimeError(
+            "Release output names must use at most three underscore-separated "
+            "fields with hyphens inside fields."
+        )
     return paths
 
 

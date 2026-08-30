@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 
 from .colorimetry import GamutMatrices
@@ -13,17 +14,25 @@ from .config import (
     _normalize_compensation_profile_name,
 )
 
-# Release artifacts intentionally use short, stable names.  Keep each stem to
-# at most three underscore-delimited segments so the five files are easy to
-# identify in file browsers and downstream delivery scripts.
+# Release artifacts intentionally use short, stable names. Keep each stem to
+# at most three underscore-delimited fields so the five files are easy to
+# identify in file browsers and downstream delivery scripts. The final field
+# explicitly records the scene-linear ACEScg float32 encoding.
+RELEASE_FILENAME_PATTERN = re.compile(
+    r"[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+){0,2}\.exr"
+)
 RELEASE_DIRECT_FILENAMES = {
-    "sRGB-D65": "sRGB_Direct_Palette.exr",
-    "P3-D65": "P3_Direct_Palette.exr",
-    "ACEScg/AP1-D60": "AP1_Direct_Palette.exr",
+    "sRGB-D65": "sRGB-GamutCone_ACEScg-fp32.exr",
+    "P3-D65": "P3-GamutCone_ACEScg-fp32.exr",
+    "ACEScg/AP1-D60": "AP1-GamutCone_ACEScg-fp32.exr",
 }
 RELEASE_COMPENSATED_FILENAMES = {
-    "srgb_rec709_bt1886": "sRGB_ACES2_SDR.exr",
-    "p3_rec2020_pq": "P3_ACES2_HDR.exr",
+    "srgb_rec709_bt1886": (
+        "sRGB-GamutCone_ACES2-Rec709-BT1886-Compensated_ACEScg-fp32.exr"
+    ),
+    "p3_rec2020_pq": (
+        "P3-GamutCone_ACES2-Rec2020-PQ-Compensated_ACEScg-fp32.exr"
+    ),
 }
 
 

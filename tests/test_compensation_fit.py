@@ -328,15 +328,13 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
     pytest.importorskip("OpenEXR")
     config = _tiny_fit_config(tmp_path)
     paths = generate(config, verbose=False)
-    ordinary = [path for path in paths if "ACESJFit" not in path.name]
-    compensated = [path for path in paths if "ACESJFit" in path.name]
-    assert len(ordinary) == 1
-    assert len(compensated) == 1
-    assert "ACESJFit_A" in compensated[0].name
+    assert len(paths) == 2
+    ordinary, compensated = paths
+    assert "ACESJFit_A" in compensated.name
 
     import OpenEXR
 
-    with OpenEXR.File(str(compensated[0])) as exr:
+    with OpenEXR.File(str(compensated)) as exr:
         header = exr.header()
         pixels = exr.channels()["RGB"].pixels
         assert pixels.dtype == np.float32
@@ -357,7 +355,7 @@ def test_automatic_generation_publishes_white_and_fit_metadata(tmp_path):
         assert header["compensationRoundTripNormalizedMax"] >= 0.0
         assert "fitted anchor=" in header["comments"]
 
-    with OpenEXR.File(str(ordinary[0])) as exr:
+    with OpenEXR.File(str(ordinary)) as exr:
         assert np.array_equal(
             exr.channels()["RGB"].pixels[128, 128],
             np.ones(3, dtype=np.float32),
@@ -404,10 +402,10 @@ def test_manual_fit_keeps_legacy_anchor_and_filename(tmp_path):
     pytest.importorskip("OpenEXR")
     config = _tiny_fit_config(tmp_path, fit_mode="manual")
     paths = generate(config, verbose=False)
-    compensated = [path for path in paths if "ACES2Inv" in path.name]
-    assert len(compensated) == 1
-    assert "TargetY0p18_Scale5p55555555556" in compensated[0].name
-    assert "ACESJFit" not in compensated[0].name
+    assert len(paths) == 2
+    compensated = paths[1]
+    assert "ACES2Inv" in compensated.name
+    assert "TargetY0p18_Scale5p55555555556" in compensated.name
 
 
 def test_p3_hdr_compensation_projects_boundary_cap_and_completes():

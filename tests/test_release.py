@@ -6,6 +6,7 @@ from modcam16_palette.config import config_from_mapping, default_config
 from modcam16_palette.naming import (
     RELEASE_COMPENSATED_FILENAMES,
     RELEASE_DIRECT_FILENAMES,
+    RELEASE_FILENAME_PATTERN,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,15 +38,26 @@ def test_release_names_are_short_and_unique():
     assert len(names) == 5
     assert len(set(names)) == 5
     assert all(len(Path(name).stem.split("_")) <= 3 for name in names)
+    assert all(name.endswith("ACEScg-fp32.exr") for name in names)
+    assert all(RELEASE_FILENAME_PATTERN.fullmatch(name) for name in names)
+    assert tuple(RELEASE_DIRECT_FILENAMES.values()) == (
+        "sRGB-GamutCone_ACEScg-fp32.exr",
+        "P3-GamutCone_ACEScg-fp32.exr",
+        "AP1-GamutCone_ACEScg-fp32.exr",
+    )
+    assert tuple(RELEASE_COMPENSATED_FILENAMES.values()) == (
+        "sRGB-GamutCone_ACES2-Rec709-BT1886-Compensated_ACEScg-fp32.exr",
+        "P3-GamutCone_ACES2-Rec2020-PQ-Compensated_ACEScg-fp32.exr",
+    )
 
 
 def test_generate_release_enforces_five_palette_contract(monkeypatch, tmp_path):
     expected_names = (
-        "sRGB_Direct_Palette.exr",
-        "P3_Direct_Palette.exr",
-        "AP1_Direct_Palette.exr",
-        "sRGB_ACES2_SDR.exr",
-        "P3_ACES2_HDR.exr",
+        "sRGB-GamutCone_ACEScg-fp32.exr",
+        "P3-GamutCone_ACEScg-fp32.exr",
+        "AP1-GamutCone_ACEScg-fp32.exr",
+        "sRGB-GamutCone_ACES2-Rec709-BT1886-Compensated_ACEScg-fp32.exr",
+        "P3-GamutCone_ACES2-Rec2020-PQ-Compensated_ACEScg-fp32.exr",
     )
     calls = []
 
@@ -71,3 +83,10 @@ def test_release_main_quiet_prints_paths(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(cli, "generate_release", lambda *args, **kwargs: paths)
     assert cli.release_main(["--quiet", "--output-dir", str(tmp_path)]) == 0
     assert capsys.readouterr().out.splitlines() == [str(path) for path in paths]
+
+
+def test_versionless_palette_launcher_is_the_only_repository_launcher():
+    launchers = sorted(
+        path.name for path in ROOT.glob("make_modcam16-hk_palettes*.py")
+    )
+    assert launchers == ["make_modcam16-hk_palettes.py"]
