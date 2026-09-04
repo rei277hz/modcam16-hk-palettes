@@ -20,6 +20,7 @@ test = ["pytest>=8"]
 [project.scripts]
 modcam16-palette = "modcam16_palette.cli:main"
 modcam16-palette-release = "modcam16_palette.cli:release_main"
+modcam16-decompose = "modcam16_palette.decompose:main"
 
 [tool.setuptools.packages.find]
 include = ["modcam16_palette*"]
