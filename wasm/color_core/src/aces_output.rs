@@ -3,7 +3,9 @@
 //! The equations and table payloads in this module are exported by the
 //! bundled OpenColorIO 2.5 processors as GPU shader code.  Keeping the
 //! fixed-function implementation here avoids approximating the inverse view
-//! with a small one-dimensional curve.
+//! with a small one-dimensional curve. Profile IDs are 0 = Rec.2020 HDR,
+//! 1 = Rec.709 SDR, 2 = P3-D65 HDR, and 4 = P3-D65 SDR; ID 3 is handled by
+//! the direct-sRGB path in the parent module.
 
 mod tables {
     include!("aces_output_tables.rs");
@@ -78,7 +80,10 @@ const RGB_TO_LMS_HDR: [[f64; 3]; 3] = [
     [0.0084437551, 0.0436396375, 0.741617143],
 ];
 
-const RGB_TO_LMS_HDR_P3: [[f64; 3]; 3] = [
+// The P3-D65 ACES 2.0 SDR and HDR processors use the same P3-specific
+// appearance-space RGB-to-LMS matrix; their tone scale and gamut payloads
+// differ by peak level.
+const RGB_TO_LMS_P3: [[f64; 3]; 3] = [
     [0.252340943, 0.410706788, 0.13065286],
     [0.106794775, 0.535307527, 0.15159817],
     [0.00746381795, 0.0558294654, 0.730407238],
@@ -103,7 +108,8 @@ const JMH_TO_RGB_HDR: [[f64; 3]; 3] = [
     [0.00181781093, -0.111337908, 1.36944115],
 ];
 
-const JMH_TO_RGB_HDR_P3: [[f64; 3]; 3] = [
+// Likewise, the inverse JMh-to-P3 matrix is shared by the two P3 processors.
+const JMH_TO_RGB_P3: [[f64; 3]; 3] = [
     [5.86586046, -4.48821688, -0.117723338],
     [-1.17879069, 2.81135988, -0.372647762],
     [0.0301606283, -0.16902554, 1.39878595],
@@ -204,9 +210,9 @@ fn parameters(profile: u32) -> Parameters {
     } else if profile == 2 {
         Parameters {
             xyz_to_rgb: XYZ_TO_P3,
-            rgb_to_lms: RGB_TO_LMS_HDR_P3,
+            rgb_to_lms: RGB_TO_LMS_P3,
             target_to_xyz: P3_TO_XYZ,
-            jmh_to_target_rgb: JMH_TO_RGB_HDR_P3,
+            jmh_to_target_rgb: JMH_TO_RGB_P3,
             j_max: 283.249878,
             input_max: 10.0,
             output_max: 4096.0,
@@ -224,7 +230,32 @@ fn parameters(profile: u32) -> Parameters {
             toe_second_k2: 0.000500000024,
             reach_m: tables::HDR_REACH_M,
             gamut_cusp: tables::HDR_P3_GAMUT_CUSP,
-            gamut_hues: tables::HDR_GAMUT_HUES,
+            gamut_hues: tables::HDR_P3_GAMUT_HUES,
+        }
+    } else if profile == 4 {
+        Parameters {
+            xyz_to_rgb: XYZ_TO_P3,
+            rgb_to_lms: RGB_TO_LMS_P3,
+            target_to_xyz: P3_TO_XYZ,
+            jmh_to_target_rgb: JMH_TO_RGB_P3,
+            j_max: 100.0,
+            input_max: 1.0,
+            output_max: 1024.0,
+            focus_j: 34.096539,
+            slope_gain: 135.0,
+            gamma_bottom_inv: 0.877192974,
+            tonescale_y_max: 1.00826871,
+            tonescale_y_scale: 0.73009213709383403,
+            tonescale_y_ref: 1.04710376,
+            mnorm_cosine: [11.341321604032515, 16.469863649185896, 7.8842182208776475],
+            mnorm_sine: [14.665187919584513, -6.3725780354404442, 9.1941277054452897],
+            mnorm_offset: 77.133051547393805,
+            toe_first_gain: 2.4000001,
+            toe_second_gain: 1.29999995,
+            toe_second_k2: 0.00499999989,
+            reach_m: tables::SDR_REACH_M,
+            gamut_cusp: tables::SDR_P3_GAMUT_CUSP,
+            gamut_hues: tables::SDR_P3_GAMUT_HUES,
         }
     } else {
         Parameters {

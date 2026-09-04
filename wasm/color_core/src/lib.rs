@@ -2,8 +2,8 @@
 //!
 //! The public functions deliberately use flat arrays so they are cheap to
 //! call from JavaScript workers.  The scene/display conversions here cover
-//! the fixed HDR Rec.2020-limited, HDR P3-D65, SDR Rec.709, and direct sRGB
-//! profiles used by the Python tool.
+//! the fixed HDR Rec.2020-limited, HDR/SDR P3-D65, SDR Rec.709, and direct
+//! sRGB profiles used by the Python tool.
 //! The ACES output forward and inverse paths are the ACES 2.0 fixed functions
 //! exported by the bundled OpenColorIO processor.  The appearance equations are the
 //! modCAM16-HK equations used by ``modcam16_palette.cam16_hk`` with its
@@ -1965,7 +1965,7 @@ mod tests {
 
     #[test]
     fn adaptation_keeps_low_reflectance_samples_reachable() {
-        for profile in 0..4 {
+        for profile in [0, 1, 2, 3, 4] {
             for reflectance in [0.0001, 0.0005, 0.001] {
                 let values = evaluate_adapted(profile, reflectance, 0.0, 0.0, 4500.0, 0.0, 0.5);
                 assert!(
@@ -2088,7 +2088,7 @@ mod tests {
     #[test]
     fn adapted_slice_keeps_aces_gamut_mask_at_d65() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let j_hk = neutral_j_hk(m, profile, 0.9);
             for hue in (0..360).step_by(30) {
                 for saturation in [0.0, 20.0, 40.0, 60.0, 80.0, 100.0] {
@@ -2120,7 +2120,7 @@ mod tests {
     #[test]
     fn neutral_j_hk_uses_the_forward_rendered_acescg_neutral() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for reflectance in [0.0, 0.5, 1.0, REFLECTANCE_MAX] {
                 let expected = attributes(m, transform_from_acescg(profile, [reflectance; 3])).3;
                 assert!((neutral_j_hk(m, profile, reflectance) - expected).abs() < 1.0e-12);
@@ -2131,7 +2131,7 @@ mod tests {
     #[test]
     fn profile_refl_solves_unit_acescg_white() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let rendered = transform_from_acescg(profile, [1.0; 3]);
             let j_hk = attributes(m, rendered).3;
             let (reflectance, exact) = solve_neutral_reflectance_for_j_hk(m, profile, j_hk);
@@ -2155,7 +2155,7 @@ mod tests {
     #[test]
     fn evaluated_forward_color_matches_the_neutral_j_hk_target() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for (reflectance, hue, saturation) in [(0.2, 15.0, 5.0), (0.5, 120.0, 30.0)] {
                 let values = evaluate(profile, reflectance, hue, saturation);
                 assert!(values[0] > 0.5, "profile={profile}");
@@ -2188,7 +2188,7 @@ mod tests {
     #[test]
     fn colorchecker_points_are_absolute_acescg_references_for_each_profile() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let points = colorchecker_points(profile);
             assert_eq!(points.len(), 18 * 10);
             for (index, record) in points.chunks_exact(10).enumerate() {
@@ -2227,7 +2227,7 @@ mod tests {
     fn absolute_reference_coordinates_reconstruct_a_reachable_target() {
         let m = model();
         let target = [0.3, 0.4, 0.5];
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let record = colorchecker_record_from_acescg(m, profile, target);
             assert!(record[..9].iter().all(|value| value.is_finite()));
             let rendered = transform_from_acescg(profile, target);
@@ -2351,7 +2351,7 @@ mod tests {
             decode_srgb(source[22]),
         ];
 
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates =
                 set_profile_from_acescg_srgb(profile, 0.5, source[20], source[21], source[22]);
             let rendered = transform_from_acescg(profile, acescg);
@@ -2368,7 +2368,7 @@ mod tests {
     #[test]
     fn profile_conversion_uses_finite_boundary_for_unreachable_j_hk() {
         let mut found = false;
-        'states: for source_profile in 0..3 {
+        'states: for source_profile in [0, 1, 2, 4] {
             for reflectance in [0.2, 0.5, 0.8, 1.0] {
                 for hue in (0..360).step_by(15) {
                     for saturation in [15.0, 30.0, 50.0, 75.0, 100.0] {
@@ -2376,7 +2376,7 @@ mod tests {
                         if source[0] <= 0.5 {
                             continue;
                         }
-                        for target_profile in 0..3 {
+                        for target_profile in [0, 1, 2, 4] {
                             let coordinates = set_profile_from_acescg_srgb(
                                 target_profile,
                                 reflectance,
@@ -2403,7 +2403,7 @@ mod tests {
     #[test]
     fn profile_conversion_matches_absolute_reference_hue_and_saturation() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for lab in COLORCHECKER_LAB_D50 {
                 let xyz_d50 = lab_d50_to_xyz(lab);
                 let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
@@ -2421,7 +2421,7 @@ mod tests {
 
     #[test]
     fn background_snap_is_the_forward_view_neutral() {
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let values = evaluate(profile, 0.5, 120.0, 30.0);
             let expected = forward_acescg_neutral(profile, 0.5).expect("neutral view output");
             assert!((values[23] - expected).abs() < 1.0e-12);
@@ -2431,8 +2431,8 @@ mod tests {
     #[test]
     fn background_profile_conversion_uses_exact_transforms() {
         for source_neutral in [0.0, 0.5, 1.0] {
-            for source_profile in [0, 1, 2, 3] {
-                for target_profile in [0, 1, 2, 3] {
+            for source_profile in [0, 1, 2, 3, 4] {
+                for target_profile in [0, 1, 2, 3, 4] {
                     let converted =
                         convert_neutral_profile(source_profile, target_profile, source_neutral);
                     assert!(converted[0] > 0.5);
@@ -2493,7 +2493,7 @@ mod tests {
             39.25784549124876,
             26.203829648600536,
         );
-        for profile in 0..4 {
+        for profile in [0, 1, 2, 3, 4] {
             let converted = convert_background_profile(
                 3,
                 profile,
@@ -2667,7 +2667,7 @@ mod tests {
         let linear = [0.1, 0.2, 0.3];
         let encoded = encode_display_rgb(linear);
         let acescg = srgb_to_acescg(linear);
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates = set_profile_from_output_srgb_converted(
                 profile, 0.5, encoded[0], encoded[1], encoded[2],
             );
@@ -2691,7 +2691,7 @@ mod tests {
         // boundary slider values, while evaluation exposes its unavailable
         // state and clamps the readout to the unit interval.
         let encoded = encode_display_rgb([0.5; 3]);
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates = set_profile_from_output_srgb_converted(
                 profile, 0.5, encoded[0], encoded[1], encoded[2],
             );
@@ -2715,7 +2715,7 @@ mod tests {
         assert!(direct[2..5]
             .iter()
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let values = evaluate(profile, REFLECTANCE_MAX, 0.0, 0.0);
             assert!(values[0] <= 0.5, "profile={profile}");
             assert!(values[2..5]
@@ -2734,5 +2734,43 @@ mod tests {
                 "actual={actual}, reference={reference}"
             );
         }
+    }
+
+    #[test]
+    fn p3_sdr_forward_and_inverse_match_ocio_reference_samples() {
+        let xyz = transform_from_acescg(4, [0.1, 0.2, 0.3]);
+        let expected_xyz = [0.076201893, 0.098404169, 0.190585598];
+        for (actual, reference) in xyz.iter().zip(expected_xyz.iter()) {
+            assert!(
+                (actual - reference).abs() < 2.0e-6,
+                "actual={actual}, reference={reference}"
+            );
+        }
+
+        // The inverse processor consumes display-referred XYZ-D65 directly.
+        // Passing XYZ_TO_P3 * xyz here would convert the value a second time
+        // and compare against a different (P3 RGB-shaped) input domain.
+        let acescg = transform_to_acescg(4, [0.2, 0.3, 0.4]);
+        let expected_acescg = [0.2197569157, 0.6639465161, 0.6819892161];
+        for (actual, reference) in acescg.iter().zip(expected_acescg.iter()) {
+            assert!(
+                (actual - reference).abs() < 2.0e-6,
+                "actual={actual}, reference={reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn p3_sdr_uses_p3_source_gamut_and_profile_local_neutral() {
+        let m = model();
+        let white = transform_from_acescg(4, [0.5; 3]);
+        assert!(source_cone_valid(4, xyz_to_source(4, white), white));
+        let j_hk = neutral_j_hk(m, 4, 0.5);
+        let (refl, exact) = solve_neutral_reflectance_for_j_hk(m, 4, j_hk);
+        assert!(exact);
+        assert!((refl - 0.5).abs() < 2.0e-5);
+        let values = evaluate(4, 0.5, 120.0, 30.0);
+        assert!(values[0] > 0.5);
+        assert!(values[2..5].iter().all(|value| value.is_finite()));
     }
 }

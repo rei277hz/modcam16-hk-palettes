@@ -152,6 +152,10 @@ const PROFILE_DETAILS = [
     source: "Rec.709",
     transform: "No view transform",
   },
+  {
+    source: "P3-D65",
+    transform: "ACES 2.0 P3-D65 SDR 100 nit",
+  },
 ] as const;
 
 const workers = Array.from({ length: WORKER_COUNT }, () =>

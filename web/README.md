@@ -20,7 +20,7 @@ Refl accepts `0.0..1.2` so the brightest ColorChecker references and the
 Rec.709 inverse-view bridge remain addressable. Direct sRGB is the default profile; it shows linear Rec.709 and
 encoded Rec.709 values and bounds the output to the sRGB cube. ACES profiles
 continue to show linear ACEScg and encoded AP1 values. Switching among the
-three ACES profiles retains that ACEScg value and solves all three target
+four ACES profiles retains that ACEScg value and solves all three target
 Refl, Hue, and Sat coordinates from it. Refl is therefore profile-local; the
 same ACEScg color can have different Refl values in different profiles.
 When the target cannot represent the retained color, the conversion keeps a
@@ -47,10 +47,12 @@ profile; its Hue, Sat, and Refl coordinates use the same target-profile solve
 as ACEScg entry and profile switching. An unavailable source preimage does not
 hide or move its dot. See [ACES_PROFILE_BEHAVIOR.md](./ACES_PROFILE_BEHAVIOR.md)
 for the precise notation and conversion contract.
-The Rec.2020 (P3-D65 limited) and P3-D65 HDR modes are encoded for a tagged
-Display P3 canvas when the browser supports it; the Rec.709-D65 mode uses sRGB.
-Browsers without Display P3 support use the explicit sRGB conversion for all
-modes.
+The Rec.2020 (P3-D65 limited), P3-D65 HDR, and P3-D65 SDR modes are encoded
+for a tagged Display P3 canvas when the browser supports it; the Rec.709-D65
+mode uses sRGB. Browsers without Display P3 support use the explicit sRGB
+conversion for all modes. Both P3-D65 modes use their exact ACES 2.0 output
+processor parameters and limiting-gamut tables from the bundled OCIO 2.5
+configuration.
 
 The display side also has Temp (2000..20000 K, default 6500 K) and Tint
 (-100..100, default 0) controls. Negative Tint moves toward green and positive

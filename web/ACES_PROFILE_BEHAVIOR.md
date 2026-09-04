@@ -12,7 +12,7 @@ slider values.
 
 ## Notation
 
-For one of the three ACES view profiles, let:
+For one of the four ACES view profiles, let:
 
 - `A` be the linear ACEScg/AP1 RGB value shown in the ACEScg readout.
 - `f_p(X)` be the profile `p` forward ACES view transform, excluding the
@@ -66,9 +66,16 @@ For a slider state `(r, hue, sat)`:
 
 ## ACES Profile Switching
 
-Switching between profile IDs `0`, `1`, and `2` retains the ACEScg readout as
-the source color. The target profile evaluates `f_target(A)` and independently
-solves:
+The ACES view profiles are:
+
+- ID `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 Rec.2020 HDR 1000 nit;
+- ID `1`: Rec.709 / ACES 2.0 Rec.709 SDR 100 nit;
+- ID `2`: P3-D65 / ACES 2.0 P3-D65 HDR 1000 nit;
+- ID `4`: P3-D65 / ACES 2.0 P3-D65 SDR 100 nit.
+
+ID `3` remains reserved for the direct sRGB profile. Switching between ACES
+profile IDs `0`, `1`, `2`, and `4` retains the ACEScg readout as the source
+color. The target profile evaluates `f_target(A)` and independently solves:
 
 - `Refl`: the target neutral `C(r)` whose forward `J_HK` matches
   `J_HK(f_target(A))`;
