@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101216" />
+    <title>modCAM16-HK ACES 2.0 Inverse Color Picker</title>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="visuals">
+        <div class="plot-frame">
+          <canvas id="gamut-slice" width="256" height="256" aria-label="Rendered gamut slice"></canvas>
+        </div>
+        <div class="preview-panel">
+          <div class="preview-column">
+            <div id="preview-surround" class="preview-surround">
+              <div id="preview" class="preview" aria-label="Chosen color preview"></div>
+            </div>
+          </div>
+          <div class="preview-details">
+            <span id="rgb-label">Linear Rec.709 (sRGB)<sup>*</sup></span>
+            <code id="acescg-value">(0.000, 0.000, 0.000)</code>
+            <span id="encoded-label">sRGB encoded Rec.709 (sRGB)</span>
+            <div class="encoded-value-row">
+              <div class="hex-input">
+                <span class="hex-prefix" aria-hidden="true">#</span>
+                <input id="acescg-encoded-value" class="encoded-value" type="text" value="000000" maxlength="6" pattern="[0-9A-Fa-f]{6}" spellcheck="false" aria-label="Six sRGB encoded Rec.709 (sRGB) hex digits" />
+              </div>
+              <button id="acescg-copy" class="action-button" type="button">Copy</button>
+              <button id="acescg-set" class="action-button" type="button">Set</button>
+            </div>
+            <span id="colorchecker-name" class="colorchecker-name" hidden></span>
+          </div>
+          <div class="background-control">
+          <label for="background-brightness">Background <span class="control-value" id="background-brightness-value">0.148</span></label>
+            <div class="range-wrap">
+              <span id="background-stick" class="stick-marker" hidden aria-hidden="true"></span>
+              <input id="background-brightness" type="range" min="0" max="1" step="0.001" value="0.385794949" aria-label="Linear background brightness" />
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="controls" aria-label="Color controls">
+        <div class="control-row profile-row">
+          <label for="profile">Mode</label>
+            <select id="profile" aria-label="Source gamut and transform">
+            <option value="3" selected>Rec.709 / No view transform</option>
+            <option value="1">Rec.709 / ACES 2.0 Rec.709 SDR 100 nit</option>
+            <option value="2">P3-D65 / ACES 2.0 P3-D65 HDR 1000 nit</option>
+            <option value="0">Rec.2020 (P3-D65 limited) / ACES 2.0 Rec.2020 HDR 1000 nit</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label for="reflectance">Refl</label>
+          <div class="slider-control">
+            <div class="range-wrap">
+              <span id="reflectance-stick" class="stick-marker" hidden aria-hidden="true"></span>
+            <input id="reflectance" type="range" min="0" max="1" step="0.001" value="0.3882562652" />
+            </div>
+              <input id="reflectance-number" class="number-input" type="number" min="0" max="1.2" step="any" value="0.1477553471" inputmode="decimal" aria-label="Profile neutral reflectance" />
+          </div>
+        </div>
+        <div class="control-row">
+            <label for="hue">Hue <span class="unit">°</span></label>
+          <div class="slider-control">
+            <div class="range-wrap">
+              <span id="hue-sticks" class="stick-points" aria-hidden="true"></span>
+              <input id="hue" type="range" min="0" max="360" step="0.001" value="39.2578454912" />
+            </div>
+            <input id="hue-number" class="number-input" type="number" min="0" max="360" step="any" value="39.2578454912" inputmode="decimal" aria-label="Hue value in degrees" />
+          </div>
+        </div>
+        <div class="control-row">
+          <label for="saturation">Sat <span class="unit">%</span></label>
+          <div class="slider-control">
+            <div class="range-wrap">
+              <span id="saturation-stick" class="stick-marker" hidden aria-hidden="true"></span>
+              <input id="saturation" type="range" min="0" max="1" step="0.001" value="0.5549558390" />
+            </div>
+            <input id="saturation-number" class="number-input" type="number" min="0" max="100" step="any" value="26.2038296486" inputmode="decimal" aria-label="Saturation percentage" />
+          </div>
+        </div>
+      </section>
+      <footer class="app-footer">* The Linear Rec.709 (sRGB) value is directly picked by the Refl, Hue, and Sat sliders.</footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
