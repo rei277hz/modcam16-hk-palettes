@@ -9,3 +9,5 @@ dist/
 build/
 *.egg-info/
 out/
+node_modules/
+target/

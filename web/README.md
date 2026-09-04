@@ -32,7 +32,7 @@ position uses an sRGB piecewise curve for more usable low-level control, and
 its snap marker is the selected profile's forward-view neutral.
 The direct sRGB profile remains a separate workflow: it shows linear Rec.709,
 and its `Refl` is the neutral linear-sRGB value whose `J_HK` defines the picked
-color. Cross-workflow conversions use the SDR bridge explicitly: ACES-to-sRGB
+color. Its encoded readout is labeled “sRGB Encoded Rec.709 (sRGB)”. Cross-workflow conversions use the SDR bridge explicitly: ACES-to-sRGB
 runs the retained ACEScg RGB through the ACES 2.0 Rec.709 100-nit view and then
 to clipped sRGB, while sRGB-to-ACES runs linear Rec.709 through the inverse of
 that same view before rendering the selected ACES profile. The selected ACEScg
@@ -51,3 +51,24 @@ The Rec.2020 (P3-D65 limited) and P3-D65 HDR modes are encoded for a tagged
 Display P3 canvas when the browser supports it; the Rec.709-D65 mode uses sRGB.
 Browsers without Display P3 support use the explicit sRGB conversion for all
 modes.
+
+The display side also has Temp (2000..20000 K, default 6500 K) and Tint
+(-100..100, default 0) controls. Negative Tint moves toward green and positive
+Tint toward magenta along the normal to the local CCT locus. CAT02 adapts the
+display-side XYZ to the selected white and applies a J_HK-preserving scale, so the slice, picked color,
+ColorChecker dots, and background surround all respond without changing the
+pre-adaptation Refl/Hue/Sat state. Hex entry is interpreted as the visible
+adapted color and reverse-adapted before solving the sliders. See
+[CHROMATIC_ADAPTATION_BEHAVIOR.md](./CHROMATIC_ADAPTATION_BEHAVIOR.md).
+Temp uses a piecewise reciprocal-temperature (mired) slider curve: the
+2000..6500 K and 6500..20000 K spans occupy equal halves of the track, putting
+6500 K at the exact midpoint while keeping each side's response consistent in
+mired space. Tint uses a signed square-root curve so small
+corrections have more travel. Both sliders show a neutral snap marker and snap
+to 6500 K/0 when edited within the normal tolerance (500 K / 0.5 tint units).
+While dragging Temp, its readout is rounded to the nearest 50 K; Tint is shown
+as an integer. The values sent to the color core remain numeric kelvins and tint
+units. Reset restores both controls to 6500 K and tint 0.
+While Refl, Temp, or Tint is dragged, the slice is rendered at 64×64 for
+responsiveness; releasing or settling the control renders the full-resolution
+slice.

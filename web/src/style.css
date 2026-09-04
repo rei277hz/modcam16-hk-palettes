@@ -159,11 +159,29 @@ select:focus-visible {
   min-height: 0;
 }
 
+.display-controls {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.display-controls .control-row {
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.display-controls-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .plot-frame {
   width: min(100%, 512px, max(0px, calc(100dvh - 280px)));
   aspect-ratio: 1;
   background: #171a20;
   border: 1px solid #2b3039;
+  grid-row: 1 / span 2;
 }
 
 canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
@@ -174,6 +192,8 @@ canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
   gap: 14px;
   align-items: start;
   padding-top: 2px;
+  grid-column: 2;
+  grid-row: 2;
 }
 
 .preview-column {
@@ -318,6 +338,12 @@ code {
 
 .action-button:hover { background: #2d3541; }
 .action-button:focus-visible { outline: 1px solid #71b7ff; outline-offset: 1px; }
+.action-button:disabled {
+  color: #7f8794;
+  background: #171a20;
+  cursor: default;
+  opacity: 0.65;
+}
 
 
 .app-footer {
@@ -332,10 +358,45 @@ code {
 
 @media (max-width: 720px) {
   .app-shell { padding: 20px 16px 28px; }
-  .visuals { grid-template-columns: 1fr; }
-  .plot-frame { width: min(100%, 512px, max(0px, calc(100dvh - 520px))); }
-  .plot-frame { margin: 0 auto; }
-  .preview-panel { max-width: 512px; margin: 0 auto; width: 100%; }
+  .visuals {
+    grid-template-columns: minmax(150px, 1fr) minmax(118px, 0.72fr);
+    gap: 12px;
+  }
+  .plot-frame {
+    grid-column: 1;
+    grid-row: 1;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+  }
+  .display-controls {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 10px;
+    padding-top: 0;
+  }
+  .display-controls .control-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    align-items: stretch;
+  }
+  .display-controls .slider-control {
+    grid-template-columns: minmax(0, 1fr) 48px;
+    gap: 4px;
+  }
+  .display-controls .number-input {
+    padding: 3px 4px;
+    font-size: 11px;
+  }
+  .display-controls-actions { justify-content: stretch; }
+  .display-controls-actions .action-button { width: 100%; }
+  .preview-panel {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 512px;
+    margin: 0 auto;
+    width: 100%;
+  }
 
   input[type="range"] {
     min-height: 28px;
