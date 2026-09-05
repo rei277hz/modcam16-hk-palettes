@@ -12,6 +12,31 @@
         <div class="plot-frame">
           <canvas id="gamut-slice" width="256" height="256" aria-label="Rendered gamut slice"></canvas>
         </div>
+        <div class="display-controls" aria-label="Display white balance controls">
+          <div class="control-row">
+            <label for="temperature">Temp <span class="unit">K</span></label>
+            <div class="slider-control">
+              <div class="range-wrap">
+                <span id="temperature-stick" class="stick-marker" aria-hidden="true"></span>
+                <input id="temperature" type="range" min="0" max="1" step="0.00001" value="0.5" aria-label="Display temperature in Kelvin" aria-valuemin="2000" aria-valuemax="20000" aria-valuenow="6500" aria-valuetext="6500 K" />
+              </div>
+              <input id="temperature-number" class="number-input" type="number" min="2000" max="20000" step="1" value="6500" inputmode="numeric" aria-label="Display temperature in Kelvin" />
+            </div>
+          </div>
+          <div class="control-row">
+            <label for="tint">Tint</label>
+            <div class="slider-control">
+              <div class="range-wrap">
+                <span id="tint-stick" class="stick-marker" aria-hidden="true"></span>
+                <input id="tint" type="range" min="0" max="1" step="0.001" value="0.5" aria-label="Display tint" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0" />
+              </div>
+              <input id="tint-number" class="number-input" type="number" min="-100" max="100" step="any" value="0" inputmode="decimal" aria-label="Display tint" />
+            </div>
+          </div>
+          <div class="display-controls-actions">
+            <button id="white-balance-reset" class="action-button" type="button" aria-label="Reset display white balance" disabled>Reset</button>
+          </div>
+        </div>
         <div class="preview-panel">
           <div class="preview-column">
             <div id="preview-surround" class="preview-surround">
@@ -21,11 +46,11 @@
           <div class="preview-details">
             <span id="rgb-label">Linear Rec.709 (sRGB)<sup>*</sup></span>
             <code id="acescg-value">(0.000, 0.000, 0.000)</code>
-            <span id="encoded-label">sRGB encoded Rec.709 (sRGB)</span>
+            <span id="encoded-label">sRGB Encoded Rec.709 (sRGB)</span>
             <div class="encoded-value-row">
               <div class="hex-input">
                 <span class="hex-prefix" aria-hidden="true">#</span>
-                <input id="acescg-encoded-value" class="encoded-value" type="text" value="000000" maxlength="6" pattern="[0-9A-Fa-f]{6}" spellcheck="false" aria-label="Six sRGB encoded Rec.709 (sRGB) hex digits" />
+                <input id="acescg-encoded-value" class="encoded-value" type="text" value="000000" maxlength="6" pattern="[0-9A-Fa-f]{6}" spellcheck="false" aria-label="Six sRGB Encoded Rec.709 (sRGB) hex digits" />
               </div>
               <button id="acescg-copy" class="action-button" type="button">Copy</button>
               <button id="acescg-set" class="action-button" type="button">Set</button>
@@ -46,9 +71,10 @@
           <label for="profile">Mode</label>
             <select id="profile" aria-label="Source gamut and transform">
             <option value="3" selected>Rec.709 / No view transform</option>
-            <option value="1">Rec.709 / ACES 2.0 Rec.709 SDR 100 nit</option>
-            <option value="2">P3-D65 / ACES 2.0 P3-D65 HDR 1000 nit</option>
-            <option value="0">Rec.2020 (P3-D65 limited) / ACES 2.0 Rec.2020 HDR 1000 nit</option>
+            <option value="1">Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709)</option>
+            <option value="4">P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)</option>
+            <option value="2">P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65)</option>
+            <option value="0">Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020)</option>
           </select>
         </div>
         <div class="control-row">

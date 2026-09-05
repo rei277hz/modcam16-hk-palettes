@@ -2,8 +2,8 @@
 //!
 //! The public functions deliberately use flat arrays so they are cheap to
 //! call from JavaScript workers.  The scene/display conversions here cover
-//! the fixed HDR Rec.2020-limited, HDR P3-D65, SDR Rec.709, and direct sRGB
-//! profiles used by the Python tool.
+//! the fixed HDR Rec.2020-limited, HDR/SDR P3-D65, SDR Rec.709, and direct
+//! sRGB profiles used by the Python tool.
 //! The ACES output forward and inverse paths are the ACES 2.0 fixed functions
 //! exported by the bundled OpenColorIO processor.  The appearance equations are the
 //! modCAM16-HK equations used by ``modcam16_palette.cam16_hk`` with its
@@ -127,6 +127,20 @@ const D50_TO_D65_CAT02: [[f64; 3]; 3] = [
     [0.0013712869836183, 0.00443870751911378, 1.3127874597917268],
 ];
 
+const CAT02: [[f64; 3]; 3] = [
+    [0.7328, 0.4296, -0.1624],
+    [-0.7036, 1.6975, 0.0061],
+    [0.0030, 0.0136, 0.9834],
+];
+
+const CAT02_INVERSE: [[f64; 3]; 3] = [
+    [1.096123820835514, -0.278869000182015, 0.182745179382773],
+    [0.454369041975359, 0.473533154307412, 0.072097803717229],
+    [-0.009627608738429, -0.005698031216113, 1.015325639954543],
+];
+
+const D65_XY: [f64; 2] = [0.3127, 0.3290];
+
 #[derive(Clone, Copy)]
 struct Model {
     adaptation: [f64; 3],
@@ -185,6 +199,259 @@ fn mat(matrix: &[[f64; 3]; 3], value: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+fn cct_uv(temp: f64) -> [f64; 2] {
+    // Hernandez-Andres daylight/Planckian approximation, adequate over the
+    // UI range. The published approximation uses a piecewise polynomial for
+    // y(x); using the low-temperature branch everywhere produces a large
+    // jump away from the exact D65 anchor near 6500 K.
+    let t = if temp.is_finite() {
+        temp.clamp(2000.0, 20000.0)
+    } else {
+        6500.0
+    };
+    let x = if t <= 4000.0 {
+        -0.2661239e9 / t.powi(3) - 0.2343580e6 / t.powi(2) + 0.8776956e3 / t + 0.179910
+    } else {
+        -3.0258469e9 / t.powi(3) + 2.1070379e6 / t.powi(2) + 0.2226347e3 / t + 0.240390
+    };
+    let y = if t <= 2222.0 {
+        -1.1063814 * x.powi(3) - 1.34811020 * x.powi(2) + 2.18555832 * x - 0.20219683
+    } else if t <= 4000.0 {
+        -0.9549476 * x.powi(3) - 1.37418593 * x.powi(2) + 2.09137015 * x - 0.16748867
+    } else {
+        3.0817580 * x.powi(3) - 5.87338670 * x.powi(2) + 3.75112997 * x - 0.37001483
+    };
+    let denom = -2.0 * x + 12.0 * y + 3.0;
+    let mut u = if denom.abs() > 1.0e-9 {
+        4.0 * x / denom
+    } else {
+        0.1978
+    };
+    let mut v = if denom.abs() > 1.0e-9 {
+        6.0 * y / denom
+    } else {
+        0.3123
+    };
+    // The standard locus is a black-body/daylight approximation and does not
+    // pass exactly through the profile white used by the appearance model.
+    // Translate the locus in CIE 1960 uv so 6500 K is D65 while preserving its
+    // local temperature behavior. This avoids a visible one-step jump at the
+    // default control value.
+    let anchor_t: f64 = 6500.0;
+    let anchor_x = -3.0258469e9 / anchor_t.powi(3)
+        + 2.1070379e6 / anchor_t.powi(2)
+        + 0.2226347e3 / anchor_t
+        + 0.240390;
+    let anchor_y = 3.0817580 * anchor_x.powi(3) - 5.87338670 * anchor_x.powi(2)
+        + 3.75112997 * anchor_x
+        - 0.37001483;
+    let anchor_denom = -2.0 * anchor_x + 12.0 * anchor_y + 3.0;
+    let anchor_u = 4.0 * anchor_x / anchor_denom;
+    let anchor_v = 6.0 * anchor_y / anchor_denom;
+    let d65_denom = -2.0 * D65_XY[0] + 12.0 * D65_XY[1] + 3.0;
+    let d65_u = 4.0 * D65_XY[0] / d65_denom;
+    let d65_v = 6.0 * D65_XY[1] / d65_denom;
+    u += d65_u - anchor_u;
+    v += d65_v - anchor_v;
+    [u, v]
+}
+
+fn white_xyz_from_cct(temp: f64, tint: f64) -> [f64; 3] {
+    let temp = if temp.is_finite() {
+        temp.clamp(2000.0, 20000.0)
+    } else {
+        6500.0
+    };
+    let tint = if tint.is_finite() {
+        tint.clamp(-100.0, 100.0)
+    } else {
+        0.0
+    };
+    if (temp - 6500.0).abs() < 1.0e-12 && tint.abs() < 1.0e-12 {
+        let x = D65_XY[0];
+        return [x / D65_XY[1], 1.0, (1.0 - x - D65_XY[1]) / D65_XY[1]];
+    }
+    let mut uv = cct_uv(temp);
+    // Tint is the signed displacement perpendicular to the CCT locus in CIE
+    // 1960 uv.  The normal is oriented toward spectral magenta (positive u,
+    // negative v) so the conventional UI scale is negative = green and
+    // positive = magenta; shifting v alone would incorrectly describe a
+    // blue/yellow change.
+    if tint.abs() > 0.0 {
+        let lower = (temp - 1.0).max(2000.0);
+        let upper = (temp + 1.0).min(20000.0);
+        let lower_uv = cct_uv(lower);
+        let upper_uv = cct_uv(upper);
+        let span = (upper - lower).max(1.0e-9);
+        let tangent_u = (upper_uv[0] - lower_uv[0]) / span;
+        let tangent_v = (upper_uv[1] - lower_uv[1]) / span;
+        let tangent_length = tangent_u.hypot(tangent_v);
+        let (magenta_u, magenta_v) = if tangent_length > 1.0e-12 {
+            (-tangent_v / tangent_length, tangent_u / tangent_length)
+        } else {
+            (0.8, -0.6)
+        };
+        let distance = tint / 100.0 * 0.05;
+        uv[0] += distance * magenta_u;
+        uv[1] += distance * magenta_v;
+    }
+    // CIE 1960 uv inverse (v uses the 6y numerator, unlike CIE 1976 v').
+    let uv_denom = 2.0 * uv[0] - 8.0 * uv[1] + 4.0;
+    let (mut out_x, mut out_y) = if uv_denom.abs() > 1.0e-9 {
+        (3.0 * uv[0] / uv_denom, 2.0 * uv[1] / uv_denom)
+    } else {
+        (D65_XY[0], D65_XY[1])
+    };
+    if !out_x.is_finite() || !out_y.is_finite() || out_y <= 1.0e-6 {
+        out_x = D65_XY[0];
+        out_y = D65_XY[1];
+    }
+    [out_x / out_y, 1.0, (1.0 - out_x - out_y) / out_y]
+}
+
+fn cat02_matrix(temp: f64, tint: f64) -> ([[f64; 3]; 3], [[f64; 3]; 3]) {
+    let source = white_xyz_from_cct(6500.0, 0.0);
+    let target = white_xyz_from_cct(temp, tint);
+    let source_cone = mat(&CAT02, source);
+    let target_cone = mat(&CAT02, target);
+    let scale = [
+        if source_cone[0].abs() > 1.0e-9 {
+            target_cone[0] / source_cone[0]
+        } else {
+            1.0
+        },
+        if source_cone[1].abs() > 1.0e-9 {
+            target_cone[1] / source_cone[1]
+        } else {
+            1.0
+        },
+        if source_cone[2].abs() > 1.0e-9 {
+            target_cone[2] / source_cone[2]
+        } else {
+            1.0
+        },
+    ];
+    let mut forward = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for col in 0..3 {
+            forward[row][col] = CAT02_INVERSE[row][0] * scale[0] * CAT02[0][col]
+                + CAT02_INVERSE[row][1] * scale[1] * CAT02[1][col]
+                + CAT02_INVERSE[row][2] * scale[2] * CAT02[2][col];
+        }
+    }
+    let inverse_scale = [
+        if scale[0].abs() > 1.0e-9 {
+            1.0 / scale[0]
+        } else {
+            1.0
+        },
+        if scale[1].abs() > 1.0e-9 {
+            1.0 / scale[1]
+        } else {
+            1.0
+        },
+        if scale[2].abs() > 1.0e-9 {
+            1.0 / scale[2]
+        } else {
+            1.0
+        },
+    ];
+    let mut inverse = [[0.0; 3]; 3];
+    for row in 0..3 {
+        for col in 0..3 {
+            inverse[row][col] = CAT02_INVERSE[row][0] * inverse_scale[0] * CAT02[0][col]
+                + CAT02_INVERSE[row][1] * inverse_scale[1] * CAT02[1][col]
+                + CAT02_INVERSE[row][2] * inverse_scale[2] * CAT02[2][col];
+        }
+    }
+    (forward, inverse)
+}
+
+fn adapt_xyz_preserve_j_hk(model: Model, xyz: [f64; 3], temp: f64, tint: f64) -> [f64; 3] {
+    if !finite3(xyz) || ((temp - 6500.0).abs() < 1.0e-12 && tint.abs() < 1.0e-12) {
+        return xyz;
+    }
+    let (matrix, _) = cat02_matrix(temp, tint);
+    let adapted = mat(&matrix, xyz);
+    let target = attributes(model, xyz).3;
+    if !target.is_finite() || !finite3(adapted) {
+        return adapted;
+    }
+    let scale = solve_j_hk_scale(model, adapted, target);
+    [adapted[0] * scale, adapted[1] * scale, adapted[2] * scale]
+}
+
+fn unadapt_xyz(model: Model, xyz: [f64; 3], temp: f64, tint: f64) -> [f64; 3] {
+    if !finite3(xyz) || ((temp - 6500.0).abs() < 1.0e-12 && tint.abs() < 1.0e-12) {
+        return xyz;
+    }
+    let (_, inverse) = cat02_matrix(temp, tint);
+    // Recover the pre-adaptation scale from the visible J_HK. This is the
+    // inverse of the display-side normalization used above.
+    let base = mat(&inverse, xyz);
+    if !finite3(base) {
+        return base;
+    }
+    let target = attributes(model, xyz).3;
+    if !target.is_finite() {
+        return base;
+    }
+    let scale = solve_j_hk_scale(model, base, target);
+    [base[0] * scale, base[1] * scale, base[2] * scale]
+}
+
+/// Solve the positive scale that restores a color's J_HK after a linear
+/// chromatic-adaptation matrix.  J_HK is monotone with exposure for the
+/// non-negative colors used by the picker, but the required factor can be
+/// arbitrarily close to zero for dark colors and can exceed four for extreme
+/// white points.  Bracket adaptively instead of relying on a fixed [0.01, 4]
+/// interval; otherwise inverse entry and low-reflectance samples silently lose
+/// their original hue/saturation.
+fn solve_j_hk_scale(model: Model, base: [f64; 3], target: f64) -> f64 {
+    // Very dark samples can be attenuated by several orders of magnitude by
+    // a strong white-point shift before their J_HK is restored. Keep a broad
+    // but finite ceiling so those samples do not silently collapse to black.
+    const MAX_SCALE: f64 = 1.0e6;
+    if !target.is_finite() || !finite3(base) {
+        return 1.0;
+    }
+
+    let at_zero = attributes(model, [0.0; 3]).3;
+    if !at_zero.is_finite() || target <= at_zero {
+        return 0.0;
+    }
+
+    // Find an upper endpoint whose J_HK reaches the target. Starting at one
+    // preserves the usual case while the doubling handles both very dark
+    // adapted colors (scale < 0.01) and strong white-point shifts (scale > 4).
+    let mut low = 0.0;
+    let mut high = 1.0;
+    let mut high_j = attributes(model, base).3;
+    while high_j.is_finite() && high_j < target && high < MAX_SCALE {
+        low = high;
+        high = (high * 2.0).min(MAX_SCALE);
+        high_j = attributes(model, [base[0] * high, base[1] * high, base[2] * high]).3;
+    }
+
+    // If the target is beyond the representable scale range (or the model
+    // becomes non-finite at the upper endpoint), use the largest safe factor.
+    // Callers still perform their ordinary finite/gamut validation.
+    if !high_j.is_finite() || high_j < target {
+        return high.clamp(0.0, MAX_SCALE);
+    }
+
+    for _ in 0..60 {
+        let mid = 0.5 * (low + high);
+        let j = attributes(model, [base[0] * mid, base[1] * mid, base[2] * mid]).3;
+        if j.is_finite() && j < target {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    (0.5 * (low + high)).clamp(0.0, MAX_SCALE)
+}
+
 fn finite3(value: [f64; 3]) -> bool {
     value.iter().all(|component| component.is_finite())
 }
@@ -199,6 +466,33 @@ fn max3(value: [f64; 3]) -> f64 {
 
 fn unit_cube_valid(value: [f64; 3]) -> bool {
     finite3(value) && min3(value) >= -1.0e-6 && max3(value) <= 1.0 + 1.0e-6
+}
+
+fn adapted_display_valid(profile: u32, xyz: [f64; 3], tolerance: f64) -> bool {
+    let source_rgb = xyz_to_source(profile, xyz);
+    let acescg = transform_to_acescg(profile, xyz);
+    finite3(xyz)
+        && finite3(source_rgb)
+        // Adapted values are produced through a second matrix path before
+        // reaching the raster. Use the same small boundary tolerance for the
+        // continuous picker and the pixel sampler so round-off cannot make a
+        // dot unavailable while the pixel underneath is accepted. Keep the
+        // original strict boundary at the exact D65 identity so the legacy
+        // viewport is bit-for-bit unchanged there.
+        && min3(source_rgb) >= -tolerance
+        && (profile != 3 || max3(source_rgb) <= 1.0 + tolerance)
+        && (profile != 0 || min3(mat(&XYZ_TO_REC2020, xyz)) >= -tolerance)
+        && if profile == 3 {
+            true
+        } else {
+            finite3(acescg)
+                && min3(acescg) >= -tolerance
+                && max3(acescg) <= 1.0 + tolerance
+        }
+}
+
+fn adaptation_is_identity(temp: f64, tint: f64) -> bool {
+    (temp - 6500.0).abs() < 1.0e-12 && tint.abs() < 1.0e-12
 }
 
 fn clamp_unit(value: f64) -> f64 {
@@ -615,8 +909,61 @@ fn maximum_saturation_inner(model: Model, profile: u32, j_hk: f64, hue: f64) -> 
     lower
 }
 
+fn sample_adapted(
+    model: Model,
+    profile: u32,
+    j_hk: f64,
+    hue: f64,
+    saturation: f64,
+    temp: f64,
+    tint: f64,
+) -> Sample {
+    let adapted_xyz = modcam_to_xyz(
+        model,
+        j_hk,
+        saturation / 100.0 * j_hk * j_hk / HK_COEFFICIENT,
+        hue,
+    );
+    // The viewport is expressed in adapted display-side coordinates. Invert
+    // that display-side adaptation to recover the source color represented by
+    // each pixel, then apply both source and adapted-side gamut checks. This
+    // keeps the mask tied to the same pre-adaptation slider color while still
+    // reflecting white-balance changes to the inverse/readout path.
+    let preadapt_xyz = unadapt_xyz(model, adapted_xyz, temp, tint);
+    let source_rgb = xyz_to_source(profile, preadapt_xyz);
+    let acescg = transform_to_acescg(profile, preadapt_xyz);
+    let rendered_j_hk = attributes(model, preadapt_xyz).3;
+    let appearance_match =
+        rendered_j_hk.is_finite() && j_hk.is_finite() && (rendered_j_hk - j_hk).abs() <= 2.0e-5;
+    let source_valid = finite3(preadapt_xyz)
+        && finite3(source_rgb)
+        && source_cone_valid(profile, source_rgb, preadapt_xyz)
+        && if profile == 3 {
+            true
+        } else {
+            unit_cube_valid(acescg)
+        };
+    let display_tolerance = if adaptation_is_identity(temp, tint) {
+        1.0e-6
+    } else {
+        1.0e-5
+    };
+    let valid = source_valid
+        && appearance_match
+        && adapted_display_valid(profile, adapted_xyz, display_tolerance);
+    Sample {
+        xyz: adapted_xyz,
+        source_rgb,
+        acescg,
+        valid,
+    }
+}
+
 fn encode_display_rgb(linear: [f64; 3]) -> [f64; 3] {
     let encode = |value: f64| {
+        if !value.is_finite() {
+            return 0.0;
+        }
         let value = value.clamp(0.0, 1.0);
         let encoded = if value <= 0.0031308 {
             12.92 * value
@@ -657,13 +1004,30 @@ fn display_xyz_f64(xyz: [f64; 3], matrix: &[[f64; 3]; 3]) -> [f64; 3] {
 /// forward-view neutral background]`.
 #[wasm_bindgen]
 pub fn evaluate(profile: u32, reflectance: f64, hue: f64, saturation: f64) -> Vec<f64> {
+    evaluate_adapted(profile, reflectance, hue, saturation, 6500.0, 0.0, 0.5)[..24].to_vec()
+}
+
+/// Evaluate a color with display-side CAT02 adaptation. The first 24 values
+/// retain the legacy layout; values 24..26 and 27..29 are adapted background
+/// Display-P3 and sRGB encodings, 30..32 retain the pre-adaptation source
+/// encoding, and 33..36 carry adapted neutral/foreground polar coordinates.
+#[wasm_bindgen]
+pub fn evaluate_adapted(
+    profile: u32,
+    reflectance: f64,
+    hue: f64,
+    saturation: f64,
+    temp: f64,
+    tint: f64,
+    background: f64,
+) -> Vec<f64> {
     let model = model();
     let hue = hue.rem_euclid(360.0);
     let reflectance = reflectance.clamp(0.0, REFLECTANCE_MAX);
     let saturation = saturation.clamp(0.0, 100.0);
     let j_hk = neutral_j_hk(model, profile, reflectance);
     if !j_hk.is_finite() {
-        return vec![0.0; 24];
+        return vec![0.0; 37];
     }
     let result = sample(model, profile, j_hk, hue, saturation);
     let neutral = sample(model, profile, j_hk, hue, 0.0);
@@ -672,12 +1036,27 @@ pub fn evaluate(profile: u32, reflectance: f64, hue: f64, saturation: f64) -> Ve
     // remains false when the underlying color had an out-of-range channel, so
     // the UI can show its unavailable state instead of presenting a valid
     // color for a clipped value.
-    let acescg = result.acescg;
+    let adapted_xyz = adapt_xyz_preserve_j_hk(model, result.xyz, temp, tint);
+    let adapted_neutral_xyz = adapt_xyz_preserve_j_hk(model, neutral.xyz, temp, tint);
+    let acescg = transform_to_acescg(profile, adapted_xyz);
+    let adapted_source_rgb = xyz_to_source(profile, adapted_xyz);
+    // The overlay is positioned from these adapted polar coordinates, and the
+    // raster evaluates that same inverse-polar sample. Use its validity bit so
+    // the picked result cannot disagree with the pixel under the dot near a
+    // gamut boundary or an appearance-model limit.
+    let (_, adapted_chroma, adapted_hue, adapted_j_hk) = attributes(model, adapted_xyz);
+    let adapted_sat = if adapted_j_hk > 0.0 {
+        100.0 * HK_COEFFICIENT * adapted_chroma / (adapted_j_hk * adapted_j_hk)
+    } else {
+        0.0
+    };
+    let adapted_valid = adapted_j_hk.is_finite()
+        && sample_adapted(model, profile, j_hk, adapted_hue, adapted_sat, temp, tint).valid;
     let linear_output = if profile == 3 {
         [
-            clamp_unit(result.source_rgb[0]),
-            clamp_unit(result.source_rgb[1]),
-            clamp_unit(result.source_rgb[2]),
+            clamp_unit(adapted_source_rgb[0]),
+            clamp_unit(adapted_source_rgb[1]),
+            clamp_unit(adapted_source_rgb[2]),
         ]
     } else {
         [
@@ -687,45 +1066,54 @@ pub fn evaluate(profile: u32, reflectance: f64, hue: f64, saturation: f64) -> Ve
         ]
     };
     let neutral_display_p3 = if neutral.valid {
-        display_xyz_f64(neutral.xyz, &XYZ_TO_P3)
+        display_xyz_f64(adapted_neutral_xyz, &XYZ_TO_P3)
     } else {
         [0.0; 3]
     };
-    let display_p3 = if result.valid {
-        display_xyz_f64(result.xyz, &XYZ_TO_P3)
+    let display_p3 = if adapted_valid {
+        display_xyz_f64(adapted_xyz, &XYZ_TO_P3)
     } else {
         [0.0; 3]
     };
-    let display_srgb = if result.valid {
-        display_xyz_f64(result.xyz, &XYZ_TO_REC709)
+    let display_srgb = if adapted_valid {
+        display_xyz_f64(adapted_xyz, &XYZ_TO_REC709)
     } else {
         [0.0; 3]
     };
     let neutral_display_srgb = if neutral.valid {
-        display_xyz_f64(neutral.xyz, &XYZ_TO_REC709)
+        display_xyz_f64(adapted_neutral_xyz, &XYZ_TO_REC709)
     } else {
         [0.0; 3]
     };
     let acescg_srgb = encode_display_rgb(acescg);
     let background_neutral = forward_acescg_neutral(profile, reflectance).unwrap_or(f64::NAN);
-    vec![
-        if result.valid { 1.0 } else { 0.0 },
+    let background_value = if background.is_finite() {
+        background.clamp(0.0, BACKGROUND_MAX)
+    } else {
+        0.0
+    };
+    let background_xyz = source_to_xyz(profile, [background_value; 3]);
+    let adapted_background = adapt_xyz_preserve_j_hk(model, background_xyz, temp, tint);
+    let background_display_p3 = display_xyz_f64(adapted_background, &XYZ_TO_P3);
+    let background_display_srgb = display_xyz_f64(adapted_background, &XYZ_TO_REC709);
+    let mut output = vec![
+        if adapted_valid { 1.0 } else { 0.0 },
         maximum,
         linear_output[0],
         linear_output[1],
         linear_output[2],
-        if result.valid {
-            result.source_rgb[0]
+        if adapted_valid {
+            adapted_source_rgb[0]
         } else {
             0.0
         },
-        if result.valid {
-            result.source_rgb[1]
+        if adapted_valid {
+            adapted_source_rgb[1]
         } else {
             0.0
         },
-        if result.valid {
-            result.source_rgb[2]
+        if adapted_valid {
+            adapted_source_rgb[2]
         } else {
             0.0
         },
@@ -745,7 +1133,54 @@ pub fn evaluate(profile: u32, reflectance: f64, hue: f64, saturation: f64) -> Ve
         acescg_srgb[1],
         acescg_srgb[2],
         background_neutral,
-    ]
+    ];
+    output.extend_from_slice(&background_display_p3);
+    output.extend_from_slice(&background_display_srgb);
+    let retained_source = if profile == 3 {
+        result.source_rgb
+    } else {
+        result.acescg
+    };
+    let retained_encoded = if finite3(retained_source) {
+        encode_display_rgb(retained_source)
+    } else {
+        [f64::NAN; 3]
+    };
+    output.extend_from_slice(&retained_encoded);
+    let (_, neutral_chroma, neutral_hue, neutral_j_hk) = attributes(model, adapted_neutral_xyz);
+    let (_, result_chroma, result_hue, result_j_hk) = attributes(model, adapted_xyz);
+    let neutral_sat = if neutral_j_hk > 0.0 {
+        100.0 * HK_COEFFICIENT * neutral_chroma / (neutral_j_hk * neutral_j_hk)
+    } else {
+        0.0
+    };
+    let result_sat = if result_j_hk > 0.0 {
+        100.0 * HK_COEFFICIENT * result_chroma / (result_j_hk * result_j_hk)
+    } else {
+        0.0
+    };
+    let neutral_hue = if neutral_hue.is_finite() {
+        neutral_hue.rem_euclid(360.0)
+    } else {
+        0.0
+    };
+    let neutral_sat = if neutral_sat.is_finite() {
+        neutral_sat.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    let result_hue = if result_hue.is_finite() {
+        result_hue.rem_euclid(360.0)
+    } else {
+        0.0
+    };
+    let result_sat = if result_sat.is_finite() {
+        result_sat.clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+    output.extend_from_slice(&[neutral_hue, neutral_sat, result_hue, result_sat]);
+    output
 }
 
 /// Adapt a linear neutral through exact inverse and forward profile transforms.
@@ -787,13 +1222,26 @@ pub fn convert_neutral_profile(
 /// against the selected profile's forward neutral curve.
 #[wasm_bindgen]
 pub fn set_from_acescg_srgb(profile: u32, red: f64, green: f64, blue: f64) -> Vec<f64> {
+    set_from_acescg_srgb_adapted(profile, red, green, blue, 6500.0, 0.0)
+}
+
+#[wasm_bindgen]
+pub fn set_from_acescg_srgb_adapted(
+    profile: u32,
+    red: f64,
+    green: f64,
+    blue: f64,
+    temp: f64,
+    tint: f64,
+) -> Vec<f64> {
     let model = model();
     let acescg = [decode_srgb(red), decode_srgb(green), decode_srgb(blue)];
-    let xyz = if profile == 3 {
+    let displayed_xyz = if profile == 3 {
         acescg_to_srgb_xyz(acescg)
     } else {
         transform_from_acescg(profile, acescg)
     };
+    let xyz = unadapt_xyz(model, displayed_xyz, temp, tint);
     coordinates_from_rendered_xyz(model, profile, None, xyz)
 }
 
@@ -962,6 +1410,11 @@ fn coordinates_from_rendered_xyz_mode(
     } else {
         f64::NAN
     };
+    let saturation = if saturation.abs() < 1.0e-4 {
+        0.0
+    } else {
+        saturation
+    };
     let target_j_hk = neutral_j_hk(model, profile, reflectance);
     let reconstructed = if target_j_hk.is_finite() && hue.is_finite() && saturation.is_finite() {
         sample(model, profile, target_j_hk, hue, saturation)
@@ -1011,9 +1464,33 @@ fn coordinates_from_rendered_xyz_mode(
 /// coordinates. This input is always the output sRGB color shown by the UI.
 #[wasm_bindgen]
 pub fn set_from_output_srgb(profile: u32, red: f64, green: f64, blue: f64) -> Vec<f64> {
+    set_from_output_srgb_adapted(profile, red, green, blue, 6500.0, 0.0)
+}
+
+#[wasm_bindgen]
+pub fn set_from_output_srgb_adapted(
+    profile: u32,
+    red: f64,
+    green: f64,
+    blue: f64,
+    temp: f64,
+    tint: f64,
+) -> Vec<f64> {
     let model = model();
     let (linear, _) = output_srgb_to_xyz(red, green, blue);
-    let xyz = target_xyz_from_output_srgb(profile, linear, profile == 3);
+    let displayed_xyz = if profile == 3 {
+        source_to_xyz(
+            3,
+            [
+                linear[0].clamp(0.0, 1.0),
+                linear[1].clamp(0.0, 1.0),
+                linear[2].clamp(0.0, 1.0),
+            ],
+        )
+    } else {
+        target_xyz_from_output_srgb(profile, linear, profile == 3)
+    };
+    let xyz = unadapt_xyz(model, displayed_xyz, temp, tint);
     coordinates_from_rendered_xyz(model, profile, None, xyz)
 }
 
@@ -1081,11 +1558,13 @@ pub fn set_profile_from_output_srgb_converted(
 /// Refl coordinate are then derived from that rendered XYZ. `available`
 /// reports whether the rendered reference has a usable nonnegative source
 /// preimage; it never changes the coordinates or dot color.
-fn colorchecker_record_from_acescg(
+fn colorchecker_record_from_acescg_adapted(
     model: Model,
     profile: u32,
     acescg_target: [f64; 3],
-) -> [f64; 10] {
+    temp: f64,
+    tint: f64,
+) -> [f64; 12] {
     let profile_xyz = transform_from_acescg(profile, acescg_target);
     let (j, chroma, raw_hue, j_hk) = attributes(model, profile_xyz);
     let hue = if raw_hue.is_finite() {
@@ -1125,8 +1604,25 @@ fn colorchecker_record_from_acescg(
         && neutral_available
         && neutral_representable
         && source_cone_valid(profile, source_rgb, profile_xyz);
-    let display_p3 = display_xyz_f64(profile_xyz, &XYZ_TO_P3);
-    let display_srgb = display_xyz_f64(profile_xyz, &XYZ_TO_REC709);
+    let adapted_xyz = adapt_xyz_preserve_j_hk(model, profile_xyz, temp, tint);
+    let (_, adapted_chroma, adapted_hue, adapted_j_hk) = attributes(model, adapted_xyz);
+    let adapted_saturation = if adapted_j_hk > 0.0 {
+        100.0 * HK_COEFFICIENT * adapted_chroma / (adapted_j_hk * adapted_j_hk)
+    } else {
+        0.0
+    };
+    let adapted_hue = if adapted_hue.is_finite() {
+        adapted_hue.rem_euclid(360.0)
+    } else {
+        hue
+    };
+    let adapted_saturation = if adapted_saturation.is_finite() {
+        adapted_saturation.clamp(0.0, 100.0)
+    } else {
+        saturation
+    };
+    let display_p3 = display_xyz_f64(adapted_xyz, &XYZ_TO_P3);
+    let display_srgb = display_xyz_f64(adapted_xyz, &XYZ_TO_REC709);
     [
         hue,
         saturation,
@@ -1138,28 +1634,57 @@ fn colorchecker_record_from_acescg(
         display_srgb[1],
         display_srgb[2],
         if available { 1.0 } else { 0.0 },
+        adapted_hue,
+        adapted_saturation,
     ]
+}
+
+#[allow(dead_code)]
+fn colorchecker_record_from_acescg(
+    model: Model,
+    profile: u32,
+    acescg_target: [f64; 3],
+) -> [f64; 10] {
+    let adapted =
+        colorchecker_record_from_acescg_adapted(model, profile, acescg_target, 6500.0, 0.0);
+    let mut record = [0.0; 10];
+    record.copy_from_slice(&adapted[..10]);
+    record
 }
 
 /// Calculate the absolute-ACEScg ColorChecker markers at runtime for one
 /// profile.
 ///
 /// Each ten-value record is `[hue, saturation, profile_refl, display_p3_r,
-/// display_p3_g, display_p3_b, display_srgb_r, display_srgb_g,
-/// display_srgb_b, available]`.  The frontend supplies the corresponding
-/// patch names in the same official dataset order.
+/// display_p3_g, display_p3_b, display_srgb_r, display_srgb_g, display_srgb_b,
+/// available]`. The frontend supplies the corresponding patch names in the
+/// same official dataset order.
 #[wasm_bindgen]
 pub fn colorchecker_points(profile: u32) -> Vec<f64> {
-    let model = model();
+    let adapted = colorchecker_points_adapted(profile, 6500.0, 0.0);
     let mut output = Vec::with_capacity(COLORCHECKER_LAB_D50.len() * 10);
+    for chunk in adapted.chunks_exact(12) {
+        output.extend_from_slice(&chunk[..10]);
+    }
+    output
+}
+
+/// Adapted ColorChecker records append `adapted_hue` and `adapted_saturation`
+/// to that ten-value layout.
+#[wasm_bindgen]
+pub fn colorchecker_points_adapted(profile: u32, temp: f64, tint: f64) -> Vec<f64> {
+    let model = model();
+    let mut output = Vec::with_capacity(COLORCHECKER_LAB_D50.len() * 12);
     for lab in COLORCHECKER_LAB_D50 {
         let xyz_d50 = lab_d50_to_xyz(lab);
         let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
         let acescg_target = mat(&XYZ_D65_TO_ACESCG, xyz_d65);
-        output.extend_from_slice(&colorchecker_record_from_acescg(
+        output.extend_from_slice(&colorchecker_record_from_acescg_adapted(
             model,
             profile,
             acescg_target,
+            temp,
+            tint,
         ));
     }
     output
@@ -1186,6 +1711,8 @@ fn render_rows_inner(
     y_start: u32,
     y_end: u32,
     source_display_matrix: &[[f64; 3]; 3],
+    temp: f64,
+    tint: f64,
 ) -> Vec<u8> {
     let model = model();
     let width = width.max(1) as usize;
@@ -1213,7 +1740,8 @@ fn render_rows_inner(
             // 0 degrees points up; positive angles travel counter-clockwise.
             let hue = (-dx).atan2(-dy).to_degrees().rem_euclid(360.0);
             let saturation = radius / max_radius * 100.0;
-            let result = solved_j_hk.map(|j_hk| sample(model, profile, j_hk, hue, saturation));
+            let result = solved_j_hk
+                .map(|j_hk| sample_adapted(model, profile, j_hk, hue, saturation, temp, tint));
             if result.is_some_and(|value| value.valid) {
                 let rgb = display_rgb(result.unwrap().xyz, source_display_matrix);
                 output[index..index + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
@@ -1237,6 +1765,8 @@ pub fn render_rows(profile: u32, reflectance: f64, y_start: u32, y_end: u32) -> 
         y_start,
         y_end,
         &XYZ_TO_P3,
+        6500.0,
+        0.0,
     )
 }
 
@@ -1252,6 +1782,8 @@ pub fn render_rows_srgb(profile: u32, reflectance: f64, y_start: u32, y_end: u32
         y_start,
         y_end,
         &XYZ_TO_REC709,
+        6500.0,
+        0.0,
     )
 }
 
@@ -1275,6 +1807,8 @@ pub fn render_rows_scaled(
         y_start,
         y_end,
         &XYZ_TO_P3,
+        6500.0,
+        0.0,
     )
 }
 
@@ -1297,6 +1831,100 @@ pub fn render_rows_scaled_srgb(
         y_start,
         y_end,
         &XYZ_TO_REC709,
+        6500.0,
+        0.0,
+    )
+}
+
+#[wasm_bindgen]
+pub fn render_rows_adapted(
+    profile: u32,
+    reflectance: f64,
+    y_start: u32,
+    y_end: u32,
+    temp: f64,
+    tint: f64,
+) -> Vec<u8> {
+    render_rows_inner(
+        profile,
+        reflectance,
+        WIDTH as u32,
+        HEIGHT as u32,
+        y_start,
+        y_end,
+        &XYZ_TO_P3,
+        temp,
+        tint,
+    )
+}
+
+#[wasm_bindgen]
+pub fn render_rows_scaled_adapted(
+    profile: u32,
+    reflectance: f64,
+    width: u32,
+    height: u32,
+    y_start: u32,
+    y_end: u32,
+    temp: f64,
+    tint: f64,
+) -> Vec<u8> {
+    render_rows_inner(
+        profile,
+        reflectance,
+        width,
+        height,
+        y_start,
+        y_end,
+        &XYZ_TO_P3,
+        temp,
+        tint,
+    )
+}
+
+#[wasm_bindgen]
+pub fn render_rows_adapted_srgb(
+    profile: u32,
+    reflectance: f64,
+    y_start: u32,
+    y_end: u32,
+    temp: f64,
+    tint: f64,
+) -> Vec<u8> {
+    render_rows_inner(
+        profile,
+        reflectance,
+        WIDTH as u32,
+        HEIGHT as u32,
+        y_start,
+        y_end,
+        &XYZ_TO_REC709,
+        temp,
+        tint,
+    )
+}
+
+#[wasm_bindgen]
+pub fn render_rows_scaled_adapted_srgb(
+    profile: u32,
+    reflectance: f64,
+    width: u32,
+    height: u32,
+    y_start: u32,
+    y_end: u32,
+    temp: f64,
+    tint: f64,
+) -> Vec<u8> {
+    render_rows_inner(
+        profile,
+        reflectance,
+        width,
+        height,
+        y_start,
+        y_end,
+        &XYZ_TO_REC709,
+        temp,
+        tint,
     )
 }
 
@@ -1317,9 +1945,182 @@ mod tests {
     }
 
     #[test]
+    fn adaptation_4500_warms_display() {
+        let d65 = evaluate_adapted(3, 0.5, 30.0, 40.0, 6500.0, 0.0, 0.5);
+        let warm = evaluate_adapted(3, 0.5, 30.0, 40.0, 4500.0, 0.0, 0.5);
+        assert!(
+            warm[14] > warm[15],
+            "warm adaptation should increase red relative to green"
+        );
+        assert!((d65[0] - warm[0]).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn adaptation_preserves_j_hk() {
+        let m = model();
+        let xyz = transform_from_acescg(1, [0.3, 0.2, 0.1]);
+        let adapted = adapt_xyz_preserve_j_hk(m, xyz, 4500.0, 0.0);
+        assert!((attributes(m, xyz).3 - attributes(m, adapted).3).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn adaptation_keeps_low_reflectance_samples_reachable() {
+        for profile in [0, 1, 2, 3, 4] {
+            for reflectance in [0.0001, 0.0005, 0.001] {
+                let values = evaluate_adapted(profile, reflectance, 0.0, 0.0, 4500.0, 0.0, 0.5);
+                assert!(
+                    values[0] > 0.5,
+                    "profile={profile} reflectance={reflectance}"
+                );
+                assert!(values[2..5]
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn cat02_maps_d65_to_requested_white() {
+        let source = white_xyz_from_cct(6500.0, 0.0);
+        let target = white_xyz_from_cct(4500.0, 0.0);
+        let (matrix, _) = cat02_matrix(4500.0, 0.0);
+        let mapped = mat(&matrix, source);
+        assert!(
+            max3([
+                (mapped[0] - target[0]).abs(),
+                (mapped[1] - target[1]).abs(),
+                (mapped[2] - target[2]).abs(),
+            ]) < 1.0e-6
+        );
+    }
+
+    #[test]
+    fn tint_follows_green_magenta_axis() {
+        let green = evaluate_adapted(3, 0.5, 0.0, 0.0, 6500.0, -100.0, 0.5);
+        let magenta = evaluate_adapted(3, 0.5, 0.0, 0.0, 6500.0, 100.0, 0.5);
+        assert!(
+            green[15] > green[14] && green[15] > green[16],
+            "negative tint should move the neutral toward green"
+        );
+        assert!(
+            magenta[14] > magenta[15] && magenta[16] > magenta[15],
+            "positive tint should move the neutral toward magenta"
+        );
+    }
+
+    #[test]
+    fn cct_curve_is_anchored_and_continuous_at_d65() {
+        let d65 = white_xyz_from_cct(6500.0, 0.0);
+        let expected = [
+            D65_XY[0] / D65_XY[1],
+            1.0,
+            (1.0 - D65_XY[0] - D65_XY[1]) / D65_XY[1],
+        ];
+        assert!(
+            max3([
+                (d65[0] - expected[0]).abs(),
+                (d65[1] - expected[1]).abs(),
+                (d65[2] - expected[2]).abs(),
+            ]) < 1.0e-12
+        );
+        let below = white_xyz_from_cct(6499.0, 0.0);
+        let above = white_xyz_from_cct(6501.0, 0.0);
+        let continuity = [
+            (below[0] - d65[0]).abs(),
+            (below[1] - d65[1]).abs(),
+            (below[2] - d65[2]).abs(),
+            (above[0] - d65[0]).abs(),
+            (above[1] - d65[1]).abs(),
+            (above[2] - d65[2]).abs(),
+        ];
+        assert!(continuity.iter().copied().fold(0.0, f64::max) < 1.0e-3);
+    }
+
+    #[test]
+    fn adapted_background_changes_with_white_balance() {
+        let d65 = evaluate_adapted(3, 0.5, 30.0, 20.0, 6500.0, 0.0, 0.35);
+        let warm = evaluate_adapted(3, 0.5, 30.0, 20.0, 4500.0, 0.0, 0.35);
+        assert!((d65[27] - warm[27]).abs() > 1.0e-4 || (d65[28] - warm[28]).abs() > 1.0e-4);
+    }
+
+    #[test]
+    fn background_value_changes_display_surround() {
+        let dark = evaluate_adapted(3, 0.5, 30.0, 20.0, 6500.0, 0.0, 0.1);
+        let light = evaluate_adapted(3, 0.5, 30.0, 20.0, 6500.0, 0.0, 0.8);
+        assert!(dark[27..30]
+            .iter()
+            .zip(light[27..30].iter())
+            .all(|(low, high)| high > low));
+    }
+
+    #[test]
+    fn invalid_adapted_inputs_keep_evaluation_finite() {
+        let values = evaluate_adapted(3, 0.5, f64::NAN, 20.0, 4500.0, 0.0, 0.5);
+        // The visible/readout and coordinate fields remain finite; the
+        // retained pre-adaptation encoding is NaN here because the requested
+        // hue itself was non-finite and cannot be used for a profile switch.
+        assert!(values[..30].iter().all(|value| value.is_finite()));
+        assert!(values[33..].iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn adapted_acescg_entry_round_trips_controls() {
+        let values = evaluate_adapted(1, 0.4, 120.0, 25.0, 4500.0, 0.0, 0.5);
+        assert!(values[0] > 0.5);
+        let set = set_from_acescg_srgb_adapted(1, values[20], values[21], values[22], 4500.0, 0.0);
+        assert!(set[0] > 0.5);
+        assert!((set[1] - 0.4).abs() < 2.0e-3);
+        assert!((set[2] - 120.0).abs() < 0.1);
+        assert!((set[3] - 25.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn adapted_srgb_entry_round_trips_controls() {
+        let values = evaluate_adapted(3, 0.4, 120.0, 25.0, 4500.0, 0.0, 0.5);
+        assert!(values[0] > 0.5);
+        let set = set_from_output_srgb_adapted(3, values[14], values[15], values[16], 4500.0, 0.0);
+        assert!(set[0] > 0.5);
+        assert!((set[1] - 0.4).abs() < 2.0e-3);
+        assert!((set[2] - 120.0).abs() < 0.1);
+        assert!((set[3] - 25.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn adapted_slice_keeps_aces_gamut_mask_at_d65() {
+        let m = model();
+        for profile in [0, 1, 2, 4] {
+            let j_hk = neutral_j_hk(m, profile, 0.9);
+            for hue in (0..360).step_by(30) {
+                for saturation in [0.0, 20.0, 40.0, 60.0, 80.0, 100.0] {
+                    assert_eq!(
+                        sample(m, profile, j_hk, hue as f64, saturation).valid,
+                        sample_adapted(m, profile, j_hk, hue as f64, saturation, 6500.0, 0.0).valid,
+                        "profile={profile} hue={hue} saturation={saturation}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn adapted_overlay_and_picker_share_p3_mask_boundary() {
+        let model = model();
+        let profile = 2;
+        let reflectance = 0.2;
+        let hue = 270.0;
+        let saturation = 90.0;
+        let j_hk = neutral_j_hk(model, profile, reflectance);
+        let values = evaluate_adapted(profile, reflectance, hue, saturation, 4500.0, 0.0, 0.5);
+        let raster_sample =
+            sample_adapted(model, profile, j_hk, values[35], values[36], 4500.0, 0.0);
+        assert!(values[0] > 0.5);
+        assert!(raster_sample.valid);
+    }
+
+    #[test]
     fn neutral_j_hk_uses_the_forward_rendered_acescg_neutral() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for reflectance in [0.0, 0.5, 1.0, REFLECTANCE_MAX] {
                 let expected = attributes(m, transform_from_acescg(profile, [reflectance; 3])).3;
                 assert!((neutral_j_hk(m, profile, reflectance) - expected).abs() < 1.0e-12);
@@ -1330,7 +2131,7 @@ mod tests {
     #[test]
     fn profile_refl_solves_unit_acescg_white() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let rendered = transform_from_acescg(profile, [1.0; 3]);
             let j_hk = attributes(m, rendered).3;
             let (reflectance, exact) = solve_neutral_reflectance_for_j_hk(m, profile, j_hk);
@@ -1354,7 +2155,7 @@ mod tests {
     #[test]
     fn evaluated_forward_color_matches_the_neutral_j_hk_target() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for (reflectance, hue, saturation) in [(0.2, 15.0, 5.0), (0.5, 120.0, 30.0)] {
                 let values = evaluate(profile, reflectance, hue, saturation);
                 assert!(values[0] > 0.5, "profile={profile}");
@@ -1387,7 +2188,7 @@ mod tests {
     #[test]
     fn colorchecker_points_are_absolute_acescg_references_for_each_profile() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let points = colorchecker_points(profile);
             assert_eq!(points.len(), 18 * 10);
             for (index, record) in points.chunks_exact(10).enumerate() {
@@ -1426,7 +2227,7 @@ mod tests {
     fn absolute_reference_coordinates_reconstruct_a_reachable_target() {
         let m = model();
         let target = [0.3, 0.4, 0.5];
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let record = colorchecker_record_from_acescg(m, profile, target);
             assert!(record[..9].iter().all(|value| value.is_finite()));
             let rendered = transform_from_acescg(profile, target);
@@ -1550,7 +2351,7 @@ mod tests {
             decode_srgb(source[22]),
         ];
 
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates =
                 set_profile_from_acescg_srgb(profile, 0.5, source[20], source[21], source[22]);
             let rendered = transform_from_acescg(profile, acescg);
@@ -1567,7 +2368,7 @@ mod tests {
     #[test]
     fn profile_conversion_uses_finite_boundary_for_unreachable_j_hk() {
         let mut found = false;
-        'states: for source_profile in 0..3 {
+        'states: for source_profile in [0, 1, 2, 4] {
             for reflectance in [0.2, 0.5, 0.8, 1.0] {
                 for hue in (0..360).step_by(15) {
                     for saturation in [15.0, 30.0, 50.0, 75.0, 100.0] {
@@ -1575,7 +2376,7 @@ mod tests {
                         if source[0] <= 0.5 {
                             continue;
                         }
-                        for target_profile in 0..3 {
+                        for target_profile in [0, 1, 2, 4] {
                             let coordinates = set_profile_from_acescg_srgb(
                                 target_profile,
                                 reflectance,
@@ -1602,7 +2403,7 @@ mod tests {
     #[test]
     fn profile_conversion_matches_absolute_reference_hue_and_saturation() {
         let m = model();
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             for lab in COLORCHECKER_LAB_D50 {
                 let xyz_d50 = lab_d50_to_xyz(lab);
                 let xyz_d65 = mat(&D50_TO_D65_CAT02, xyz_d50);
@@ -1620,7 +2421,7 @@ mod tests {
 
     #[test]
     fn background_snap_is_the_forward_view_neutral() {
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let values = evaluate(profile, 0.5, 120.0, 30.0);
             let expected = forward_acescg_neutral(profile, 0.5).expect("neutral view output");
             assert!((values[23] - expected).abs() < 1.0e-12);
@@ -1630,8 +2431,8 @@ mod tests {
     #[test]
     fn background_profile_conversion_uses_exact_transforms() {
         for source_neutral in [0.0, 0.5, 1.0] {
-            for source_profile in [0, 1, 2, 3] {
-                for target_profile in [0, 1, 2, 3] {
+            for source_profile in [0, 1, 2, 3, 4] {
+                for target_profile in [0, 1, 2, 3, 4] {
                     let converted =
                         convert_neutral_profile(source_profile, target_profile, source_neutral);
                     assert!(converted[0] > 0.5);
@@ -1692,7 +2493,7 @@ mod tests {
             39.25784549124876,
             26.203829648600536,
         );
-        for profile in 0..4 {
+        for profile in [0, 1, 2, 3, 4] {
             let converted = convert_background_profile(
                 3,
                 profile,
@@ -1866,7 +2667,7 @@ mod tests {
         let linear = [0.1, 0.2, 0.3];
         let encoded = encode_display_rgb(linear);
         let acescg = srgb_to_acescg(linear);
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates = set_profile_from_output_srgb_converted(
                 profile, 0.5, encoded[0], encoded[1], encoded[2],
             );
@@ -1890,7 +2691,7 @@ mod tests {
         // boundary slider values, while evaluation exposes its unavailable
         // state and clamps the readout to the unit interval.
         let encoded = encode_display_rgb([0.5; 3]);
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let coordinates = set_profile_from_output_srgb_converted(
                 profile, 0.5, encoded[0], encoded[1], encoded[2],
             );
@@ -1914,7 +2715,7 @@ mod tests {
         assert!(direct[2..5]
             .iter()
             .all(|value| value.is_finite() && (0.0..=1.0).contains(value)));
-        for profile in 0..3 {
+        for profile in [0, 1, 2, 4] {
             let values = evaluate(profile, REFLECTANCE_MAX, 0.0, 0.0);
             assert!(values[0] <= 0.5, "profile={profile}");
             assert!(values[2..5]
@@ -1933,5 +2734,43 @@ mod tests {
                 "actual={actual}, reference={reference}"
             );
         }
+    }
+
+    #[test]
+    fn p3_sdr_forward_and_inverse_match_ocio_reference_samples() {
+        let xyz = transform_from_acescg(4, [0.1, 0.2, 0.3]);
+        let expected_xyz = [0.076201893, 0.098404169, 0.190585598];
+        for (actual, reference) in xyz.iter().zip(expected_xyz.iter()) {
+            assert!(
+                (actual - reference).abs() < 2.0e-6,
+                "actual={actual}, reference={reference}"
+            );
+        }
+
+        // The inverse processor consumes display-referred XYZ-D65 directly.
+        // Passing XYZ_TO_P3 * xyz here would convert the value a second time
+        // and compare against a different (P3 RGB-shaped) input domain.
+        let acescg = transform_to_acescg(4, [0.2, 0.3, 0.4]);
+        let expected_acescg = [0.2197569157, 0.6639465161, 0.6819892161];
+        for (actual, reference) in acescg.iter().zip(expected_acescg.iter()) {
+            assert!(
+                (actual - reference).abs() < 2.0e-6,
+                "actual={actual}, reference={reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn p3_sdr_uses_p3_source_gamut_and_profile_local_neutral() {
+        let m = model();
+        let white = transform_from_acescg(4, [0.5; 3]);
+        assert!(source_cone_valid(4, xyz_to_source(4, white), white));
+        let j_hk = neutral_j_hk(m, 4, 0.5);
+        let (refl, exact) = solve_neutral_reflectance_for_j_hk(m, 4, j_hk);
+        assert!(exact);
+        assert!((refl - 0.5).abs() < 2.0e-5);
+        let values = evaluate(4, 0.5, 120.0, 30.0);
+        assert!(values[0] > 0.5);
+        assert!(values[2..5].iter().all(|value| value.is_finite()));
     }
 }

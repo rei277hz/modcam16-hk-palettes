@@ -12,7 +12,7 @@ slider values.
 
 ## Notation
 
-For one of the three ACES view profiles, let:
+For one of the four ACES view profiles, let:
 
 - `A` be the linear ACEScg/AP1 RGB value shown in the ACEScg readout.
 - `f_p(X)` be the profile `p` forward ACES view transform, excluding the
@@ -30,6 +30,26 @@ J_HK(f_p(A)) = J_HK(f_p(C(r))).
 The display transform used for the canvas and preview is applied only after
 this constraint has been solved. It does not participate in the equation.
 
+## Display-side white balance
+
+The web UI applies CAT02 chromatic adaptation after the profile forward
+transform and before inverse/readout conversion. Temperature (2000..20000 K)
+and tint (-100..100 CIE 1960 Delta uv) select the destination white; 6500 K
+and tint 0 are the exact D65 identity. Negative tint moves toward green and
+positive tint toward magenta along the normal to the local CCT locus. The adapted display color is scaled so
+its `J_HK` equals the pre-adaptation value. This affects the raster, picked
+preview, ColorChecker dots, and surround background. Slider and profile state
+remain pre-adaptation, and visible hex entry is reverse-adapted before solving
+coordinates. See [CHROMATIC_ADAPTATION_BEHAVIOR.md](./CHROMATIC_ADAPTATION_BEHAVIOR.md)
+for the complete control and failure contract.
+
+The Temp and Tint controls use non-linear presentation coordinates (piecewise
+mired normalization around 6500 K for Temp and a signed square-root curve for
+Tint), with snap markers at 6500 K and 0 respectively (500 K and 0.5 tint-unit
+tolerances). During a Temp drag its adjacent readout is rounded to a multiple
+of 50 K, and Tint is shown as an integer; worker messages and all color
+calculations use the restored numeric values, not the presentation coordinates.
+
 ## Evaluation
 
 For a slider state `(r, hue, sat)`:
@@ -46,9 +66,21 @@ For a slider state `(r, hue, sat)`:
 
 ## ACES Profile Switching
 
-Switching between profile IDs `0`, `1`, and `2` retains the ACEScg readout as
-the source color. The target profile evaluates `f_target(A)` and independently
-solves:
+The ACES view profiles are:
+
+- ID `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020);
+- ID `1`: Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709);
+- ID `2`: P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65);
+- ID `4`: P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65).
+
+ID `3` remains reserved for the direct sRGB profile. Switching between ACES
+profile IDs `0`, `1`, `2`, and `4` retains the ACEScg readout as the source
+color.
+The dropdown presents the stable IDs in this order: `3`, `1`, `4`, `2`, `0`.
+The source-gamut wording before `/` is intentionally unchanged, while the
+transform wording after `/` uses the corresponding OCIO view name exactly.
+
+The target profile evaluates `f_target(A)` and independently solves:
 
 - `Refl`: the target neutral `C(r)` whose forward `J_HK` matches
   `J_HK(f_target(A))`;
@@ -129,3 +161,12 @@ distances, worker messages, and the color calculations continue to use linear
   The encoded result at saturation `100` is normalized to the slider width.
 - Background retains its existing sRGB-style position curve over its complete
   linear `0..1.2` range.
+- `Temp` maps reciprocal temperature (mireds) piecewise around 6500 K. The
+  2000..6500 K warm span occupies the left half and the 6500..20000 K cool span
+  occupies the right half, so the neutral marker is exactly centered.
+- `Tint` maps a signed square-root presentation coordinate around zero; this
+  deliberately gives small green/magenta corrections more slider travel.
+
+The Temp snap window is ±500 K and the Tint snap window is ±0.5 units. These
+are interaction conveniences only; the underlying white-point values remain
+numeric Kelvin and tint units.

@@ -2,17 +2,16 @@
 // Keeping one module instance per worker avoids shared-memory requirements.
 // @ts-ignore generated module is absent until the WASM build runs.
 import init, {
-  colorchecker_points,
+  colorchecker_points_adapted,
   convert_background_profile,
-  evaluate,
-  render_rows,
-  render_rows_srgb,
-  render_rows_scaled,
-  render_rows_scaled_srgb,
-  set_from_acescg_srgb,
+  evaluate_adapted,
+  render_rows_adapted,
+  render_rows_adapted_srgb,
+  render_rows_scaled_adapted,
+  render_rows_scaled_adapted_srgb,
+  set_from_acescg_srgb_adapted,
   set_profile_from_acescg_srgb_converted,
-  set_from_output_srgb,
-  set_profile_from_output_srgb,
+  set_from_output_srgb_adapted,
   set_profile_from_output_srgb_converted,
 } from "./wasm/pkg/modcam16_color_core.js";
 
@@ -26,6 +25,8 @@ type RenderMessage = {
   yStart: number;
   yEnd: number;
   displayP3: boolean;
+  temp: number;
+  tint: number;
 };
 
 type EvaluateMessage = {
@@ -35,12 +36,17 @@ type EvaluateMessage = {
   reflectance: number;
   hue: number;
   saturation: number;
+  temp: number;
+  tint: number;
+  background: number;
 };
 
 type ColorCheckerMessage = {
   kind: "colorchecker";
   id: number;
   profile: number;
+  temp: number;
+  tint: number;
 };
 
 type SetMessage = {
@@ -50,6 +56,8 @@ type SetMessage = {
   red: number;
   green: number;
   blue: number;
+  temp: number;
+  tint: number;
 };
 
 type ProfileConvertMessage = {
@@ -62,6 +70,8 @@ type ProfileConvertMessage = {
   green: number;
   blue: number;
   background: number;
+  temp: number;
+  tint: number;
 };
 
 type Message = RenderMessage | EvaluateMessage | ColorCheckerMessage | SetMessage | ProfileConvertMessage;
@@ -88,23 +98,37 @@ workerScope.onmessage = (event: MessageEvent<Message>) => {
     if (message.kind === "render") {
       // Slider input can queue several generations while a row block is
       // rendering. Skip obsolete blocks so the newest generation completes.
-      if (message.id !== latestRenderId) return;
+      if (message.id !== latestRenderId) {
+        workerScope.postMessage({
+          kind: "render-cancelled",
+          id: message.id,
+          profile: message.profile,
+          width: message.width,
+          height: message.height,
+          yStart: message.yStart,
+        });
+        return;
+      }
       let pixels: Uint8Array;
       if (message.width === 512 && message.height === 512) {
-        pixels = (message.displayP3 ? render_rows : render_rows_srgb)(
+        pixels = (message.displayP3 ? render_rows_adapted : render_rows_adapted_srgb)(
           message.profile,
           message.reflectance,
           message.yStart,
           message.yEnd,
+          message.temp,
+          message.tint,
         );
       } else {
-        pixels = (message.displayP3 ? render_rows_scaled : render_rows_scaled_srgb)(
+        pixels = (message.displayP3 ? render_rows_scaled_adapted : render_rows_scaled_adapted_srgb)(
           message.profile,
           message.reflectance,
           message.width,
           message.height,
           message.yStart,
           message.yEnd,
+          message.temp,
+          message.tint,
         );
       }
       workerScope.postMessage(
@@ -122,15 +146,22 @@ workerScope.onmessage = (event: MessageEvent<Message>) => {
       return;
     }
     if (message.kind === "colorchecker") {
-      const points = colorchecker_points(message.profile);
-      workerScope.postMessage({ kind: "colorchecker", id: message.id, profile: message.profile, points });
+      const points = colorchecker_points_adapted(message.profile, message.temp, message.tint);
+      workerScope.postMessage({ kind: "colorchecker", id: message.id, profile: message.profile, temp: message.temp, tint: message.tint, points });
       return;
     }
     if (message.kind === "set") {
       const values = message.profile === 3
-        ? set_from_output_srgb(message.profile, message.red, message.green, message.blue)
-        : set_from_acescg_srgb(message.profile, message.red, message.green, message.blue);
-      workerScope.postMessage({ kind: "set", id: message.id, profile: message.profile, values });
+        ? set_from_output_srgb_adapted(message.profile, message.red, message.green, message.blue, message.temp, message.tint)
+        : set_from_acescg_srgb_adapted(message.profile, message.red, message.green, message.blue, message.temp, message.tint);
+      workerScope.postMessage({
+        kind: "set",
+        id: message.id,
+        profile: message.profile,
+        temp: message.temp,
+        tint: message.tint,
+        values,
+      });
       return;
     }
     if (message.kind === "profile-convert") {
@@ -162,13 +193,32 @@ workerScope.onmessage = (event: MessageEvent<Message>) => {
         kind: "profile-convert",
         id: message.id,
         profile: message.profile,
+        temp: message.temp,
+        tint: message.tint,
+        sourceBackground: message.background,
         values,
         background: background[1],
         backgroundPreserved: background[0] > 0.5,
       });
       return;
     }
-    const values = evaluate(message.profile, message.reflectance, message.hue, message.saturation);
-    workerScope.postMessage({ kind: "evaluate", id: message.id, profile: message.profile, values });
+    const values = evaluate_adapted(
+      message.profile,
+      message.reflectance,
+      message.hue,
+      message.saturation,
+      message.temp,
+      message.tint,
+      message.background,
+    );
+    workerScope.postMessage({
+      kind: "evaluate",
+      id: message.id,
+      profile: message.profile,
+      temp: message.temp,
+      tint: message.tint,
+      background: message.background,
+      values,
+    });
   });
 };
