@@ -4,6 +4,8 @@ const FULL_RESOLUTION = 512;
 const PREVIEW_RESOLUTION = 64;
 type RenderResolution = "preview" | "full";
 type PendingRenderRequest = { id: number; resolution: RenderResolution };
+type WhiteBalance = { temp: number; tint: number };
+type RenderCacheEntry = { key: string; pixels: Uint8ClampedArray };
 // Keep rendering parallel without creating an unbounded number of WASM instances.
 const WORKER_COUNT = Math.max(1, Math.min(16, navigator.hardwareConcurrency || 2));
 
@@ -28,6 +30,9 @@ type EvaluateResponse = {
   kind: "evaluate";
   id: number;
   profile: number;
+  reflectance: number;
+  hue: number;
+  saturation: number;
   temp: number;
   tint: number;
   background: number;
@@ -39,6 +44,10 @@ type ProfileConvertResponse = {
   kind: "profile-convert";
   id: number;
   profile: number;
+  sourceProfile: number;
+  sourceReflectance: number;
+  sourceHue: number;
+  sourceSaturation: number;
   temp: number;
   tint: number;
   sourceBackground: number;
@@ -46,6 +55,7 @@ type ProfileConvertResponse = {
   background: number;
   backgroundPreserved: boolean;
 };
+type WorkerErrorResponse = { kind: "worker-error"; id: number; operation: string };
 
 const COLORCHECKER_NAMES = [
   "Dark Skin", "Light Skin", "Blue Sky", "Foliage", "Blue Flower", "Bluish Green",
@@ -62,6 +72,7 @@ type ColorCheckerPoint = {
   available: boolean;
   adaptedHue: number;
   adaptedSaturation: number;
+  displaySrgb: [number, number, number];
 };
 
 const HUE_SNAP_DISTANCE = 2;
@@ -92,6 +103,7 @@ const TINT_DEFAULT = 0;
 // physical slider travel while retaining the full +/-100 range at the ends.
 const TINT_PRESENTATION_EXPONENT = 0.5;
 const TINT_SNAP_DISTANCE = 0.5;
+const WHITE_BALANCE_CACHE_PRECISION = 1e9;
 
 const reflectance = document.querySelector<HTMLInputElement>("#reflectance")!;
 const hue = document.querySelector<HTMLInputElement>("#hue")!;
@@ -106,14 +118,58 @@ const tint = document.querySelector<HTMLInputElement>("#tint")!;
 const tintNumber = document.querySelector<HTMLInputElement>("#tint-number")!;
 const tintStick = document.querySelector<HTMLElement>("#tint-stick")!;
 const whiteBalanceReset = document.querySelector<HTMLButtonElement>("#white-balance-reset")!;
+const whiteBalanceStore = document.querySelector<HTMLButtonElement>("#white-balance-store")!;
+const whiteBalanceRecall = document.querySelector<HTMLButtonElement>("#white-balance-recall")!;
 const profileSelect = document.querySelector<HTMLSelectElement>("#profile")!;
 const hueStickContainer = document.querySelector<HTMLElement>("#hue-sticks")!;
 const reflectanceStick = document.querySelector<HTMLElement>("#reflectance-stick")!;
 const saturationStick = document.querySelector<HTMLElement>("#saturation-stick")!;
 const colorcheckerName = document.querySelector<HTMLElement>("#colorchecker-name")!;
 const canvas = document.querySelector<HTMLCanvasElement>("#gamut-slice")!;
-const context = canvas.getContext("2d", { alpha: true, colorSpace: "display-p3" })!;
-let displayP3Canvas = context.getContextAttributes().colorSpace === "display-p3";
+const indicatorCanvas = document.querySelector<HTMLCanvasElement>("#gamut-indicators")!;
+// Keep the transparent overlay at full resolution even while the raster is
+// reduced to the 64x64 drag preview. Its CSS size matches the raster, so the
+// geometry stays aligned while its pixels are never cleared by raster swaps.
+if (indicatorCanvas.width !== FULL_RESOLUTION || indicatorCanvas.height !== FULL_RESOLUTION) {
+  indicatorCanvas.width = FULL_RESOLUTION;
+  indicatorCanvas.height = FULL_RESOLUTION;
+}
+let contextCandidate: CanvasRenderingContext2D | null = null;
+try {
+  contextCandidate = canvas.getContext("2d", { alpha: true, colorSpace: "display-p3" });
+} catch {
+  // Some older engines reject the color-space option instead of ignoring it.
+}
+contextCandidate ??= canvas.getContext("2d");
+if (!contextCandidate) throw new Error("The gamut slice requires a 2D canvas context.");
+const context: CanvasRenderingContext2D = contextCandidate;
+let indicatorContextCandidate: CanvasRenderingContext2D | null = null;
+try {
+  indicatorContextCandidate = indicatorCanvas.getContext("2d", { alpha: true, colorSpace: "display-p3" });
+} catch {
+  // Some older engines reject the color-space option instead of ignoring it.
+}
+indicatorContextCandidate ??= indicatorCanvas.getContext("2d");
+if (!indicatorContextCandidate) throw new Error("The gamut-slice indicator layer requires a 2D canvas context.");
+const indicatorContext: CanvasRenderingContext2D = indicatorContextCandidate;
+let contextAttributes: CanvasRenderingContext2DSettings = {};
+try {
+  if (typeof context.getContextAttributes === "function") {
+    contextAttributes = context.getContextAttributes();
+  }
+} catch {
+  // Treat an engine that cannot report its attributes as sRGB-only.
+}
+let displayP3Canvas = contextAttributes.colorSpace === "display-p3";
+let indicatorContextAttributes: CanvasRenderingContext2DSettings = {};
+try {
+  if (typeof indicatorContext.getContextAttributes === "function") {
+    indicatorContextAttributes = indicatorContext.getContextAttributes();
+  }
+} catch {
+  // Treat an engine that cannot report its attributes as sRGB-only.
+}
+const indicatorDisplayP3Canvas = indicatorContextAttributes.colorSpace === "display-p3";
 let displayP3Css = false;
 try {
   displayP3Css = typeof CSS !== "undefined"
@@ -161,6 +217,11 @@ const PROFILE_DETAILS = [
 const workers = Array.from({ length: WORKER_COUNT }, () =>
   new Worker(new URL("./render_worker.ts", import.meta.url), { type: "module" }),
 );
+// ColorChecker generation is independent of the picked-color evaluator. Keep
+// its requests coalesced so a fast white-balance drag cannot queue one costly
+// 18-patch solve for every pointer event.
+const colorcheckerWorkerIndex = workers.length > 1 ? workers.length - 1 : 0;
+const colorcheckerWorker = workers[colorcheckerWorkerIndex];
 let image: ImageData;
 try {
   image = new ImageData(FULL_RESOLUTION, FULL_RESOLUTION, { colorSpace: displayP3Canvas ? "display-p3" : "srgb" });
@@ -174,42 +235,62 @@ try {
   }
 }
 let imageDisplayP3 = displayP3Canvas;
+let imageRenderKey = "";
 let generation = 0;
 let pendingRows = 0;
 let neutralDisplay: [number, number, number] = [0.5, 0.5, 0.5];
+let neutralDisplaySrgb: [number, number, number] = [0.5, 0.5, 0.5];
 let adaptedNeutralHue = 0;
 let adaptedNeutralSaturation = 0;
 let adaptedHue = 0;
 let adaptedSaturation = 0;
 let colorcheckerPoints: ColorCheckerPoint[] = [];
+let colorcheckerPointsKey = "";
+let colorcheckerPointsProfile = -1;
 // The initial controls are the direct-sRGB Dark Skin reference. Keep its
 // identity selected from the first ColorChecker response so the patch name is
 // visible at startup and is refreshed with each profile's point data.
 let snappedPatchIndex: number | null = 0;
 const hueStickElements: HTMLElement[] = [];
 let frameQueued = false;
-let renderError = false;
 // Gamut slices depend on profile, reflectance, white-balance state, and output
 // color space.
-// Keep the current slice so Hue/Sat edits can redraw indicators without
-// asking the workers to regenerate the background.
-let cachedRenderKey: string | undefined;
-let cachedRenderPixels: Uint8ClampedArray | undefined;
+// Keep one settled full-resolution slice for the D65 identity and one for the
+// currently stored white balance. Hue/Sat edits can redraw indicators without
+// asking the workers to regenerate either background.
+let cachedIdentityRender: RenderCacheEntry | undefined;
+let cachedStoredRender: RenderCacheEntry | undefined;
+// A non-cached full render is retained briefly so Store can promote it to the
+// stored slot without calculating the same slice a second time.
+let lastCompletedFullRender: RenderCacheEntry | undefined;
 let activeRenderId = -1;
 let activeRenderKey = "";
 let activeRenderPixels: Uint8ClampedArray | undefined;
 let activeRenderResolution: RenderResolution = "full";
 let activeRenderWidth = FULL_RESOLUTION;
 let activeRenderHeight = FULL_RESOLUTION;
+let activeRenderProfile = -1;
+let activeRenderDisplayP3 = false;
+let activeRenderWhiteBalance: WhiteBalance = { temp: TEMPERATURE_DEFAULT, tint: TINT_DEFAULT };
+let activeRenderPendingWorkers = new Set<number>();
+let activeRenderCancelRequested = false;
 let pendingRenderRequest: PendingRenderRequest | undefined;
+let latestColorcheckerRequest = 0;
+let colorcheckerPostedRequest = -1;
+let colorcheckerPostQueued = false;
+let colorcheckerInFlight = false;
 let latestSetRequest = 0;
+let latestSetRevision = -1;
 let latestProfileConversion = 0;
 let sliderProfile = Number(profileSelect.value);
 let profileConversionPending = false;
+let profileConversionRevision = -1;
+let uiRevision = 0;
 // Keep the 50 K presentation after a slider edit, even when the range loses
 // focus before the next label refresh. Direct numeric entry switches back to
 // the exact integer Kelvin presentation.
 let temperatureReadoutUsesSliderStep = true;
+let storedWhiteBalance: WhiteBalance | undefined;
 let backgroundSnapValue: number | null = null;
 let retainedOutputSrgbEncoded: [number, number, number] = [
   encodeDisplayChannel(0.5),
@@ -222,7 +303,11 @@ let retainedAcescgEncoded: [number, number, number] = [
   encodeDisplayChannel(0.5),
 ];
 let displayedResolution: RenderResolution = "full";
-let queuedRenderResolution: RenderResolution = "full";
+let queuedRenderResolution: RenderResolution | undefined = "full";
+// Keep the last accepted indicator geometry visible while a newer evaluation
+// is in flight. This avoids flashing the overlay off between slider events.
+let evaluatedStateKey = "";
+let indicatorReady = false;
 
 for (const patch of COLORCHECKER_NAMES) {
   const marker = document.createElement("span");
@@ -234,14 +319,21 @@ for (const patch of COLORCHECKER_NAMES) {
 
 function currentState() {
   return {
-    reflectance: reflectanceValueFromSlider(),
-    hue: Number(hue.value),
-    saturation: saturationValueFromSlider(),
+    reflectance: finiteClamped(reflectanceValueFromSlider(), 0, REFLECTANCE_MAX),
+    hue: finiteClamped(Number(hue.value), 0, 360),
+    saturation: finiteClamped(saturationValueFromSlider(), 0, SATURATION_MAX),
   };
 }
 
 function displayState() {
-  return { temp: temperatureValueFromSlider(), tint: tintValueFromSlider() };
+  return {
+    temp: finiteClamped(temperatureValueFromSlider(), TEMPERATURE_MIN, TEMPERATURE_MAX),
+    tint: finiteClamped(tintValueFromSlider(), TINT_MIN, TINT_MAX),
+  };
+}
+
+function finiteClamped(value: number, minimum: number, maximum: number): number {
+  return Number.isFinite(value) ? Math.max(minimum, Math.min(maximum, value)) : minimum;
 }
 
 function formatTemperature(value: number, sliderPresentation = false): string {
@@ -262,17 +354,85 @@ function currentProfile(): number {
   return Number.isInteger(profile) && profile >= 0 && profile < PROFILE_DETAILS.length ? profile : 3;
 }
 
+function sameNumber(first: number, second: number, tolerance = 1.0e-12): boolean {
+  return Number.isFinite(first) && Number.isFinite(second) && Math.abs(first - second) <= tolerance;
+}
+
 function profileUsesDisplayP3(profile: number): boolean {
   return profile !== 1 && profile !== 3 && displayP3Canvas;
 }
 
-function renderKey(profile: number, reflectanceValue: number, useDisplayP3: boolean): string {
-  const display = displayState();
-  return `${profile}|${reflectanceValue}|${display.temp}|${display.tint}|${useDisplayP3 ? "p3" : "srgb"}`;
+function normalizedWhiteBalanceValue(value: number): number {
+  return Math.round(value * WHITE_BALANCE_CACHE_PRECISION) / WHITE_BALANCE_CACHE_PRECISION;
+}
+
+function renderKey(
+  profile: number,
+  reflectanceValue: number,
+  useDisplayP3: boolean,
+  display = displayState(),
+): string {
+  const temp = normalizedWhiteBalanceValue(display.temp);
+  const tint = normalizedWhiteBalanceValue(display.tint);
+  return `${profile}|${reflectanceValue}|${temp}|${tint}|${useDisplayP3 ? "p3" : "srgb"}`;
+}
+
+function evaluationKey(
+  profile = currentProfile(),
+  state = currentState(),
+  display = displayState(),
+  background = backgroundValueFromSlider(),
+): string {
+  return [
+    profile,
+    state.reflectance,
+    state.hue,
+    state.saturation,
+    normalizedWhiteBalanceValue(display.temp),
+    normalizedWhiteBalanceValue(display.tint),
+    normalizedWhiteBalanceValue(finiteClamped(background, 0, BACKGROUND_MAX)),
+  ].join("|");
+}
+
+function colorcheckerKey(profile = currentProfile(), display = displayState()): string {
+  return `${profile}|${normalizedWhiteBalanceValue(display.temp)}|${normalizedWhiteBalanceValue(display.tint)}`;
+}
+
+function invalidateEvaluation() {
+  // Do not repaint the canvas here. The last accepted composited indicators
+  // stay visible until the replacement evaluator response arrives; clearing
+  // the base on every input is what made the overlay flicker while dragging.
+}
+
+function sameWhiteBalance(first: WhiteBalance | undefined, second: WhiteBalance | undefined): boolean {
+  return first !== undefined
+    && second !== undefined
+    && normalizedWhiteBalanceValue(first.temp) === normalizedWhiteBalanceValue(second.temp)
+    && normalizedWhiteBalanceValue(first.tint) === normalizedWhiteBalanceValue(second.tint);
+}
+
+function renderCacheForWhiteBalance(display: WhiteBalance): RenderCacheEntry | undefined {
+  if (sameWhiteBalance(display, { temp: TEMPERATURE_DEFAULT, tint: TINT_DEFAULT })) {
+    return cachedIdentityRender;
+  }
+  if (sameWhiteBalance(display, storedWhiteBalance)) {
+    return cachedStoredRender;
+  }
+  return undefined;
+}
+
+function cachedRenderPixelsForState(display: WhiteBalance, key: string): Uint8ClampedArray | undefined {
+  const entry = renderCacheForWhiteBalance(display);
+  if (entry?.key === key) return entry.pixels;
+  // A full slice is independent of Hue, Sat, and Background. Retain the most
+  // recently completed arbitrary white-balance slice as a transient cache so
+  // editing those controls only repaints indicators/readouts.
+  return lastCompletedFullRender?.key === key ? lastCompletedFullRender.pixels : undefined;
 }
 
 function ensureImage(width: number, height: number, useDisplayP3: boolean) {
   if (image.width === width && image.height === height && imageDisplayP3 === useDisplayP3) return;
+  imageRenderKey = "";
   try {
     image = new ImageData(width, height, { colorSpace: useDisplayP3 ? "display-p3" : "srgb" });
     imageDisplayP3 = useDisplayP3;
@@ -297,10 +457,6 @@ function ensureRenderSurface(resolution: RenderResolution, useDisplayP3: boolean
     canvas.height = size;
   }
   ensureImage(size, size, useDisplayP3);
-}
-
-function prepareRenderSurface(resolution: RenderResolution, useDisplayP3: boolean) {
-  ensureImage(resolutionSize(resolution), resolutionSize(resolution), useDisplayP3);
 }
 
 function updateProfileFooter() {
@@ -334,6 +490,15 @@ function updateLabels() {
   tint.setAttribute("aria-valuenow", formatTint(display.tint));
   tint.setAttribute("aria-valuetext", formatTint(display.tint));
   whiteBalanceReset.disabled = display.temp === TEMPERATURE_DEFAULT && display.tint === TINT_DEFAULT;
+  whiteBalanceRecall.disabled = storedWhiteBalance === undefined;
+  if (storedWhiteBalance) {
+    const storedDescription = `${formatTemperature(storedWhiteBalance.temp)} K, tint ${formatTint(storedWhiteBalance.tint)}`;
+    whiteBalanceRecall.title = `Recall ${storedDescription}`;
+    whiteBalanceRecall.setAttribute("aria-label", `Recall stored display white balance: ${storedDescription}`);
+  } else {
+    whiteBalanceRecall.removeAttribute("title");
+    whiteBalanceRecall.setAttribute("aria-label", "Recall stored display white balance");
+  }
 }
 
 function hueDistance(first: number, second: number): number {
@@ -342,8 +507,17 @@ function hueDistance(first: number, second: number): number {
 }
 
 function updateStickMarkers() {
-  const patch = snappedPatchIndex === null ? undefined : colorcheckerPoints[snappedPatchIndex];
-  hueStickElements.forEach((marker, index) => marker.classList.toggle("active", index === snappedPatchIndex));
+  // Hue/Refl/Sat coordinates are pre-adaptation data, so they remain valid
+  // while a new white-balance-specific dot raster is being calculated.
+  const pointsReady = colorcheckerPointsProfile === currentProfile() && colorcheckerPoints.length > 0;
+  const patch = pointsReady && snappedPatchIndex !== null
+    ? colorcheckerPoints[snappedPatchIndex]
+    : undefined;
+  hueStickElements.forEach((marker, index) => {
+    const present = pointsReady && colorcheckerPoints[index] !== undefined;
+    marker.hidden = !present;
+    marker.classList.toggle("active", present && index === snappedPatchIndex);
+  });
   if (!patch) {
     reflectanceStick.hidden = true;
     saturationStick.hidden = true;
@@ -359,8 +533,12 @@ function updateStickMarkers() {
   saturationStick.style.left = `${saturationSliderPosition(patch.saturation) * 100}%`;
 }
 
+function colorcheckerSourceReady(): boolean {
+  return colorcheckerPointsProfile === currentProfile() && colorcheckerPoints.length > 0;
+}
+
 function snapHueInput() {
-  if (colorcheckerPoints.length === 0) return;
+  if (!colorcheckerSourceReady()) return;
   const rawHue = Number(hue.value);
   let nearest = -1;
   let nearestDistance = Number.POSITIVE_INFINITY;
@@ -389,7 +567,7 @@ function ensureHuePatchSelection() {
 
 function snapReflectanceInput() {
   ensureHuePatchSelection();
-  if (snappedPatchIndex === null) return;
+  if (!colorcheckerSourceReady() || snappedPatchIndex === null) return;
   const patch = colorcheckerPoints[snappedPatchIndex];
   if (Math.abs(reflectanceValueFromSlider() - patch.reflectance) <= REFLECTANCE_SNAP_DISTANCE) {
     setReflectanceValue(Number(patch.reflectance.toFixed(3)));
@@ -399,7 +577,7 @@ function snapReflectanceInput() {
 
 function snapSaturationInput() {
   ensureHuePatchSelection();
-  if (snappedPatchIndex === null) return;
+  if (!colorcheckerSourceReady() || snappedPatchIndex === null) return;
   const patch = colorcheckerPoints[snappedPatchIndex];
   if (Math.abs(saturationValueFromSlider() - patch.saturation) <= SATURATION_SNAP_DISTANCE) {
     setSaturationValue(Number(patch.saturation.toFixed(3)));
@@ -415,6 +593,7 @@ function applyNumberInput(
   getValue: () => number,
   snap: () => void,
   normalize: boolean,
+  resolution?: RenderResolution,
 ) {
   const raw = input.value.trim();
   if (raw.length === 0) return;
@@ -425,18 +604,25 @@ function applyNumberInput(
   setValue(Math.max(minimum, Math.min(maximum, parsed)));
   snap();
   if (normalize) input.value = getValue().toString();
-  scheduleUpdate();
+  scheduleControlUpdate(resolution);
 }
 
 function cssDisplayColor(
   rgb: [number, number, number] | number[],
   useDisplayP3 = profileUsesDisplayP3(currentProfile()),
+  fallbackRgb: [number, number, number] | number[] = rgb,
+  targetSupportsDisplayP3 = displayP3Canvas,
 ): string {
-  const values = rgb.map((value) => Math.max(0, Math.min(1, value)));
-  if (useDisplayP3) {
+  const values = rgb.map((value) => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)));
+  const fallback = fallbackRgb.map((value) => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0)));
+  // Canvas color parsing follows the backing canvas capability, not CSS
+  // feature detection. Fall back to sRGB when the canvas cannot represent
+  // Display-P3 so an unsupported declaration never leaves the old fill style
+  // in place.
+  if (useDisplayP3 && targetSupportsDisplayP3 && displayP3Css) {
     return `color(display-p3 ${values[0]} ${values[1]} ${values[2]})`;
   }
-  return `rgb(${values.map((value) => Math.round(value * 255)).join(" ")})`;
+  return `rgb(${fallback.map((value) => Math.round(value * 255)).join(" ")})`;
 }
 
 function setElementColor(
@@ -491,21 +677,25 @@ function decodeDisplayChannel(value: number): number {
 }
 
 function reflectanceSliderPosition(value: number): number {
-  const clamped = Math.max(0, Math.min(REFLECTANCE_MAX, value));
+  const clamped = finiteClamped(value, 0, REFLECTANCE_MAX);
   return encodeSrgbTransferExtended(clamped) / encodeSrgbTransferExtended(REFLECTANCE_MAX);
 }
 
 function reflectanceValueFromSlider(): number {
   const position = Math.max(0, Math.min(REFLECTANCE_SLIDER_MAX, Number(reflectance.value)));
-  return decodeSrgbTransferExtended(position * encodeSrgbTransferExtended(REFLECTANCE_MAX));
+  return finiteClamped(decodeSrgbTransferExtended(position * encodeSrgbTransferExtended(REFLECTANCE_MAX)), 0, REFLECTANCE_MAX);
 }
 
 function setReflectanceValue(value: number) {
   reflectance.value = reflectanceSliderPosition(value).toString();
 }
 
+function setHueValue(value: number) {
+  hue.value = finiteClamped(value, 0, 360).toString();
+}
+
 function saturationSliderPosition(value: number): number {
-  const clamped = Math.max(0, Math.min(SATURATION_MAX, value));
+  const clamped = finiteClamped(value, 0, SATURATION_MAX);
   const transferMaximum = SATURATION_MAX / SATURATION_TRANSFER_SCALE;
   return encodeSrgbTransferExtended(clamped / SATURATION_TRANSFER_SCALE)
     / encodeSrgbTransferExtended(transferMaximum);
@@ -514,8 +704,12 @@ function saturationSliderPosition(value: number): number {
 function saturationValueFromSlider(): number {
   const position = Math.max(0, Math.min(SATURATION_SLIDER_MAX, Number(saturation.value)));
   const transferMaximum = SATURATION_MAX / SATURATION_TRANSFER_SCALE;
-  return decodeSrgbTransferExtended(position * encodeSrgbTransferExtended(transferMaximum))
-    * SATURATION_TRANSFER_SCALE;
+  return finiteClamped(
+    decodeSrgbTransferExtended(position * encodeSrgbTransferExtended(transferMaximum))
+      * SATURATION_TRANSFER_SCALE,
+    0,
+    SATURATION_MAX,
+  );
 }
 
 function setSaturationValue(value: number) {
@@ -523,7 +717,7 @@ function setSaturationValue(value: number) {
 }
 
 function temperatureSliderPosition(value: number): number {
-  const clamped = Math.max(TEMPERATURE_MIN, Math.min(TEMPERATURE_MAX, value));
+  const clamped = finiteClamped(value, TEMPERATURE_MIN, TEMPERATURE_MAX);
   // Correlated colour temperature is much closer to linear in reciprocal
   // temperature (mireds) than in kelvins. Normalize the two mired spans
   // independently around D65 so 6500 K is the visual midpoint while warm and
@@ -538,7 +732,10 @@ function temperatureSliderPosition(value: number): number {
 }
 
 function temperatureValueFromSlider(): number {
-  const position = Math.max(0, Math.min(1, Number(temperature.value)));
+  const rawPosition = Number(temperature.value);
+  const position = Number.isFinite(rawPosition)
+    ? Math.max(0, Math.min(1, rawPosition))
+    : temperatureSliderPosition(TEMPERATURE_DEFAULT);
   const mireds = position <= 0.5
     ? TEMPERATURE_DEFAULT_MIREDS
       + (1 - position * 2) * (TEMPERATURE_MIREDS_MAX - TEMPERATURE_DEFAULT_MIREDS)
@@ -548,18 +745,20 @@ function temperatureValueFromSlider(): number {
 }
 
 function setTemperatureValue(value: number) {
-  temperature.value = temperatureSliderPosition(Math.round(value)).toString();
+  const finite = finiteClamped(value, TEMPERATURE_MIN, TEMPERATURE_MAX);
+  temperature.value = temperatureSliderPosition(Math.round(finite)).toString();
 }
 
 function tintSliderPosition(value: number): number {
-  const clamped = Math.max(TINT_MIN, Math.min(TINT_MAX, value));
+  const clamped = finiteClamped(value, TINT_MIN, TINT_MAX);
   const centered = clamped / TINT_MAX;
   const curved = Math.sign(centered) * Math.abs(centered) ** TINT_PRESENTATION_EXPONENT;
   return 0.5 + 0.5 * curved;
 }
 
 function tintValueFromSlider(): number {
-  const position = Math.max(0, Math.min(1, Number(tint.value)));
+  const rawPosition = Number(tint.value);
+  const position = Number.isFinite(rawPosition) ? Math.max(0, Math.min(1, rawPosition)) : 0.5;
   const centered = position * 2 - 1;
   const value = Math.sign(centered)
     * Math.abs(centered) ** (1 / TINT_PRESENTATION_EXPONENT)
@@ -568,7 +767,7 @@ function tintValueFromSlider(): number {
 }
 
 function setTintValue(value: number) {
-  tint.value = tintSliderPosition(Math.max(TINT_MIN, Math.min(TINT_MAX, value))).toString();
+  tint.value = tintSliderPosition(finiteClamped(value, TINT_MIN, TINT_MAX)).toString();
 }
 
 function updateDisplaySnapMarkers() {
@@ -589,11 +788,11 @@ function snapTintInput() {
 }
 
 function backgroundSliderPosition(value: number): number {
-  return encodeDisplayChannel(Math.max(0, Math.min(BACKGROUND_MAX, value)) / BACKGROUND_MAX);
+  return encodeDisplayChannel(finiteClamped(value, 0, BACKGROUND_MAX) / BACKGROUND_MAX);
 }
 
 function backgroundValueFromSlider(): number {
-  return decodeDisplayChannel(Number(backgroundBrightness.value)) * BACKGROUND_MAX;
+  return finiteClamped(decodeDisplayChannel(Number(backgroundBrightness.value)) * BACKGROUND_MAX, 0, BACKGROUND_MAX);
 }
 
 function updateBackgroundSnap(value: number) {
@@ -605,6 +804,11 @@ function updateBackgroundSnap(value: number) {
   backgroundSnapValue = value;
   backgroundStick.hidden = false;
   backgroundStick.style.left = `${backgroundSliderPosition(value) * 100}%`;
+}
+
+function clearBackgroundSnap() {
+  backgroundSnapValue = null;
+  backgroundStick.hidden = true;
 }
 
 function snapBackgroundInput() {
@@ -622,13 +826,25 @@ function updateBackground() {
   setElementColor(previewSurround, [encoded, encoded, encoded]);
 }
 
+function hasUsableBackgroundEncoding(values: number[], requestedValue: number): boolean {
+  if (!values.every(Number.isFinite)) return false;
+  // An all-zero payload is valid only for a genuinely black background. The
+  // core also uses an all-zero vector for an unrecoverable evaluation, so do
+  // not let that error path black out a non-black surround.
+  return requestedValue <= 1.0e-12 || values.some((value) => Math.abs(value) > 1.0e-12);
+}
+
 function updatePreview(values: Float64Array) {
+  indicatorReady = true;
   const valid = values[0] > 0.5;
   const directSrgb = currentProfile() === 3;
   const useDisplayP3 = profileUsesDisplayP3(currentProfile());
   const displayOffset = useDisplayP3 ? 8 : 14;
   const neutralOffset = useDisplayP3 ? 11 : 17;
   neutralDisplay = [values[neutralOffset], values[neutralOffset + 1], values[neutralOffset + 2]].map((value) =>
+    Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0,
+  ) as [number, number, number];
+  neutralDisplaySrgb = [values[17], values[18], values[19]].map((value) =>
     Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0,
   ) as [number, number, number];
   if (directSrgb) {
@@ -672,8 +888,10 @@ function updatePreview(values: Float64Array) {
   const backgroundOffset = useDisplayP3 ? 24 : 27;
   const background = [values[backgroundOffset], values[backgroundOffset + 1], values[backgroundOffset + 2]];
   const backgroundSrgb = [values[27], values[28], values[29]];
-  if (background.every(Number.isFinite) && backgroundSrgb.every(Number.isFinite)) {
-    const value = Math.max(0, Math.min(BACKGROUND_MAX, backgroundValueFromSlider()));
+  const requestedBackground = Math.max(0, Math.min(BACKGROUND_MAX, backgroundValueFromSlider()));
+  if (hasUsableBackgroundEncoding(background, requestedBackground)
+    && hasUsableBackgroundEncoding(backgroundSrgb, requestedBackground)) {
+    const value = requestedBackground;
     backgroundBrightnessValue.textContent = value.toFixed(3);
     setElementColor(previewSurround, background, useDisplayP3, backgroundSrgb);
   } else {
@@ -687,6 +905,7 @@ function updatePreview(values: Float64Array) {
   } else {
     preview.style.backgroundColor = "#000";
   }
+  evaluatedStateKey = evaluationKey();
   drawIndicators();
 }
 
@@ -709,9 +928,15 @@ function requestSetFromEncoded() {
     return;
   }
   acescgEncodedValue.setCustomValidity("");
+  uiRevision += 1;
+  invalidateEvaluation();
+  clearBackgroundSnap();
   latestProfileConversion += 1;
   profileConversionPending = false;
+  generation += 1;
+  cancelActiveRender(generation);
   latestSetRequest += 1;
+  latestSetRevision = uiRevision;
   workers[0].postMessage({
     kind: "set",
     id: latestSetRequest,
@@ -726,11 +951,17 @@ function requestSetFromEncoded() {
 async function copyEncodedValue() {
   const value = acescgEncodedValue.value;
   try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
     await navigator.clipboard.writeText(value);
   } catch {
-    acescgEncodedValue.focus();
-    acescgEncodedValue.select();
-    document.execCommand("copy");
+    try {
+      acescgEncodedValue.focus();
+      acescgEncodedValue.select();
+      document.execCommand?.("copy");
+    } catch {
+      // Clipboard access is optional; the input remains selected for manual
+      // copying when both browser APIs are unavailable.
+    }
   }
 }
 
@@ -739,30 +970,44 @@ function restoreCachedRender(): boolean {
   const profile = currentProfile();
   const useDisplayP3 = profileUsesDisplayP3(profile);
   const key = renderKey(profile, state.reflectance, useDisplayP3);
-  const pixels = displayedResolution === "full" && cachedRenderKey === key
-    ? cachedRenderPixels
+  const pixels = displayedResolution === "full"
+    ? cachedRenderPixelsForState(displayState(), key)
     : undefined;
   if (!pixels) {
     return false;
   }
   ensureRenderSurface(displayedResolution, useDisplayP3);
   image.data.set(pixels);
+  imageRenderKey = key;
   context.putImageData(image, 0, 0);
   return true;
 }
 
 function drawIndicators() {
-  // Keep the last complete frame on screen while the next row set is being
-  // assembled. A render generation is published atomically at completion.
-  if (activeRenderPixels || image.width !== canvas.width || image.height !== canvas.height) return;
-  restoreCachedRender();
-  // Redraw the base raster before placing indicators so repeated previews do
-  // not accumulate stale lines and dots.
-  context.putImageData(image, 0, 0);
+  // Indicators live on a separate transparent canvas. Replacing/resizing the
+  // raster below it can therefore never expose a blank line, picked dot, or
+  // ColorChecker layer while a newer evaluation is pending.
+  if (!indicatorReady) return;
   const state = currentState();
+  const profile = currentProfile();
+  // During an input burst the previous indicator frame remains untouched.
+  // Wait for the evaluator and raster that match the new complete state before
+  // publishing replacement geometry, so stale geometry never flashes over a
+  // different gamut slice.
+  if (evaluatedStateKey !== evaluationKey()) return;
+  const useDisplayP3 = profileUsesDisplayP3(profile);
+  const rasterKey = renderKey(profile, state.reflectance, useDisplayP3);
+  if (imageRenderKey !== rasterKey) return;
+  const width = indicatorCanvas.width;
+  const height = indicatorCanvas.height;
+  if (width <= 0 || height <= 0) return;
+  indicatorContext.clearRect(0, 0, width, height);
+  // Keep the last accepted ColorChecker dots visible while a newer
+  // white-balance solve is in flight. The response replaces the complete set
+  // in one paint, avoiding a blank interval between old and new dots.
+  const drawColorchecker = colorcheckerPointsProfile === profile
+    && colorcheckerPoints.length === COLORCHECKER_NAMES.length;
   const angle = (adaptedHue * Math.PI) / 180;
-  const width = canvas.width;
-  const height = canvas.height;
   const centerX = (width - 1) / 2;
   const centerY = (height - 1) / 2;
   const radius = Math.min(width, height) / 2;
@@ -773,55 +1018,89 @@ function drawIndicators() {
   // picking overlay visible as white instead of inheriting the unavailable
   // neutral preview's black fallback.
   const color = state.reflectance > 1.0
-    ? cssDisplayColor([1, 1, 1], profileUsesDisplayP3(currentProfile()))
-    : cssDisplayColor(neutralDisplay, profileUsesDisplayP3(currentProfile()));
-  context.save();
-  for (const patch of colorcheckerPoints) {
+    ? cssDisplayColor([1, 1, 1], useDisplayP3, [1, 1, 1], indicatorDisplayP3Canvas)
+    : cssDisplayColor(
+        neutralDisplay,
+        useDisplayP3,
+        neutralDisplaySrgb,
+        indicatorDisplayP3Canvas,
+      );
+  indicatorContext.save();
+  if (drawColorchecker) for (const patch of colorcheckerPoints) {
     const patchAngle = (patch.adaptedHue * Math.PI) / 180;
     const patchRadius = (patch.adaptedSaturation / 100) * radius;
     const patchX = centerX - patchRadius * Math.sin(patchAngle);
     const patchY = centerY - patchRadius * Math.cos(patchAngle);
     // Availability is diagnostic only: every fixed reference keeps its exact
     // position and forward-rendered dot color, including out-of-cone sources.
-    context.fillStyle = cssDisplayColor(patch.display, profileUsesDisplayP3(currentProfile()));
-    context.beginPath();
-    context.arc(patchX, patchY, COLORCHECKER_DOT_RADIUS * (width / FULL_RESOLUTION), 0, 2 * Math.PI);
-    context.fill();
+    indicatorContext.fillStyle = cssDisplayColor(
+      patch.display,
+      useDisplayP3,
+      patch.displaySrgb,
+      indicatorDisplayP3Canvas,
+    );
+    indicatorContext.beginPath();
+    indicatorContext.arc(patchX, patchY, COLORCHECKER_DOT_RADIUS * (width / FULL_RESOLUTION), 0, 2 * Math.PI);
+    indicatorContext.fill();
   }
-  context.strokeStyle = color;
-  context.fillStyle = color;
+  indicatorContext.strokeStyle = color;
+  indicatorContext.fillStyle = color;
   const indicatorScale = width / FULL_RESOLUTION;
-  context.lineWidth = Math.max(0.5, 3 * indicatorScale);
+  indicatorContext.lineWidth = Math.max(0.5, 3 * indicatorScale);
   const neutralAngle = (adaptedNeutralHue * Math.PI) / 180;
   const neutralRadius = (adaptedNeutralSaturation / 100) * radius;
   const neutralX = centerX - neutralRadius * Math.sin(neutralAngle);
   const neutralY = centerY - neutralRadius * Math.cos(neutralAngle);
-  context.beginPath();
-  context.moveTo(neutralX, neutralY);
-  context.lineTo(dotX, dotY);
-  context.stroke();
-  context.beginPath();
-  context.arc(dotX, dotY, Math.max(2, 8 * indicatorScale), 0, 2 * Math.PI);
-  context.fill();
-  context.restore();
+  indicatorContext.beginPath();
+  indicatorContext.moveTo(neutralX, neutralY);
+  indicatorContext.lineTo(dotX, dotY);
+  indicatorContext.stroke();
+  indicatorContext.beginPath();
+  indicatorContext.arc(dotX, dotY, Math.max(2, 8 * indicatorScale), 0, 2 * Math.PI);
+  indicatorContext.fill();
+  indicatorContext.restore();
 }
 
 function parseColorcheckerPoints(values: Float64Array, profile: number): ColorCheckerPoint[] {
   const points: ColorCheckerPoint[] = [];
-  const stride = values.length >= COLORCHECKER_NAMES.length * 12 ? 12 : 10;
+  const adaptedLength = COLORCHECKER_NAMES.length * 12;
+  const legacyLength = COLORCHECKER_NAMES.length * 10;
+  if (values.length !== adaptedLength && values.length !== legacyLength) return [];
+  const stride = values.length === adaptedLength ? 12 : 10;
   for (let offset = 0; offset + stride - 1 < values.length && points.length < COLORCHECKER_NAMES.length; offset += stride) {
     const displayOffset = profileUsesDisplayP3(profile) ? 3 : 6;
+    const sourceHue = values[offset];
+    const sourceSaturation = values[offset + 1];
+    const sourceReflectance = values[offset + 2];
+    const display = [values[offset + displayOffset], values[offset + displayOffset + 1], values[offset + displayOffset + 2]];
+    const displaySrgb = [values[offset + 6], values[offset + 7], values[offset + 8]];
+    const available = values[offset + 9];
+    const adaptedHue = stride === 12 ? values[offset + 10] : sourceHue;
+    const adaptedSaturation = stride === 12 ? values[offset + 11] : sourceSaturation;
+    if (
+      ![sourceHue, sourceSaturation, sourceReflectance, ...display, ...displaySrgb, available, adaptedHue, adaptedSaturation]
+        .every(Number.isFinite)
+      || sourceHue < 0 || sourceHue > 360
+      || sourceSaturation < 0 || sourceSaturation > SATURATION_MAX
+      || sourceReflectance < 0 || sourceReflectance > REFLECTANCE_MAX
+      || adaptedHue < 0 || adaptedHue > 360
+      || adaptedSaturation < 0 || adaptedSaturation > SATURATION_MAX
+    ) {
+      return [];
+    }
     points.push({
       name: COLORCHECKER_NAMES[points.length],
-      hue: values[offset],
-      saturation: values[offset + 1],
-      reflectance: values[offset + 2],
-      display: [values[offset + displayOffset], values[offset + displayOffset + 1], values[offset + displayOffset + 2]],
-      available: values[offset + 9] > 0.5,
-      adaptedHue: stride === 12 ? values[offset + 10] : values[offset],
-      adaptedSaturation: stride === 12 ? values[offset + 11] : values[offset + 1],
+      hue: sourceHue,
+      saturation: sourceSaturation,
+      reflectance: sourceReflectance,
+      display: display as [number, number, number],
+      displaySrgb: displaySrgb as [number, number, number],
+      available: available > 0.5,
+      adaptedHue,
+      adaptedSaturation,
     });
   }
+  if (points.length !== COLORCHECKER_NAMES.length) return [];
   hueStickElements.forEach((marker, index) => {
     const patch = points[index];
     marker.style.left = patch ? `${(patch.hue / 360) * 100}%` : "0%";
@@ -831,15 +1110,55 @@ function parseColorcheckerPoints(values: Float64Array, profile: number): ColorCh
 
 function requestPreview(id: number) {
   const state = currentState();
-  workers[0].postMessage({ kind: "evaluate", id, profile: currentProfile(), ...state, ...displayState(), background: backgroundValueFromSlider() });
+  const profile = currentProfile();
+  const display = displayState();
+  const background = backgroundValueFromSlider();
+  workers[0].postMessage({ kind: "evaluate", id, profile, ...state, ...display, background });
+}
+
+function queueColorcheckerRequest() {
+  if (colorcheckerPostQueued || colorcheckerInFlight) return;
+  colorcheckerPostQueued = true;
+  requestAnimationFrame(() => {
+    colorcheckerPostQueued = false;
+    if (colorcheckerInFlight || colorcheckerPostedRequest === latestColorcheckerRequest) return;
+    const requestId = latestColorcheckerRequest;
+    const nextProfile = currentProfile();
+    const nextDisplay = displayState();
+    colorcheckerPostedRequest = requestId;
+    colorcheckerInFlight = true;
+    colorcheckerWorker.postMessage({ kind: "colorchecker", id: requestId, profile: nextProfile, ...nextDisplay });
+  });
 }
 
 function requestColorchecker() {
-  workers[0].postMessage({ kind: "colorchecker", id: 0, profile: currentProfile(), ...displayState() });
+  latestColorcheckerRequest += 1;
+  const profile = currentProfile();
+  if (colorcheckerPointsProfile !== profile) {
+    colorcheckerPoints = [];
+    colorcheckerPointsProfile = -1;
+  }
+  colorcheckerPointsKey = "";
+  updateStickMarkers();
+  drawIndicators();
+  queueColorcheckerRequest();
 }
 
 function requestProfileConversion() {
   const profile = currentProfile();
+  if (profile === sliderProfile) {
+    latestProfileConversion += 1;
+    profileConversionPending = false;
+    profileConversionRevision = uiRevision;
+    cancelActiveRender();
+    clearBackgroundSnap();
+    updateProfileFooter();
+    updateLabels();
+    updateStickMarkers();
+    requestColorchecker();
+    scheduleUpdate();
+    return;
+  }
   const state = currentState();
   const sourceIsDirectSrgb = sliderProfile === 3;
   const retained = sourceIsDirectSrgb ? retainedOutputSrgbEncoded : retainedAcescgEncoded;
@@ -849,17 +1168,23 @@ function requestProfileConversion() {
   // state being edited.
   latestSetRequest += 1;
   latestProfileConversion += 1;
+  profileConversionRevision = uiRevision;
   profileConversionPending = true;
-  generation += 1;
+  invalidateEvaluation();
+  clearBackgroundSnap();
+  const cancellationId = Math.max(generation + 1, activeRenderId + 1);
+  generation = cancellationId;
+  cancelActiveRender(cancellationId);
   updateProfileFooter();
   updateLabels();
   updateStickMarkers();
-  requestColorchecker();
   workers[0].postMessage({
     kind: "profile-convert",
     id: latestProfileConversion,
     profile,
     sourceProfile: sliderProfile,
+    sourceHue: state.hue,
+    sourceSaturation: state.saturation,
     background: backgroundValueFromSlider(),
     reflectance: state.reflectance,
     red: retained[0],
@@ -869,18 +1194,108 @@ function requestProfileConversion() {
   });
 }
 
+function cancelActiveRender(cancellationId?: number) {
+  // Row workers cannot be interrupted while a WASM call is synchronous, but
+  // the cancellation marker prevents queued obsolete blocks from starting.
+  const cancelId = cancellationId ?? Math.max(generation, activeRenderId + 1);
+  workers.forEach((worker) => worker.postMessage({ kind: "cancel-render", id: cancelId }));
+  pendingRenderRequest = undefined;
+  activeRenderPixels = undefined;
+  pendingRows = 0;
+  activeRenderPendingWorkers.clear();
+  activeRenderId = -1;
+  activeRenderKey = "";
+  activeRenderProfile = -1;
+  activeRenderDisplayP3 = false;
+  activeRenderCancelRequested = false;
+}
+
+function failActiveRender() {
+  activeRenderPixels = undefined;
+  activeRenderPendingWorkers.clear();
+  pendingRows = 0;
+  pendingRenderRequest = undefined;
+  activeRenderId = -1;
+  activeRenderKey = "";
+  activeRenderProfile = -1;
+  activeRenderDisplayP3 = false;
+  activeRenderCancelRequested = false;
+}
+
+function failEvaluation(id: number) {
+  if (id !== generation) return;
+  evaluatedStateKey = "";
+  preview.classList.add("preview-unavailable");
+  preview.style.backgroundColor = "#000";
+  drawIndicators();
+}
+
+function failProfileConversion(id: number) {
+  if (id !== latestProfileConversion || !profileConversionPending) return;
+  profileConversionPending = false;
+  profileSelect.value = sliderProfile.toString();
+  updateProfileFooter();
+  updateLabels();
+  requestColorchecker();
+  scheduleUpdate();
+}
+
+function handleWorkerError(response: WorkerErrorResponse) {
+  switch (response.operation) {
+    case "render":
+      // A stale row failure must not tear down a newer frame that has already
+      // replaced it in the assembly buffer.
+      if (response.id === activeRenderId) failActiveRender();
+      return;
+    case "evaluate":
+      failEvaluation(response.id);
+      return;
+    case "colorchecker":
+      if (response.id === colorcheckerPostedRequest) {
+        colorcheckerInFlight = false;
+        if (latestColorcheckerRequest !== response.id) queueColorcheckerRequest();
+      }
+      return;
+    case "set":
+      // Keep the last committed color visible when a hex conversion fails.
+      // The user can correct the field and submit again.
+      return;
+    case "profile-convert":
+      failProfileConversion(response.id);
+      return;
+    default:
+      return;
+  }
+}
+
+function scheduleControlUpdate(resolution?: RenderResolution, refreshColorchecker = false) {
+  uiRevision += 1;
+  invalidateEvaluation();
+  if (profileConversionPending) {
+    // Until the target profile conversion commits, the current Refl/Hue/Sat
+    // values still belong to sliderProfile. Re-run conversion against the
+    // latest edited source state instead of evaluating the target prematurely.
+    queueAnimationFrame();
+    return;
+  }
+  if (refreshColorchecker) requestColorchecker();
+  scheduleEvaluation(resolution, false);
+}
+
 function requestRender(id: number, resolution: RenderResolution) {
   const state = currentState();
   const profile = currentProfile();
   const useDisplayP3 = profileUsesDisplayP3(profile);
+  const display = displayState();
   const size = resolutionSize(resolution);
-  const cacheKey = renderKey(profile, state.reflectance, useDisplayP3);
+  const cacheKey = renderKey(profile, state.reflectance, useDisplayP3, display);
   if (activeRenderPixels) {
     if (
       activeRenderKey === cacheKey
       && activeRenderResolution === resolution
       && activeRenderWidth === size
       && activeRenderHeight === size
+      && !activeRenderCancelRequested
     ) {
       // The in-flight render already describes the newest state, so discard
       // any older request that was waiting behind it.
@@ -890,15 +1305,27 @@ function requestRender(id: number, resolution: RenderResolution) {
     // Keep only the newest request while the current raster is assembled.
     // It will be launched after the current render has been published.
     pendingRenderRequest = { id, resolution };
+    if (resolution === "preview" && activeRenderResolution === "full" && !activeRenderCancelRequested) {
+      activeRenderCancelRequested = true;
+      const cancelId = Math.max(id, activeRenderId + 1);
+      workers.forEach((worker) => worker.postMessage({ kind: "cancel-render", id: cancelId }));
+    } else if (resolution === "full" && activeRenderResolution === "full" && !activeRenderCancelRequested) {
+      // A new settled full slice supersedes an older settled slice just as a
+      // drag preview does. Waiting for the obsolete 512x512 frame makes Reset,
+      // Recall, and profile changes appear unresponsive.
+      activeRenderCancelRequested = true;
+      const cancelId = Math.max(id, activeRenderId + 1);
+      workers.forEach((worker) => worker.postMessage({ kind: "cancel-render", id: cancelId }));
+    }
     return;
   }
-  prepareRenderSurface(resolution, useDisplayP3);
-  const cachedPixels = resolution === "full" && cachedRenderKey === cacheKey
-    ? cachedRenderPixels
+  const cachedPixels = resolution === "full"
+    ? cachedRenderPixelsForState(display, cacheKey)
     : undefined;
   if (cachedPixels) {
     ensureRenderSurface(resolution, useDisplayP3);
     image.data.set(cachedPixels);
+    imageRenderKey = cacheKey;
     context.putImageData(image, 0, 0);
     drawIndicators();
     return;
@@ -909,11 +1336,16 @@ function requestRender(id: number, resolution: RenderResolution) {
     && activeRenderPixels
   ) return;
   pendingRows = workers.length;
+  activeRenderPendingWorkers = new Set(workers.map((_, index) => index));
+  activeRenderCancelRequested = false;
   activeRenderId = id;
   activeRenderKey = cacheKey;
+  activeRenderProfile = profile;
+  activeRenderDisplayP3 = useDisplayP3;
   activeRenderResolution = resolution;
   activeRenderWidth = size;
   activeRenderHeight = size;
+  activeRenderWhiteBalance = display;
   activeRenderPixels = new Uint8ClampedArray(size * size * 4);
   const rowsPerWorker = Math.ceil(size / workers.length);
   workers.forEach((worker, index) => {
@@ -929,7 +1361,7 @@ function requestRender(id: number, resolution: RenderResolution) {
       yStart,
       yEnd,
       displayP3: useDisplayP3,
-      ...displayState(),
+      ...display,
     });
   });
 }
@@ -939,13 +1371,16 @@ function queueAnimationFrame() {
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
-    if (profileConversionPending) return;
+    if (profileConversionPending) {
+      if (profileConversionRevision !== uiRevision) requestProfileConversion();
+      return;
+    }
     const nextResolution = queuedRenderResolution;
-    queuedRenderResolution = "full";
+    queuedRenderResolution = undefined;
     generation += 1;
     const id = generation;
     requestPreview(id);
-    requestRender(id, nextResolution);
+    if (nextResolution) requestRender(id, nextResolution);
   });
 }
 
@@ -956,45 +1391,70 @@ function launchPendingRender() {
   requestRender(pending.id, pending.resolution);
 }
 
-function scheduleUpdate(resolution: RenderResolution = "full") {
-  queuedRenderResolution = resolution;
-  // Prepare the next ImageData without resizing the visible canvas. The
-  // replacement surface is committed only after its rows are complete.
-  const profile = currentProfile();
-  const useDisplayP3 = profileUsesDisplayP3(profile);
-  const state = currentState();
-  const requestedKey = renderKey(profile, state.reflectance, useDisplayP3);
-  if (!activeRenderPixels || (activeRenderKey === requestedKey && activeRenderResolution === resolution)) {
-    prepareRenderSurface(resolution, useDisplayP3);
-  }
+function scheduleEvaluation(resolution?: RenderResolution, _alreadyInvalidated = false) {
+  if (!_alreadyInvalidated) invalidateEvaluation();
+  if (resolution) queuedRenderResolution = resolution;
   updateLabels();
   queueAnimationFrame();
 }
 
-workers.forEach((worker) => {
-  worker.onmessage = (event: MessageEvent<RenderResponse | RenderCancelledResponse | EvaluateResponse | ColorCheckerResponse | SetResponse | ProfileConvertResponse>) => {
+function scheduleUpdate(resolution: RenderResolution = "full") {
+  invalidateEvaluation();
+  queuedRenderResolution = resolution;
+  // Keep the currently published raster on screen while the replacement is
+  // assembled in its own buffer.
+  updateLabels();
+  queueAnimationFrame();
+}
+
+workers.forEach((worker, workerIndex) => {
+  worker.onmessage = (event: MessageEvent<RenderResponse | RenderCancelledResponse | EvaluateResponse | ColorCheckerResponse | SetResponse | ProfileConvertResponse | WorkerErrorResponse>) => {
     const response = event.data;
+    if (response.kind === "worker-error") {
+      handleWorkerError(response);
+      return;
+    }
     if (response.kind === "colorchecker") {
-      if (response.profile !== currentProfile()) return;
+      if (response.id !== colorcheckerPostedRequest) return;
+      colorcheckerInFlight = false;
+      const isCurrent = response.id === latestColorcheckerRequest
+        && response.profile === currentProfile();
       const display = displayState();
-      if (response.temp !== display.temp || response.tint !== display.tint) return;
-      colorcheckerPoints = parseColorcheckerPoints(response.points, response.profile);
-      updateStickMarkers();
-      drawIndicators();
+      if (isCurrent && response.temp === display.temp && response.tint === display.tint) {
+        if (!ArrayBuffer.isView(response.points)) {
+          if (latestColorcheckerRequest !== response.id) queueColorcheckerRequest();
+          return;
+        }
+        const parsed = parseColorcheckerPoints(response.points, response.profile);
+        if (parsed.length === COLORCHECKER_NAMES.length) {
+          colorcheckerPoints = parsed;
+          colorcheckerPointsProfile = response.profile;
+          colorcheckerPointsKey = colorcheckerKey(response.profile, display);
+          updateStickMarkers();
+          drawIndicators();
+        }
+      }
+      if (latestColorcheckerRequest !== response.id) queueColorcheckerRequest();
       return;
     }
     if (response.kind === "set") {
       if (response.profile !== currentProfile()) return;
       if (response.id !== latestSetRequest) return;
+      if (response.id !== latestSetRequest || latestSetRevision !== uiRevision) return;
       const display = displayState();
       if (response.temp !== display.temp || response.tint !== display.tint) return;
-      const coordinatesFinite = Array.from(response.values.slice(1, 4)).every(Number.isFinite);
+      if (!ArrayBuffer.isView(response.values)) return;
+      const coordinatesFinite = response.values.length >= 4
+        && Array.from(response.values.slice(1, 4)).every(Number.isFinite);
       if (!coordinatesFinite) {
         return;
       }
       setReflectanceValue(response.values[1]);
-      hue.value = response.values[2].toString();
+      setHueValue(response.values[2]);
       setSaturationValue(response.values[3]);
+      clearBackgroundSnap();
+      uiRevision += 1;
+      invalidateEvaluation();
       sliderProfile = response.profile;
       if (response.values[0] > 0.5) {
         snapHueInput();
@@ -1015,8 +1475,13 @@ workers.forEach((worker) => {
       const display = displayState();
       const currentBackground = backgroundValueFromSlider();
       if (
-        response.temp !== display.temp
-        || response.tint !== display.tint
+        profileConversionRevision !== uiRevision
+        || response.sourceProfile !== sliderProfile
+        || !sameNumber(response.sourceReflectance, currentState().reflectance)
+        || !sameNumber(response.sourceHue, currentState().hue)
+        || !sameNumber(response.sourceSaturation, currentState().saturation)
+        || !sameNumber(response.temp, display.temp)
+        || !sameNumber(response.tint, display.tint)
         || Math.abs(response.sourceBackground - currentBackground) > 1.0e-9
       ) {
         // The retained foreground is unchanged by white balance, but a
@@ -1027,7 +1492,15 @@ workers.forEach((worker) => {
         return;
       }
       profileConversionPending = false;
-      const coordinatesFinite = Array.from(response.values.slice(1, 4)).every(Number.isFinite);
+      if (!ArrayBuffer.isView(response.values)) {
+        profileSelect.value = sliderProfile.toString();
+        updateProfileFooter();
+        requestColorchecker();
+        scheduleUpdate();
+        return;
+      }
+      const coordinatesFinite = response.values.length >= 4
+        && Array.from(response.values.slice(1, 4)).every(Number.isFinite);
       const backgroundFinite = Number.isFinite(response.background);
       // A false validity bit is an explicit, editable out-of-gamut state.
       // Keep finite boundary coordinates for every profile direction and let
@@ -1041,11 +1514,12 @@ workers.forEach((worker) => {
         return;
       }
       setReflectanceValue(response.values[1]);
-      hue.value = response.values[2].toString();
+      setHueValue(response.values[2]);
       setSaturationValue(response.values[3]);
       backgroundBrightness.max = BACKGROUND_SLIDER_MAX.toString();
       backgroundBrightness.value = backgroundSliderPosition(response.background).toString();
       sliderProfile = response.profile;
+      requestColorchecker();
       updateStickMarkers();
       updateBackground();
       updateLabels();
@@ -1060,6 +1534,21 @@ workers.forEach((worker) => {
       const display = displayState();
       if (response.temp !== display.temp || response.tint !== display.tint) return;
       if (Math.abs(response.background - backgroundValueFromSlider()) > 1.0e-9) return;
+      const state = currentState();
+      if (
+        response.reflectance !== state.reflectance
+        || response.hue !== state.hue
+        || response.saturation !== state.saturation
+      ) return;
+      if (!ArrayBuffer.isView(response.values)) {
+        failEvaluation(response.id);
+        return;
+      }
+      if (response.values.length < 37) {
+        failEvaluation(response.id);
+        return;
+      }
+      evaluatedStateKey = evaluationKey(response.profile, state, display, response.background);
       updatePreview(response.values);
       return;
     }
@@ -1068,13 +1557,21 @@ workers.forEach((worker) => {
       // older row block. Account for that block explicitly so the main thread
       // can discard the partial frame and launch the pending generation.
       if (response.id !== activeRenderId || !activeRenderPixels) return;
+      if (response.profile !== activeRenderProfile) return;
       if (
         response.width !== activeRenderWidth
         || response.height !== activeRenderHeight
       ) return;
-      pendingRows -= 1;
+      if (!activeRenderPendingWorkers.delete(workerIndex)) return;
+      pendingRows = activeRenderPendingWorkers.size;
       if (pendingRows === 0) {
+        activeRenderPendingWorkers.clear();
         activeRenderPixels = undefined;
+        activeRenderId = -1;
+        activeRenderKey = "";
+        activeRenderProfile = -1;
+        activeRenderDisplayP3 = false;
+        activeRenderCancelRequested = false;
         launchPendingRender();
       }
       return;
@@ -1082,52 +1579,94 @@ workers.forEach((worker) => {
     if (response.kind !== "render") return;
     // A slice render remains valid across Hue/Sat preview generations.
     if (response.id !== activeRenderId || !activeRenderPixels) return;
+    if (response.profile !== activeRenderProfile) return;
     if (
       response.width !== activeRenderWidth
       || response.height !== activeRenderHeight
     ) return;
     const offset = response.yStart * activeRenderWidth * 4;
-    image.data.set(response.pixels, offset);
+    const rowsPerWorker = Math.ceil(activeRenderHeight / workers.length);
+    const expectedStart = workerIndex * rowsPerWorker;
+    const expectedEnd = Math.min(activeRenderHeight, expectedStart + rowsPerWorker);
+    const expectedLength = Math.max(0, expectedEnd - expectedStart) * activeRenderWidth * 4;
+    if (
+      response.yStart !== expectedStart
+      || !Number.isInteger(response.yStart)
+      || response.yStart < 0
+      || response.yStart > activeRenderHeight
+      || offset < 0
+      || !(response.pixels instanceof Uint8Array)
+      || offset + response.pixels.length > activeRenderPixels.length
+      || response.pixels.length !== expectedLength
+    ) {
+      failActiveRender();
+      return;
+    }
+    if (!activeRenderPendingWorkers.delete(workerIndex)) return;
     activeRenderPixels.set(response.pixels, offset);
-    pendingRows -= 1;
+    pendingRows = activeRenderPendingWorkers.size;
     if (pendingRows === 0) {
       const completedKey = activeRenderKey;
       const completedResolution = activeRenderResolution;
       const completedPixels = activeRenderPixels;
       if (completedResolution === "full") {
-        cachedRenderKey = completedKey;
-        cachedRenderPixels = completedPixels;
+        const completedRender = { key: completedKey, pixels: completedPixels };
+        lastCompletedFullRender = completedRender;
+        if (activeRenderWhiteBalance.temp === TEMPERATURE_DEFAULT && activeRenderWhiteBalance.tint === TINT_DEFAULT) {
+          cachedIdentityRender = completedRender;
+        } else if (sameWhiteBalance(activeRenderWhiteBalance, storedWhiteBalance)) {
+          cachedStoredRender = completedRender;
+        }
       }
+      ensureRenderSurface(completedResolution, activeRenderDisplayP3);
+      image.data.set(completedPixels);
+      imageRenderKey = completedKey;
+      // Publish the fully assembled raster to the base canvas. Indicators are
+      // painted on their separate transparent layer below, so this operation
+      // cannot erase them.
+      context.putImageData(image, 0, 0);
       activeRenderPixels = undefined;
-      const state = currentState();
-      const profile = currentProfile();
-      const currentKey = renderKey(profile, state.reflectance, profileUsesDisplayP3(profile));
-      if (completedKey === currentKey) {
-        ensureRenderSurface(completedResolution, profileUsesDisplayP3(profile));
-        drawIndicators();
-      }
+      activeRenderId = -1;
+      activeRenderKey = "";
+      activeRenderProfile = -1;
+      activeRenderDisplayP3 = false;
+      activeRenderCancelRequested = false;
+      // Keep the last accepted overlay composited even when this frame was
+      // superseded while it was rendering. The pending frame will replace it
+      // without exposing a blank indicator interval.
+      drawIndicators();
       const pending = pendingRenderRequest;
+      activeRenderPendingWorkers.clear();
       if (pending) {
         launchPendingRender();
       }
     }
   };
   worker.onerror = () => {
-    if (renderError) return;
-    renderError = true;
-    preview.classList.add("preview-unavailable");
-    preview.style.backgroundColor = "#000";
+    // A failed raster worker only invalidates the in-flight raster. Preserve a
+    // valid picked-color preview and let the next control update retry the
+    // slice. Worker zero owns evaluation/profile conversion, while the
+    // selected ColorChecker worker owns the patch solve.
+    if (activeRenderPixels) failActiveRender();
+    if (workerIndex === 0) {
+      failEvaluation(generation);
+      failProfileConversion(latestProfileConversion);
+    }
+    if (workerIndex === colorcheckerWorkerIndex && colorcheckerInFlight) {
+      colorcheckerInFlight = false;
+      if (latestColorcheckerRequest !== colorcheckerPostedRequest) queueColorcheckerRequest();
+    }
   };
 });
 
 reflectance.addEventListener("input", () => {
   snapReflectanceInput();
-  scheduleUpdate("preview");
+  scheduleControlUpdate("preview");
 });
 function settleReflectanceInput() {
   // Pointer/keyboard settlement is explicit because snapping may leave the
   // control at its previously committed value and suppress a native change.
-  scheduleUpdate("full");
+  scheduleControlUpdate("full");
 }
 reflectance.addEventListener("change", settleReflectanceInput);
 reflectance.addEventListener("pointerup", settleReflectanceInput);
@@ -1139,27 +1678,25 @@ reflectance.addEventListener("keyup", (event) => {
 });
 hue.addEventListener("input", () => {
   snapHueInput();
-  scheduleUpdate();
+  scheduleControlUpdate();
 });
 saturation.addEventListener("input", () => {
   snapSaturationInput();
-  scheduleUpdate();
+  scheduleControlUpdate();
 });
 function settleDisplayWhiteBalanceInput() {
-  scheduleUpdate("full");
+  scheduleControlUpdate("full", true);
 }
 temperature.addEventListener("input", () => {
   temperatureReadoutUsesSliderStep = true;
   snapTemperatureInput();
   temperatureNumber.value = formatTemperature(temperatureValueFromSlider(), true);
-  requestColorchecker();
-  scheduleUpdate("preview");
+  scheduleControlUpdate("preview", true);
 });
 tint.addEventListener("input", () => {
   snapTintInput();
   tintNumber.value = formatTint(tintValueFromSlider());
-  requestColorchecker();
-  scheduleUpdate("preview");
+  scheduleControlUpdate("preview", true);
 });
 temperature.addEventListener("change", settleDisplayWhiteBalanceInput);
 temperature.addEventListener("pointerup", settleDisplayWhiteBalanceInput);
@@ -1177,6 +1714,16 @@ tint.addEventListener("keyup", (event) => {
     settleDisplayWhiteBalanceInput();
   }
 });
+temperatureNumber.addEventListener("input", () => {
+  const raw = temperatureNumber.value.trim();
+  if (raw.length === 0) return;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return;
+  temperatureReadoutUsesSliderStep = false;
+  setTemperatureValue(Math.max(TEMPERATURE_MIN, Math.min(TEMPERATURE_MAX, value)));
+  snapTemperatureInput();
+  scheduleControlUpdate("preview", true);
+});
 temperatureNumber.addEventListener("change", () => {
   const raw = temperatureNumber.value.trim();
   if (raw.length > 0) {
@@ -1188,7 +1735,16 @@ temperatureNumber.addEventListener("change", () => {
     }
   }
   temperatureNumber.value = formatTemperature(temperatureValueFromSlider());
-  requestColorchecker(); scheduleUpdate("full");
+  scheduleControlUpdate("full", true);
+});
+tintNumber.addEventListener("input", () => {
+  const raw = tintNumber.value.trim();
+  if (raw.length === 0) return;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return;
+  setTintValue(Math.max(TINT_MIN, Math.min(TINT_MAX, value)));
+  snapTintInput();
+  scheduleControlUpdate("preview", true);
 });
 tintNumber.addEventListener("change", () => {
   const raw = tintNumber.value.trim();
@@ -1200,14 +1756,35 @@ tintNumber.addEventListener("change", () => {
     }
   }
   tintNumber.value = formatTint(tintValueFromSlider());
-  requestColorchecker(); scheduleUpdate("full");
+  scheduleControlUpdate("full", true);
 });
 whiteBalanceReset.addEventListener("click", () => {
   temperatureReadoutUsesSliderStep = true;
   setTemperatureValue(TEMPERATURE_DEFAULT);
   setTintValue(TINT_DEFAULT);
-  requestColorchecker();
-  scheduleUpdate("full");
+  scheduleControlUpdate("full", true);
+});
+whiteBalanceStore.addEventListener("click", () => {
+  const nextWhiteBalance = { ...displayState() };
+  const previousWhiteBalance = storedWhiteBalance;
+  storedWhiteBalance = nextWhiteBalance;
+  if (!sameWhiteBalance(previousWhiteBalance, nextWhiteBalance)) {
+    cachedStoredRender = undefined;
+  }
+  const state = currentState();
+  const key = renderKey(currentProfile(), state.reflectance, profileUsesDisplayP3(currentProfile()));
+  if (lastCompletedFullRender?.key === key) {
+    cachedStoredRender = lastCompletedFullRender;
+  }
+  updateLabels();
+  scheduleControlUpdate("full");
+});
+whiteBalanceRecall.addEventListener("click", () => {
+  if (!storedWhiteBalance) return;
+  temperatureReadoutUsesSliderStep = false;
+  setTemperatureValue(storedWhiteBalance.temp);
+  setTintValue(storedWhiteBalance.tint);
+  scheduleControlUpdate("full", true);
 });
 reflectanceNumber.addEventListener("input", () => {
   applyNumberInput(
@@ -1218,6 +1795,7 @@ reflectanceNumber.addEventListener("input", () => {
     reflectanceValueFromSlider,
     snapReflectanceInput,
     false,
+    "preview",
   );
 });
 reflectanceNumber.addEventListener("change", () => {
@@ -1232,6 +1810,7 @@ reflectanceNumber.addEventListener("change", () => {
     reflectanceValueFromSlider,
     snapReflectanceInput,
     true,
+    "full",
   );
 });
 hueNumber.addEventListener("input", () => {
@@ -1243,6 +1822,7 @@ hueNumber.addEventListener("input", () => {
     () => Number(hue.value),
     snapHueInput,
     false,
+    undefined,
   );
 });
 hueNumber.addEventListener("change", () => {
@@ -1255,6 +1835,7 @@ hueNumber.addEventListener("change", () => {
     () => Number(hue.value),
     snapHueInput,
     true,
+    undefined,
   );
 });
 saturationNumber.addEventListener("input", () => {
@@ -1266,6 +1847,7 @@ saturationNumber.addEventListener("input", () => {
     saturationValueFromSlider,
     snapSaturationInput,
     false,
+    undefined,
   );
 });
 saturationNumber.addEventListener("change", () => {
@@ -1280,20 +1862,40 @@ saturationNumber.addEventListener("change", () => {
     saturationValueFromSlider,
     snapSaturationInput,
     true,
+    undefined,
   );
 });
 backgroundBrightness.addEventListener("input", () => {
   snapBackgroundInput();
+  // The adapted surround can be chromatic. Keep the last committed color on
+  // screen until the evaluator returns instead of flashing a temporary
+  // unadapted gray value on every pointer event.
   backgroundBrightnessValue.textContent = Math.max(0, Math.min(BACKGROUND_MAX, backgroundValueFromSlider())).toFixed(3);
-  generation += 1;
-  requestPreview(generation);
+  uiRevision += 1;
+  invalidateEvaluation();
+  if (profileConversionPending) {
+    queueAnimationFrame();
+    return;
+  }
+  scheduleEvaluation();
 });
 profileSelect.addEventListener("change", () => {
+  uiRevision += 1;
   requestProfileConversion();
 });
 acescgCopy.addEventListener("click", () => void copyEncodedValue());
 acescgSet.addEventListener("click", requestSetFromEncoded);
-acescgEncodedValue.addEventListener("input", () => acescgEncodedValue.setCustomValidity(""));
+acescgEncodedValue.addEventListener("input", () => {
+  latestSetRequest += 1;
+  uiRevision += 1;
+  acescgEncodedValue.setCustomValidity("");
+});
+acescgEncodedValue.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    requestSetFromEncoded();
+  }
+});
 reflectance.max = REFLECTANCE_SLIDER_MAX.toString();
 saturation.max = SATURATION_SLIDER_MAX.toString();
 setReflectanceValue(Number(reflectanceNumber.value));

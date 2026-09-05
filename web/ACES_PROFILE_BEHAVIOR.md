@@ -49,6 +49,8 @@ Tint), with snap markers at 6500 K and 0 respectively (500 K and 0.5 tint-unit
 tolerances). During a Temp drag its adjacent readout is rounded to a multiple
 of 50 K, and Tint is shown as an integer; worker messages and all color
 calculations use the restored numeric values, not the presentation coordinates.
+Store remembers one numeric Temp/Tint pair in memory across profile changes;
+Recall restores that pair, and reloading the page clears it.
 
 ## Evaluation
 
