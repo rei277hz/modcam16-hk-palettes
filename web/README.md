@@ -23,6 +23,10 @@ continue to show linear ACEScg and encoded AP1 values. Switching among the
 four ACES profiles retains that ACEScg value and solves all three target
 Refl, Hue, and Sat coordinates from it. Refl is therefore profile-local; the
 same ACEScg color can have different Refl values in different profiles.
+The profile menu keeps stable IDs behind the scenes and displays them in this
+order: direct sRGB, Rec.709 SDR, P3-D65 SDR, P3-D65 HDR, and Rec.2020 HDR. The
+ACES transform names follow the OCIO view names, while the source-gamut labels
+before `/` remain unchanged.
 When the target cannot represent the retained color, the conversion keeps a
 finite boundary Refl (`0` or `1.2`), reports the state as invalid, and lets the
 normal evaluator render its fallback state. The Linear Rec.709 and ACEScg RGB

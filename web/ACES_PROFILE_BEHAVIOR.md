@@ -75,7 +75,12 @@ The ACES view profiles are:
 
 ID `3` remains reserved for the direct sRGB profile. Switching between ACES
 profile IDs `0`, `1`, `2`, and `4` retains the ACEScg readout as the source
-color. The target profile evaluates `f_target(A)` and independently solves:
+color.
+The dropdown presents the stable IDs in this order: `3`, `1`, `4`, `2`, `0`.
+The source-gamut wording before `/` is intentionally unchanged, while the
+transform wording after `/` uses the corresponding OCIO view name exactly.
+
+The target profile evaluates `f_target(A)` and independently solves:
 
 - `Refl`: the target neutral `C(r)` whose forward `J_HK` matches
   `J_HK(f_target(A))`;

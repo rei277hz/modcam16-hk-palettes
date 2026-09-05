@@ -17,6 +17,22 @@ ID `3` must remain the direct-sRGB workflow. Existing code branches on that
 ID, so inserting the new profile before it would silently change conversion,
 readout, and worker behavior.
 
+## UI Profile Contract
+
+Profile IDs are stable implementation identifiers, not dropdown positions. The
+current dropdown order is `3`, `1`, `4`, `2`, `0`: direct sRGB, Rec.709 SDR,
+P3-D65 SDR, P3-D65 HDR, and Rec.2020 HDR. The source-gamut text before `/` is
+kept unchanged; the transform text after `/` matches the OCIO view names:
+
+- `Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709)`;
+- `P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)`;
+- `P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65)`;
+- `Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020)`.
+
+Keep profile `4` immediately before profile `2` in the dropdown when adding
+future UI changes. Do not renumber the IDs or reorder `PROFILE_DETAILS`, which
+is indexed by the stable ID.
+
 ## Source of Truth
 
 The exact processor is the bundled OCIO 2.5 built-in transform:

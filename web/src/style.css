@@ -217,7 +217,6 @@ canvas { display: block; width: 100%; height: 100%; image-rendering: auto; }
   width: 86px;
   aspect-ratio: 1;
   background: #000;
-  border: 1px solid #3b424d;
 }
 
 .preview.preview-unavailable {
