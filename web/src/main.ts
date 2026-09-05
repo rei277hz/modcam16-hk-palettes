@@ -138,15 +138,15 @@ const appFooter = document.querySelector<HTMLElement>(".app-footer")!;
 const PROFILE_DETAILS = [
   {
     source: "Rec.2020 (P3-D65 limited)",
-    transform: "ACES 2.0 Rec.2020 HDR 1000 nit",
+    transform: "ACES 2.0 - HDR 1000 nits (Rec.2020)",
   },
   {
     source: "Rec.709",
-    transform: "ACES 2.0 Rec.709 SDR 100 nit",
+    transform: "ACES 2.0 - SDR 100 nits (Rec.709)",
   },
   {
     source: "P3-D65",
-    transform: "ACES 2.0 P3-D65 HDR 1000 nit",
+    transform: "ACES 2.0 - HDR 1000 nits (P3 D65)",
   },
   {
     source: "Rec.709",
@@ -154,7 +154,7 @@ const PROFILE_DETAILS = [
   },
   {
     source: "P3-D65",
-    transform: "ACES 2.0 P3-D65 SDR 100 nit",
+    transform: "ACES 2.0 - SDR 100 nits (P3 D65)",
   },
 ] as const;
 

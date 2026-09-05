@@ -68,10 +68,10 @@ For a slider state `(r, hue, sat)`:
 
 The ACES view profiles are:
 
-- ID `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 Rec.2020 HDR 1000 nit;
-- ID `1`: Rec.709 / ACES 2.0 Rec.709 SDR 100 nit;
-- ID `2`: P3-D65 / ACES 2.0 P3-D65 HDR 1000 nit;
-- ID `4`: P3-D65 / ACES 2.0 P3-D65 SDR 100 nit.
+- ID `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020);
+- ID `1`: Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709);
+- ID `2`: P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65);
+- ID `4`: P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65).
 
 ID `3` remains reserved for the direct sRGB profile. Switching between ACES
 profile IDs `0`, `1`, `2`, and `4` retains the ACEScg readout as the source

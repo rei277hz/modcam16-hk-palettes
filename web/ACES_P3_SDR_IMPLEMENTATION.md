@@ -1,17 +1,17 @@
 # ACES 2.0 P3-D65 SDR Implementation Notes
 
 This document records the implementation-critical facts for the
-`P3-D65 / ACES 2.0 P3-D65 SDR 100 nit` profile. It is deliberately separate
+`P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)` profile. It is deliberately separate
 from the user-facing behavior contract so future changes do not have to infer
 numeric or profile-ID details from the UI.
 
 ## Stable Profile IDs
 
-- `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 HDR 1000 nit
-- `1`: Rec.709 / ACES 2.0 SDR 100 nit
-- `2`: P3-D65 / ACES 2.0 HDR 1000 nit
+- `0`: Rec.2020 (P3-D65 limited) / ACES 2.0 - HDR 1000 nits (Rec.2020)
+- `1`: Rec.709 / ACES 2.0 - SDR 100 nits (Rec.709)
+- `2`: P3-D65 / ACES 2.0 - HDR 1000 nits (P3 D65)
 - `3`: direct linear Rec.709/sRGB, with no ACES view transform
-- `4`: P3-D65 / ACES 2.0 SDR 100 nit
+- `4`: P3-D65 / ACES 2.0 - SDR 100 nits (P3 D65)
 
 ID `3` must remain the direct-sRGB workflow. Existing code branches on that
 ID, so inserting the new profile before it would silently change conversion,
