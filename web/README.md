@@ -75,6 +75,11 @@ to 6500 K/0 when edited within the normal tolerance (500 K / 0.5 tint units).
 While dragging Temp, its readout is rounded to the nearest 50 K; Tint is shown
 as an integer. The values sent to the color core remain numeric kelvins and tint
 units. Reset restores both controls to 6500 K and tint 0.
+Store remembers the current Temp/Tint pair in memory until the page is reloaded,
+including across profile changes, and Recall restores both values together.
+Settled gamut slices cache the 6500 K/0 identity and the stored pair separately,
+so Reset and Recall can restore their matching view without recalculation when
+the profile and Refl state are unchanged.
 While Refl, Temp, or Tint is dragged, the slice is rendered at 64×64 for
 responsiveness; releasing or settling the control renders the full-resolution
 slice.

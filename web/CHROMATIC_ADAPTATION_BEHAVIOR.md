@@ -21,6 +21,23 @@ The `Reset` button restores both controls together to the D65 identity values,
 6500 K and tint 0, and requests a settled full-resolution render. It is disabled
 while both controls are already at those defaults.
 
+`Store` remembers the current numeric Temp/Tint pair in memory for the current
+page. The stored pair is independent of the selected profile and remains
+available across profile changes until it is replaced or the page is reloaded.
+`Recall` restores both stored values together and requests a settled
+full-resolution render; it is disabled until a pair has been stored.
+
+The settled full-resolution gamut slice keeps two keyed cache slots: the D65
+identity (`6500 K / 0`) and the currently stored Temp/Tint pair. The cache key
+also includes profile, Refl, and canvas gamut, so changes to those inputs still
+request a new slice. Reset and Recall reuse their matching full-resolution
+slot; a 64x64 drag preview is never used as a settled cache entry. Pressing
+Store promotes an already completed slice when possible and otherwise settles
+one full-resolution render for the new stored pair.
+The most recently completed full-resolution slice is also retained transiently
+for the same profile/Refl/white-balance key, so Hue, Sat, and Background edits
+can repaint indicators and the preview without regenerating an unchanged slice.
+
 Temp and Tint remain immediately to the right of the gamut-slice viewport on
 mobile and desktop layouts. On narrow screens the viewport and control column
 shrink together, while the preview and background controls move below them.
@@ -48,6 +65,25 @@ for a calm, useful display; the underlying slider coordinate remains continuous
 and worker requests retain the corresponding numeric Kelvin value. Tint's
 adjacent readout is shown as an integer. Numeric entry fields remain available
 for direct values within their stated ranges.
+
+## Reactive Updates and Failures
+
+The evaluator is scheduled once per animation frame and every response is
+checked against the complete profile, slider, white-balance, and background
+state that produced it. Late evaluations, profile conversions, hex-entry
+responses, ColorChecker payloads, and raster rows are discarded rather than
+painting a newer edit with stale data. ColorChecker requests are coalesced to
+the newest white-balance state, and Hue/Sat/Background edits reuse the current
+slice because they do not change its raster geometry. A raster or ColorChecker
+failure preserves the last valid picked-color preview; a malformed evaluation
+or profile conversion is rejected and leaves the prior controls intact.
+The line, picked-color dot, and ColorChecker dots also remain composited from
+the last accepted evaluation while a newer evaluation or raster is pending;
+the replacement overlay is published atomically with the accepted response,
+so rapid slider input does not flash the indicators off. The viewport uses a
+dedicated transparent, full-resolution indicator canvas above the raster
+canvas; changing between the 64x64 drag raster and the settled raster therefore
+cannot clear the indicator layer.
 
 At 6500 K and tint 0, the adaptation matrix is exactly identity. The existing
 D65 output, ACEScg readout, background, and viewport behavior therefore remain
