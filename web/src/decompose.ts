@@ -69,6 +69,7 @@ const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
 const cancelButton = $("#cancel-button") as HTMLButtonElement;
 const workerBadge = $("#worker-badge");
+const webGpuHelp = $("#webgpu-help");
 const progressStage = $("#progress-stage");
 const progressPercent = $("#progress-percent") as HTMLOutputElement;
 const progressBar = $("#progress-bar") as HTMLProgressElement;
@@ -116,6 +117,12 @@ let exposureUrl: string | undefined;
 let exposureRgbUrl: string | undefined;
 let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
+let webGpuHelpPinned = false;
+
+function setWebGpuHelpVisible(visible: boolean): void {
+  webGpuHelp.hidden = !visible;
+  workerBadge.setAttribute("aria-expanded", String(visible));
+}
 
 function createWorker(): Worker {
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
@@ -226,6 +233,11 @@ function validOptions(): boolean {
   return Number.isFinite(refl) && refl > 0 && refl <= 1.2;
 }
 
+function normalizeReflDisplay(): void {
+  const value = Number(reflInput.value);
+  if (Number.isFinite(value)) reflInput.value = value.toFixed(3);
+}
+
 function updateCalculateState(): void {
   calculateButton.disabled = !canCalculate() || cancelButton.hidden === false;
 }
@@ -266,7 +278,7 @@ function renderSummary(summary: SourceSummary): void {
     ["Size", selectedFile ? formatBytes(selectedFile.size) : "Unknown"],
     ["Format", summary.format.toUpperCase()],
     ["Dimensions", `${formatCount(summary.width)} × ${formatCount(summary.height)}`],
-    ["Metadata", summary.metadata_source ?? "No unambiguous profile metadata"],
+    ["Metadata", summary.metadata_source ?? "Profile metadata unavailable"],
   ];
   metadataSummary.innerHTML = rows.map(([label, value]) => `<dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd>`).join("");
   metadataSummary.hidden = false;
@@ -534,6 +546,8 @@ for (const control of [gamutSelect, transferSelect, profileSelect, reflInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
 }
+reflInput.addEventListener("change", normalizeReflDisplay);
+reflInput.addEventListener("blur", normalizeReflDisplay);
 overrideSource.addEventListener("click", () => {
   sourceOverrideActive = true;
   interpretationFields.hidden = false;
@@ -541,9 +555,26 @@ overrideSource.addEventListener("click", () => {
   gamutSelect.focus();
   updateCalculateState();
 });
+workerBadge.addEventListener("mouseenter", () => setWebGpuHelpVisible(true));
+workerBadge.addEventListener("mouseleave", () => { if (!webGpuHelpPinned) setWebGpuHelpVisible(false); });
+workerBadge.addEventListener("focus", () => setWebGpuHelpVisible(true));
+workerBadge.addEventListener("blur", () => { if (!webGpuHelpPinned) setWebGpuHelpVisible(false); });
+workerBadge.addEventListener("click", () => {
+  webGpuHelpPinned = !webGpuHelpPinned;
+  setWebGpuHelpVisible(webGpuHelpPinned);
+});
+document.addEventListener("click", (event) => {
+  if (webGpuHelpPinned && !workerBadge.contains(event.target as Node) && !webGpuHelp.contains(event.target as Node)) {
+    webGpuHelpPinned = false;
+    setWebGpuHelpVisible(false);
+  }
+});
+webGpuHelp.addEventListener("click", (event) => event.stopPropagation());
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
 const browserNavigator = navigator as Navigator & { gpu?: unknown };
-workerBadge.textContent = browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext)
-  ? "WebGPU available"
-  : "WebGPU unavailable";
+const webGpuAvailable = Boolean(browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext));
+workerBadge.textContent = webGpuAvailable ? "WebGPU available" : "WebGPU unavailable";
+webGpuHelp.textContent = webGpuAvailable
+  ? "WebGPU lets the worker run the validated modCAM16-HK solve and exact ACES 2.0 preview transforms on the device GPU. This can substantially reduce processing time. Results are still checked against the accurate CPU reference, and a browser or device failure can fall back to Rust/WASM CPU processing."
+  : "WebGPU is unavailable in this browser context, so the worker uses the accurate Rust/WASM CPU implementation. Results stay local and correct, but large images can take longer to process.";
 setBusy(false);

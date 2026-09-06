@@ -42,6 +42,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .field { min-width: 0; display: grid; gap: 4px; }
 .field > span { color: #bfcbd0; font-size: 11px; }
 select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid #3a4752; border-radius: 0; background: #111820; padding: 0 9px; font-size: 12px; }
+#refl { width: 7ch; max-width: 100%; font-variant-numeric: tabular-nums; }
 .field-note { min-height: 13px; color: #71808b; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-line { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #aebbc2; font-size: 11px; }
 .confirm-line input { width: 15px; height: 15px; margin: 0; accent-color: #89e0c4; }
@@ -49,7 +50,10 @@ select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid 
 .processing-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(120px, .5fr); align-items: center; gap: 18px; padding-bottom: 11px; border-bottom: 1px solid #2b3540; }
 .process-controls { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
 .process-controls h2 { margin: 0 5px 0 0; color: #dce6e8; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
-.status-badge { border: 1px solid #3b6359; padding: 4px 7px; color: #89e0c4; font-size: 10px; }
+.webgpu-status { position: relative; display: inline-flex; }
+.status-badge { border: 1px solid #3b6359; background: transparent; padding: 4px 7px; color: #89e0c4; font: inherit; font-size: 10px; }
+.status-badge:hover { border-color: #89e0c4; background: #203a35; }
+.webgpu-help { position: absolute; z-index: 5; top: calc(100% + 8px); left: 0; width: min(320px, calc(100vw - 28px)); border: 1px solid #3d505b; background: #10171e; padding: 9px 10px; color: #cbd7da; font-size: 11px; line-height: 1.4; box-shadow: 0 8px 24px rgb(0 0 0 / .35); }
 .progress-block { min-width: 0; }
 .progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 11px; }
 .progress-label-row output { color: #89e0c4; font-variant-numeric: tabular-nums; }

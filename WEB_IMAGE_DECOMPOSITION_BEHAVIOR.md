@@ -43,7 +43,7 @@ metadata area, while long metadata values wrap in their value column.
 The options panel contains:
 
 - **ACES profile**: a menu ordered as ACES 2.0 - SDR 100 nits (Rec.709), ACES 2.0 - SDR 100 nits (P3 D65), ACES 2.0 - HDR 1000 nits (P3 D65), and ACES 2.0 - HDR 1000 nits (Rec.2020). P3-D65 HDR 1000 nits is selected by default.
-- **Refl**: a numeric reflectance/lightness parameter used by the modCAM16-HK decomposition. The control has a documented default, min/max, step, and an editable numeric value.
+- **Refl**: a compact numeric reflectance/lightness parameter used by the modCAM16-HK decomposition. It sits beside the ACES profile selector, is sized for the five-character `x.xxx` form, starts at `0.500`, changes in `0.1` increments, and displays three digits after the decimal point.
 - Gaussian blur is fixed at `0` for the web UI; no blur selector is exposed.
 
 Defaults are loaded from the documented pipeline defaults, including `Refl = 0.5`; the worker always receives blur sigma `0`. Invalid, non-finite, or out-of-range values are rejected inline.
@@ -51,6 +51,10 @@ Defaults are loaded from the documented pipeline defaults, including `Refl = 0.5
 ## Processing and progress
 
 Pressing **Decompose** starts a cancellable job in a dedicated worker. The worker owns the WASM module and never blocks the UI thread. A second click is replaced by a **Cancel** action while work is running. The processing row also reports whether WebGPU is available in the current browser context.
+
+The WebGPU status is interactive: hovering or focusing it on desktop, or tapping
+it on a touch device, explains the GPU acceleration benefit and the accurate
+Rust/WASM CPU fallback used when WebGPU is unavailable.
 
 The progress region always reports:
 

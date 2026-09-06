@@ -30,15 +30,15 @@
       <section class="control-row" aria-label="Decomposition options">
         <div class="control-group options-group">
           <div class="form-grid form-grid-options">
-            <label class="field field-wide"><span>ACES profile</span><select id="aces-profile"><option value="1">ACES 2.0 - SDR 100 nits (Rec.709)</option><option value="4">ACES 2.0 - SDR 100 nits (P3 D65)</option><option value="2" selected>ACES 2.0 - HDR 1000 nits (P3 D65)</option><option value="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</option></select></label>
-            <label class="field"><span>Refl</span><input id="refl" type="number" min="0.000001" max="1.2" step="0.001" value="0.5" inputmode="decimal" /></label>
+            <label class="field"><span>ACES profile</span><select id="aces-profile"><option value="1">ACES 2.0 - SDR 100 nits (Rec.709)</option><option value="4">ACES 2.0 - SDR 100 nits (P3 D65)</option><option value="2" selected>ACES 2.0 - HDR 1000 nits (P3 D65)</option><option value="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</option></select></label>
+            <label class="field"><span>Refl</span><input id="refl" type="number" min="0.000001" max="1.2" step="0.1" value="0.500" inputmode="decimal" /></label>
           </div>
           <p id="options-error" class="validation-message" role="alert" hidden></p>
         </div>
       </section>
 
       <section class="processing-row" aria-label="Processing">
-        <div class="process-controls"><span id="worker-badge" class="status-badge">WebGPU unavailable</span><button id="calculate-button" class="button button-primary" type="button" disabled>Decompose</button><button id="cancel-button" class="button button-danger" type="button" hidden>Cancel</button></div>
+        <div class="process-controls"><span class="webgpu-status"><button id="worker-badge" class="status-badge" type="button" aria-expanded="false" aria-controls="webgpu-help">WebGPU unavailable</button><span id="webgpu-help" class="webgpu-help" role="tooltip" hidden></span></span><button id="calculate-button" class="button button-primary" type="button" disabled>Decompose</button><button id="cancel-button" class="button button-danger" type="button" hidden>Cancel</button></div>
         <div class="progress-block" aria-live="polite"><div class="progress-label-row"><span id="progress-stage">Waiting for an image</span><output id="progress-percent">0%</output></div><progress id="progress-bar" max="100" value="0">0%</progress><div id="progress-counters" class="progress-counters">No pixels processed.</div></div>
         <div id="processing-status" class="inline-status" role="status" hidden></div>
       </section>
