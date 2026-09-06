@@ -450,9 +450,6 @@ fn parse_png(data: &[u8]) -> Result<Pixels, String> {
         Err(png_error) => match parse_jpeg_inner(data) {
             Ok(mut pixels) => {
                 pixels.summary.format = "jpeg".into();
-                pixels.summary.warnings.push(format!(
-                    "PNG parsing failed ({png_error}); the upload was decoded as JPEG instead."
-                ));
                 Ok(pixels)
             }
             Err(jpeg_error) => Err(format!(
