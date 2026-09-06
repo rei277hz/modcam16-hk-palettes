@@ -66,3 +66,6 @@
   `npx vite build` pass.
 - 2026-09-07: Verified the bundled decoder against a real 12-bit HEIF fixture;
   native RGB decoding reports 12 bits and preserves the 16-bit sample path.
+- 2026-09-07: Corrected Apple gain-map ordering for `IMG_9809.HEIC`: decode
+  the primary transfer to linear source RGB before applying headroom, then
+  convert to AP0 so boosted samples never violate an ICC device domain.

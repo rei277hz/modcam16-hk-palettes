@@ -16,6 +16,11 @@ worker, where `ultrahdr-core` parses the Apple MakerNote and the worker applies
 the Apple headroom/gain-map reconstruction into linear RGB before source color
 conversion.
 
+Gain-map reconstruction is performed after decoding the primary transfer
+function into linear source RGB. This keeps boosted values out of the ICC
+device domain, which is limited to normalized encoded samples, and prevents
+valid Apple HDR images from failing with an out-of-domain ICC error.
+
 Color interpretation follows the existing no-guessing rule. A manual gamut and
 transfer override wins. Otherwise a usable embedded ICC profile is applied
 directly, even when it cannot be named as a standard gamut/transfer pair.
