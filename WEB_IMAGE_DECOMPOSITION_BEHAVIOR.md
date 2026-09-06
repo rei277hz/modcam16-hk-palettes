@@ -82,7 +82,7 @@ Five buttons become enabled only after all output encodings finish:
 
 Each download is created from a browser `Blob` and uses a deterministic, descriptive filename derived from the input name and selected options. The UI reports output byte sizes and revokes old object URLs when a new job starts or is reset.
 
-The downloads panel also renders the base and exposure preview JPEGs inline next to the download controls so the user can inspect the preview result before saving it.
+The downloads panel renders the base and exposure preview JPEGs inline. Clicking either image opens a full-screen overlay with the matching save action; mobile browsers use the native file share sheet when available and other browsers use a download.
 
 ## Implementation contract
 

@@ -57,6 +57,11 @@ Branch: `feat/web-image-decomposition-p3-preview`
       exposure RGB EXR; its three channels must each contain `s` without log or
       normalization.
 - [x] Show both preview JPEGs inline next to their download buttons.
+- [x] Use a single no-card, no-page-scroll viewport layout with upload first,
+      interpretation/options, progress, previews, and EXR controls.
+- [x] Make previews clickable and open a full-screen overlay with the matching
+      save action; use the mobile file share sheet when available and download
+      as a fallback.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.

@@ -223,11 +223,20 @@ tables. A simple tone curve or other approximation is not acceptable. GPU
 arithmetic uses portable `f32`; the exact CPU ACES implementation remains the
 reference and a failed numerical validation selects the CPU preview path.
 
-The page shows both preview JPEGs inline beside their download buttons. The
-report records the source interpretation, selected decomposition options,
+The page shows both preview JPEGs inline; their save controls appear in the
+full-screen preview overlay. The report records the source interpretation, selected decomposition options,
 compute backend, preview transform name/version, output sizes, warnings, and
 all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
 are revoked when a new job starts, a file is replaced, or the page is reset.
+
+The web layout is a single viewport workspace without visible title treatment,
+vertical page scrolling, or card containers. Upload is the first control at the
+top, followed by source interpretation and decomposition options, progress,
+then the two preview images and EXR download controls. Preview images are
+buttons: selecting one opens a full-screen overlay with its larger image and a
+matching save action. On mobile browsers that implement `navigator.share` for
+files, the save action opens the native share sheet so the user can save the
+JPEG to Photos/Gallery; unsupported browsers use a normal file download.
 
 The preview implementation now has a dedicated WebGPU compute pass. It reuses
 the validated ACES parameter buffer and fixed-function shader from the solve

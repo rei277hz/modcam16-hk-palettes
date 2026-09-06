@@ -88,6 +88,12 @@ const downloadExposure = $("#download-exposure") as HTMLButtonElement;
 const downloadExposureRgb = $("#download-exposure-rgb") as HTMLButtonElement;
 const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
 const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
+const basePreviewTrigger = $("#base-preview-trigger") as HTMLButtonElement;
+const exposurePreviewTrigger = $("#exposure-preview-trigger") as HTMLButtonElement;
+const previewOverlay = $("#preview-overlay") as HTMLDivElement;
+const previewOverlayImage = $("#preview-overlay-image") as HTMLImageElement;
+const previewOverlayLabel = $("#preview-overlay-label");
+const closePreviewButton = $("#close-preview") as HTMLButtonElement;
 const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
 const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
 const baseSize = $("#base-size");
@@ -163,6 +169,25 @@ function clearPreview(image: HTMLImageElement): void {
   image.hidden = true;
 }
 
+function closePreview(): void {
+  previewOverlay.hidden = true;
+  previewOverlayImage.src = "";
+  document.body.classList.remove("preview-open");
+}
+
+function openPreview(kind: "base" | "exposure"): void {
+  const url = kind === "base" ? basePreviewUrl : exposurePreviewUrl;
+  if (!url) return;
+  previewOverlayImage.src = url;
+  previewOverlayImage.alt = kind === "base" ? "Enlarged base preview JPEG" : "Enlarged exposure preview JPEG";
+  previewOverlayLabel.textContent = kind === "base" ? "Base preview · P3-D65 / sRGB" : "Exposure preview · P3-D65 / sRGB";
+  downloadBasePreview.hidden = kind !== "base";
+  downloadExposurePreview.hidden = kind !== "exposure";
+  previewOverlay.hidden = false;
+  document.body.classList.add("preview-open");
+  closePreviewButton.focus();
+}
+
 function showPreview(image: HTMLImageElement, url: string | undefined): void {
   if (!url) {
     clearPreview(image);
@@ -227,6 +252,9 @@ function resetResults(): void {
   downloadExposureRgb.disabled = true;
   downloadBasePreview.disabled = true;
   downloadExposurePreview.disabled = true;
+  basePreviewTrigger.disabled = true;
+  exposurePreviewTrigger.disabled = true;
+  closePreview();
   clearPreview(basePreviewImage);
   clearPreview(exposurePreviewImage);
   baseSize.textContent = "Waiting for calculation";
@@ -368,6 +396,8 @@ function onWorkerMessage(message: WorkerMessage): void {
   downloadExposureRgb.disabled = false;
   downloadBasePreview.disabled = false;
   downloadExposurePreview.disabled = false;
+  basePreviewTrigger.disabled = false;
+  exposurePreviewTrigger.disabled = false;
   baseSize.textContent = formatBytes(baseBytes.byteLength);
   exposureSize.textContent = formatBytes(exposureBytes.byteLength);
   exposureRgbSize.textContent = formatBytes(exposureRgbBytes.byteLength);
@@ -518,6 +548,24 @@ function download(url: string | undefined, suffix: string, extension: string): v
   link.click();
 }
 
+async function savePreview(kind: "base" | "exposure"): Promise<void> {
+  const bytes = kind === "base" ? basePreviewBytes : exposurePreviewBytes;
+  const url = kind === "base" ? basePreviewUrl : exposurePreviewUrl;
+  const suffix = kind === "base" ? "base-preview-p3d65-srgb" : "exposure-preview-p3d65-srgb";
+  if (!bytes || !selectedFile) return;
+  const file = new File([new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" })], `${selectedFile.name.replace(/\.[^.]+$/, "")}-${suffix}.jpg`, { type: "image/jpeg" });
+  const sharing = navigator as Navigator & { share?: (data: { files: File[]; title?: string }) => Promise<void>; canShare?: (data: { files: File[] }) => boolean };
+  if (sharing.share && (!sharing.canShare || sharing.canShare({ files: [file] }))) {
+    try {
+      await sharing.share({ files: [file], title: kind === "base" ? "Base preview JPEG" : "Exposure preview JPEG" });
+      return;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+  }
+  download(url, suffix, "jpg");
+}
+
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
 resetButton.addEventListener("click", resetAll);
@@ -525,8 +573,13 @@ calculateButton.addEventListener("click", () => void calculate());
 cancelButton.addEventListener("click", cancel);
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
 downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-acescg-fp16", "exr"));
-downloadBasePreview.addEventListener("click", () => download(basePreviewUrl, "base-preview-p3d65-srgb", "jpg"));
-downloadExposurePreview.addEventListener("click", () => download(exposurePreviewUrl, "exposure-preview-p3d65-srgb", "jpg"));
+downloadBasePreview.addEventListener("click", () => void savePreview("base"));
+downloadExposurePreview.addEventListener("click", () => void savePreview("exposure"));
+basePreviewTrigger.addEventListener("click", () => openPreview("base"));
+exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
+closePreviewButton.addEventListener("click", closePreview);
+previewOverlay.querySelector("[data-close-preview]")?.addEventListener("click", closePreview);
+window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !previewOverlay.hidden) closePreview(); });
 for (const control of [gamutSelect, transferSelect, confirmColor, profileSelect, reflInput, blurInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
