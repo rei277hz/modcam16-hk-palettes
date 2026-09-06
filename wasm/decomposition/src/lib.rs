@@ -1286,6 +1286,16 @@ pub fn prepare_heic_pixels(
     }
     let mut rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
     if !gain_map.is_empty() {
+        // Apple gain-map primaries are Display P3 with an sRGB-like transfer
+        // unless the user explicitly overrides the source interpretation.
+        // Reconstruct in linear source RGB; passing the boosted encoded values
+        // through an ICC device transform would violate its [0,1] domain.
+        let gain_transfer = req.transfer.as_deref().unwrap_or("sRGB");
+        for px in &mut rgb {
+            for c in px.iter_mut() {
+                *c = decode_transfer(*c, gain_transfer);
+            }
+        }
         rgb = apply_apple_gain_map(
             rgb,
             width as usize,
@@ -1296,6 +1306,18 @@ pub fn prepare_heic_pixels(
             &exif,
         )
         .map_err(|e| JsValue::from_str(&e))?;
+        let gain_gamut = req.gamut.as_deref().unwrap_or("Display P3 / P3-D65");
+        let prepared: Vec<[f32; 3]> = rgb
+            .into_iter()
+            .map(|px| source_to_ap0(px, gain_gamut))
+            .collect();
+        let prepared = {
+            let mut value = prepared;
+            blur(&mut value, width as usize, height as usize, req.blur_sigma);
+            value
+        };
+        return prepared_payload(flat_pixels(&prepared), width as usize, height as usize, Vec::new())
+            .map_err(|e| JsValue::from_str(&e));
     }
     let prepared = prepare_rgb(
         rgb,
