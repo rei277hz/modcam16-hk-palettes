@@ -67,7 +67,6 @@ const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
 const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
-const cancelButton = $("#cancel-button") as HTMLButtonElement;
 const workerBadge = $("#worker-badge");
 const progressStage = $("#progress-stage");
 const progressPercent = $("#progress-percent") as HTMLOutputElement;
@@ -201,8 +200,10 @@ function showStatus(message: string, error = false): void {
 }
 
 function setBusy(busy: boolean): void {
-  calculateButton.disabled = busy || !canCalculate();
-  cancelButton.hidden = !busy;
+  calculateButton.disabled = !busy && !canCalculate();
+  calculateButton.textContent = busy ? "Cancel" : "Decompose";
+  calculateButton.classList.toggle("button-primary", !busy);
+  calculateButton.classList.toggle("button-danger", busy);
   uploadButton.disabled = busy;
   gamutSelect.disabled = busy;
   transferSelect.disabled = busy;
@@ -232,7 +233,7 @@ function normalizeReflDisplay(): void {
 }
 
 function updateCalculateState(): void {
-  calculateButton.disabled = !canCalculate() || cancelButton.hidden === false;
+  calculateButton.disabled = activeJob !== undefined || !canCalculate();
 }
 
 function resetResults(): void {
@@ -524,8 +525,7 @@ async function savePreview(kind: "base" | "exposure"): Promise<void> {
 
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
-calculateButton.addEventListener("click", () => void calculate());
-cancelButton.addEventListener("click", cancel);
+calculateButton.addEventListener("click", () => { if (activeJob !== undefined) cancel(); else void calculate(); });
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
 downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-acescg-fp16", "exr"));
 downloadBasePreview.addEventListener("click", () => void savePreview("base"));
