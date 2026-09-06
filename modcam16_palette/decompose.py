@@ -405,7 +405,7 @@ def _transfer_decode(values: np.ndarray, transfer: str) -> np.ndarray:
         m1, m2 = 2610.0 / 16384.0, 2523.0 / 32.0
         c1, c2, c3 = 3424.0 / 4096.0, 2413.0 / 128.0, 2392.0 / 128.0
         ratio = np.power(n, 1.0 / m2)
-        luminance = np.power(np.maximum(ratio - c1, 0.0) / (c2 - c3 * ratio), 1.0 / m1)
+        luminance = 10000.0 * np.power(np.maximum(ratio - c1, 0.0) / (c2 - c3 * ratio), 1.0 / m1)
         return (luminance / 100.0).astype(np.float32)
     if name == "HLG / BT.2100":
         n = np.maximum(source, 0.0).astype(np.float64)

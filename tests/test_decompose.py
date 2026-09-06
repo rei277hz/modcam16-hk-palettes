@@ -20,6 +20,7 @@ from modcam16_palette.decompose import (
     project_unreachable_display_values,
     read_rgb_exr,
     read_image,
+    _transfer_decode,
     write_decomposition_exrs,
 )
 
@@ -80,6 +81,15 @@ def test_png_without_metadata_requires_explicit_source_selection(tmp_path):
     assert decoded.source_gamut is None
     assert decoded.source_transfer is None
     assert decoded.pixels.dtype == np.float32
+
+
+def test_common_transfer_functions_decode_to_linear_values():
+    encoded = np.array([[[0.5, 0.5, 0.5]]], dtype=np.float32)
+    assert _transfer_decode(encoded, "sRGB")[0, 0, 0] == pytest.approx(0.21404114, abs=1e-6)
+    assert _transfer_decode(encoded, "Gamma 2.2")[0, 0, 0] == pytest.approx(0.21763764, abs=1e-6)
+    assert _transfer_decode(encoded, "BT.709 / BT.2020")[0, 0, 0] == pytest.approx(0.2595894, abs=1e-6)
+    assert _transfer_decode(encoded, "HLG / BT.2100")[0, 0, 0] == pytest.approx(1.0 / 12.0, abs=1e-6)
+    assert _transfer_decode(np.array([[[0.5080784] * 3]], dtype=np.float32), "PQ / ST 2084")[0, 0, 0] == pytest.approx(1.0, abs=2e-3)
 
 
 def _write_input(path: Path, pixels: np.ndarray, *, color_space="ACES2065-1"):
