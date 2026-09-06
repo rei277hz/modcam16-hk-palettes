@@ -68,6 +68,8 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Keep preview thumbnails compact with explicit viewport-relative width and
       height bounds, and simplify the controls to detected dropdown defaults,
       a WebGPU availability indicator, and a `Decompose` action.
+- [x] Keep Primaries and Transfer in a right-hand column beside the load and
+      metadata area on narrow screens; allow long metadata values to wrap.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.

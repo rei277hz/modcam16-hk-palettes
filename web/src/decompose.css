@@ -23,7 +23,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .upload-mark { width: 20px; height: 20px; flex: 0 0 20px; fill: none; stroke: #9bf1d5; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
 .metadata-summary { min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 3px 12px; color: #aebbc2; font-size: 11px; overflow: hidden; }
 .metadata-summary dt { color: #71808b; }
-.metadata-summary dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metadata-summary dd { min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: normal; }
 .inline-warning, .inline-status { min-width: 0; color: #e7d3a7; font-size: 11px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .inline-warning { border-left: 2px solid #d3a75f; padding-left: 8px; }
 .button { min-height: 34px; border: 1px solid #3b4a55; background: #182029; padding: 0 12px; font-size: 12px; }
@@ -92,8 +92,11 @@ progress::-moz-progress-bar { background: #89e0c4; }
 .overlay-actions .download-button { min-width: 190px; min-height: 48px; }
 @media (max-width: 800px) {
   .decompose-shell { padding: 10px 14px 8px; gap: 8px; }
-  .upload-row { grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding-bottom: 8px; }
-  .metadata-summary, .interpretation-group, .inline-warning { grid-column: 1 / -1; }
+  .upload-row { grid-template-columns: minmax(0, 1fr) minmax(124px, .9fr); gap: 8px; padding-bottom: 8px; }
+  .metadata-summary { grid-column: 1; }
+  .interpretation-group { grid-column: 2; grid-row: 1 / span 2; align-self: start; }
+  .inline-warning { grid-column: 1 / -1; }
+  .interpretation-group .form-grid { grid-template-columns: 1fr; }
   .control-row { gap: 14px; padding-bottom: 8px; }
   .processing-row { grid-template-columns: 1fr; gap: 7px; padding-bottom: 8px; }
   .process-controls { justify-content: space-between; }

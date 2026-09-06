@@ -34,7 +34,9 @@ The source interpretation controls are hidden on initial load and remain
 collapsed when a usable ICC profile is available. An “Override embedded ICC”
 action reveals both fields for an explicit override. If no usable ICC exists,
 the fields are shown automatically and both values are required. Selecting both
-values confirms the override; there is no separate confirmation checkbox.
+values confirms the override; there is no separate confirmation checkbox. On
+narrow screens, the selectors remain in a right-hand column beside the load and
+metadata area, while long metadata values wrap in their value column.
 
 ## Decomposition options
 
