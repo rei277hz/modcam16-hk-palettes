@@ -69,7 +69,6 @@ const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
 const cancelButton = $("#cancel-button") as HTMLButtonElement;
 const workerBadge = $("#worker-badge");
-const webGpuHelp = $("#webgpu-help");
 const progressStage = $("#progress-stage");
 const progressPercent = $("#progress-percent") as HTMLOutputElement;
 const progressBar = $("#progress-bar") as HTMLProgressElement;
@@ -117,12 +116,6 @@ let exposureUrl: string | undefined;
 let exposureRgbUrl: string | undefined;
 let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
-let webGpuHelpPinned = false;
-
-function setWebGpuHelpVisible(visible: boolean): void {
-  webGpuHelp.hidden = !visible;
-  workerBadge.setAttribute("aria-expanded", String(visible));
-}
 
 function createWorker(): Worker {
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
@@ -555,26 +548,8 @@ overrideSource.addEventListener("click", () => {
   gamutSelect.focus();
   updateCalculateState();
 });
-workerBadge.addEventListener("mouseenter", () => setWebGpuHelpVisible(true));
-workerBadge.addEventListener("mouseleave", () => { if (!webGpuHelpPinned) setWebGpuHelpVisible(false); });
-workerBadge.addEventListener("focus", () => setWebGpuHelpVisible(true));
-workerBadge.addEventListener("blur", () => { if (!webGpuHelpPinned) setWebGpuHelpVisible(false); });
-workerBadge.addEventListener("click", () => {
-  webGpuHelpPinned = !webGpuHelpPinned;
-  setWebGpuHelpVisible(webGpuHelpPinned);
-});
-document.addEventListener("click", (event) => {
-  if (webGpuHelpPinned && !workerBadge.contains(event.target as Node) && !webGpuHelp.contains(event.target as Node)) {
-    webGpuHelpPinned = false;
-    setWebGpuHelpVisible(false);
-  }
-});
-webGpuHelp.addEventListener("click", (event) => event.stopPropagation());
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
 const browserNavigator = navigator as Navigator & { gpu?: unknown };
 const webGpuAvailable = Boolean(browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext));
-workerBadge.textContent = webGpuAvailable ? "WebGPU available" : "WebGPU unavailable";
-webGpuHelp.textContent = webGpuAvailable
-  ? "WebGPU lets the worker run the validated modCAM16-HK solve and exact ACES 2.0 preview transforms on the device GPU. This can substantially reduce processing time. Results are still checked against the accurate CPU reference, and a browser or device failure can fall back to Rust/WASM CPU processing."
-  : "WebGPU is unavailable in this browser context, so the worker uses the accurate Rust/WASM CPU implementation. Results stay local and correct, but large images can take longer to process.";
+workerBadge.textContent = webGpuAvailable ? "WebGPU available*" : "WebGPU unavailable*";
 setBusy(false);

@@ -51,10 +51,7 @@ select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid 
 .processing-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(120px, .5fr); align-items: center; gap: 18px; padding-bottom: 11px; border-bottom: 1px solid #2b3540; }
 .process-controls { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
 .process-controls h2 { margin: 0 5px 0 0; color: #dce6e8; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
-.webgpu-status { position: relative; display: inline-flex; }
-.status-badge { border: 1px solid #3b6359; background: transparent; padding: 4px 7px; color: #89e0c4; font: inherit; font-size: 10px; }
-.status-badge:hover { border-color: #89e0c4; background: #203a35; }
-.webgpu-help { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: block; width: min(300px, calc(100vw - 28px)); max-height: min(38vh, 260px); overflow: auto; white-space: normal; overflow-wrap: anywhere; border: 1px solid #3d505b; background: #10171e; padding: 9px 10px; color: #cbd7da; font-size: 11px; line-height: 1.4; box-shadow: 0 8px 24px rgb(0 0 0 / .35); }
+.status-badge { border: 1px solid #3b6359; padding: 4px 7px; color: #89e0c4; font-size: 10px; }
 .progress-block { min-width: 0; }
 .progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 11px; }
 .progress-label-row output { color: #89e0c4; font-variant-numeric: tabular-nums; }
@@ -85,7 +82,9 @@ progress::-moz-progress-bar { background: #89e0c4; }
 .metrics div { min-width: 0; }
 .metrics dt { color: #71808b; font-size: 9px; }
 .metrics dd { max-width: 180px; margin: 1px 0 0; color: #c3cdd1; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.picker-link { justify-self: end; color: #71808b; font-size: 10px; text-decoration: none; }
+.page-footer { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 3px; }
+.webgpu-footnote { min-width: 0; color: #71808b; font-size: 9px; line-height: 1.35; }
+.picker-link { flex: 0 0 auto; color: #71808b; font-size: 10px; text-decoration: none; }
 .picker-link:hover { color: #89e0c4; }
 .preview-overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; }
 .preview-overlay[hidden] { display: none; }
@@ -112,6 +111,7 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .download-button small { margin-top: 2px; }
   .report-row { display: none; }
   .picker-link { display: none; }
+  .webgpu-footnote { font-size: 8px; }
 }
 @media (max-width: 520px) {
   .control-row { grid-template-columns: 1fr; }
