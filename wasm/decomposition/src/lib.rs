@@ -23,6 +23,9 @@ use wasm_bindgen::prelude::*;
 
 mod gpu;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod gpu_host_tests;
+
 const EXPOSURE_MIN: f32 = -10.0;
 const EXPOSURE_MAX: f32 = 10.0;
 const AP0_TO_AP1: [[f32; 3]; 3] = [
