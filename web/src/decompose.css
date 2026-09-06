@@ -38,7 +38,8 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .override-button { border: 0; border-bottom: 1px solid #58776d; background: transparent; padding: 0 0 2px; color: #89e0c4; font-size: 11px; cursor: pointer; }
 .override-button:hover { color: #d5fff2; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.form-grid-options { grid-template-columns: minmax(0, 1.7fr) minmax(0, .8fr); }
+.form-grid-options { grid-template-columns: minmax(0, 1fr) max-content; }
+.form-grid-options .field:last-child { justify-items: end; }
 .field { min-width: 0; display: grid; gap: 4px; }
 .field > span { color: #bfcbd0; font-size: 11px; }
 select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid #3a4752; border-radius: 0; background: #111820; padding: 0 9px; font-size: 12px; }
@@ -114,7 +115,7 @@ progress::-moz-progress-bar { background: #89e0c4; }
 }
 @media (max-width: 520px) {
   .control-row { grid-template-columns: 1fr; }
-  .form-grid-options { grid-template-columns: 1fr 1fr; }
+  .form-grid-options { grid-template-columns: minmax(0, 1fr) max-content; }
   .field-wide { grid-column: 1 / -1; }
   .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .download-button span { font-size: 10px; }
