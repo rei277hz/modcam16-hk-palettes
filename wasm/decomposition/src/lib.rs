@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::OnceLock;
 use wasm_bindgen::prelude::*;
+use ultrahdr_core::metadata::apple::{from_apple_headroom, parse_exif_for_apple_hdr};
 
 mod gpu;
 
@@ -258,6 +259,66 @@ fn prepare_rgb(
         );
     }
     blur(&mut rgb, width, height, req.blur_sigma);
+    Ok(rgb)
+}
+
+fn srgb_eotf(value: f32) -> f32 {
+    let a = value.abs();
+    let linear = if a <= 0.04045 { a / 12.92 } else { ((a + 0.055) / 1.055).powf(2.4) };
+    value.signum() * linear
+}
+
+/// Reconstruct an Apple auxiliary HDR gain map before source color conversion.
+/// The Apple gain map is encoded as an sRGB-like grayscale image. The primary
+/// image remains in its encoded source space until the normal source
+/// interpretation path runs below.
+fn apply_apple_gain_map(
+    mut rgb: Vec<[f32; 3]>,
+    width: usize,
+    height: usize,
+    gain: &[f32],
+    gain_width: usize,
+    gain_height: usize,
+    exif: &[u8],
+) -> Result<Vec<[f32; 3]>, String> {
+    if gain.is_empty() || gain_width == 0 || gain_height == 0 {
+        return Ok(rgb);
+    }
+    if gain.len() != gain_width.saturating_mul(gain_height) {
+        return Err("Apple HDR gain-map dimensions do not match the supplied samples.".into());
+    }
+    let info = parse_exif_for_apple_hdr(exif)
+        .ok_or_else(|| "Apple HDR gain-map metadata does not contain a usable MakerNote headroom value.".to_string())?;
+    let metadata = from_apple_headroom(&info)
+        .ok_or_else(|| "Apple HDR gain-map headroom is missing.".to_string())?;
+    let stops = metadata.alternate_hdr_headroom as f32;
+    let headroom = 2.0_f32.powf(stops);
+    let scale = headroom - 1.0;
+    for y in 0..height {
+        let gy = ((y as f32 + 0.5) * gain_height as f32 / height as f32 - 0.5)
+            .clamp(0.0, (gain_height - 1) as f32);
+        let y0 = gy.floor() as usize;
+        let y1 = (y0 + 1).min(gain_height - 1);
+        let fy = gy - y0 as f32;
+        for x in 0..width {
+            let gx = ((x as f32 + 0.5) * gain_width as f32 / width as f32 - 0.5)
+                .clamp(0.0, (gain_width - 1) as f32);
+            let x0 = gx.floor() as usize;
+            let x1 = (x0 + 1).min(gain_width - 1);
+            let fx = gx - x0 as f32;
+            let g00 = srgb_eotf(gain[y0 * gain_width + x0].clamp(0.0, 1.0));
+            let g01 = srgb_eotf(gain[y0 * gain_width + x1].clamp(0.0, 1.0));
+            let g10 = srgb_eotf(gain[y1 * gain_width + x0].clamp(0.0, 1.0));
+            let g11 = srgb_eotf(gain[y1 * gain_width + x1].clamp(0.0, 1.0));
+            let gain_linear = (g00 * (1.0 - fx) + g01 * fx) * (1.0 - fy)
+                + (g10 * (1.0 - fx) + g11 * fx) * fy;
+            let factor = 1.0 + scale * gain_linear;
+            let px = &mut rgb[y * width + x];
+            for c in px.iter_mut() {
+                *c *= factor;
+            }
+        }
+    }
     Ok(rgb)
 }
 fn decode_transfer(x: f32, name: &str) -> f32 {
@@ -1202,6 +1263,50 @@ pub fn prepare_pixels(
         Vec::new(),
     )
     .map_err(|e| JsValue::from_str(&e))
+}
+
+/// Prepare native HEIC/HEIF samples supplied by the browser libheif bridge.
+/// Empty ICC, gain-map, and Exif buffers mean that the corresponding metadata
+/// was not present in the container.
+#[wasm_bindgen]
+pub fn prepare_heic_pixels(
+    data: Vec<f32>,
+    width: u32,
+    height: u32,
+    request: JsValue,
+    icc_profile: Vec<u8>,
+    gain_map: Vec<f32>,
+    gain_width: u32,
+    gain_height: u32,
+    exif: Vec<u8>,
+) -> Result<JsValue, JsValue> {
+    let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+    if width == 0 || height == 0 || data.len() != width as usize * height as usize * 3 {
+        return Err(JsValue::from_str("HEIF pixel buffer dimensions do not match."));
+    }
+    let mut rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    if !gain_map.is_empty() {
+        rgb = apply_apple_gain_map(
+            rgb,
+            width as usize,
+            height as usize,
+            &gain_map,
+            gain_width as usize,
+            gain_height as usize,
+            &exif,
+        )
+        .map_err(|e| JsValue::from_str(&e))?;
+    }
+    let prepared = prepare_rgb(
+        rgb,
+        width as usize,
+        height as usize,
+        &req,
+        (!icc_profile.is_empty()).then_some(icc_profile.as_slice()),
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
+    prepared_payload(flat_pixels(&prepared), width as usize, height as usize, Vec::new())
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 #[wasm_bindgen]

@@ -1,4 +1,4 @@
-import init, { cpu_preview_pixels, encode_exr_outputs, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { cpu_preview_pixels, encode_exr_outputs, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -219,43 +219,111 @@ function textHasGainMap(bytes: Uint8Array): boolean {
   return text.includes("urn:com:apple:photo:2020:aux:hdrgainmap") || text.includes("HDRGainMap");
 }
 
-function imageDisplay(image: any, width: number, height: number): Promise<Uint8ClampedArray> {
-  const data = new Uint8ClampedArray(width * height * 4);
-  return new Promise((resolve, reject) => {
-    image.display({ data, width, height }, (displayed: any) => {
-      if (!displayed) {
-        reject(new Error("libheif-js could not render the HEIF image."));
-        return;
-      }
-      resolve(data);
-    });
-  });
+function nativeRgb16(image: any): { width: number; height: number; pixels: Float32Array; bitDepth: number } {
+  const module = (libheif as any);
+  const decoded = module.heif_js_decode_image2(image, module.heif_colorspace_RGB, module.heif_chroma_interleaved_RRGGBB_LE);
+  if (!decoded || decoded.code || !decoded.channels?.length) throw new Error("libheif-js could not decode native RGB samples.");
+  const channel = decoded.channels.find((c: any) => Number(c.id) === Number(module.heif_channel_interleaved)) ?? decoded.channels[0];
+  const width = Number(decoded.width), height = Number(decoded.height), bits = Number(channel.bits_per_pixel || 16);
+  const bytes = channel.data instanceof Uint8Array ? channel.data : new Uint8Array(channel.data);
+  const pixels = new Float32Array(width * height * 3), stride = Number(channel.stride || width * 6), max = (2 ** bits) - 1;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let y = 0, out = 0; y < height; y++) {
+    const row = y * stride;
+    for (let x = 0; x < width; x++, out += 3) {
+      const off = row + x * 6;
+      pixels[out] = view.getUint16(off, true) / max;
+      pixels[out + 1] = view.getUint16(off + 2, true) / max;
+      pixels[out + 2] = view.getUint16(off + 4, true) / max;
+    }
+  }
+  module.heif_image_release(decoded.image);
+  return { width, height, pixels, bitDepth: bits };
 }
 
-async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: number; height: number; pixels: Float32Array; warnings: string[] }> {
+function nativeAuxiliary(module: any, context: any, primary: any): { pixels: Float32Array; width: number; height: number } | undefined {
+  const ptr = primary.$$?.ptr;
+  const count = Number(module._heif_image_handle_get_number_of_auxiliary_images(ptr, 0));
+  if (!count) return undefined;
+  const idsPtr = module._malloc(count * 4);
+  const actual = Number(module._heif_image_handle_get_list_of_auxiliary_image_IDs(ptr, 0, idsPtr, count));
+  try {
+    for (let i = 0; i < actual; i++) {
+      const auxId = module.HEAPU32[(idsPtr >> 2) + i];
+      const handle = module.heif_js_context_get_image_handle(context, auxId);
+      if (!handle || handle.code) continue;
+      const typeOut = module._malloc(4), err = module._malloc(32);
+      let auxType = "";
+      try {
+        module._heif_image_handle_get_auxiliary_type(err, handle.$$?.ptr, typeOut);
+        const typePtr = module.HEAPU32[typeOut >> 2];
+        if (typePtr) auxType = new TextDecoder().decode(module.HEAPU8.subarray(typePtr, typePtr + 160)).split("\0")[0];
+      } finally { module._free(typeOut); module._free(err); }
+      if (auxType !== "urn:com:apple:photo:2020:aux:hdrgainmap") continue;
+      const decoded = nativeRgb16(handle);
+      // Apple gain maps are grayscale; use the first channel after decoding
+      // the auxiliary as native RGB to support both grayscale and RGB encoders.
+      const gain = new Float32Array(decoded.width * decoded.height);
+      for (let p = 0; p < gain.length; p++) gain[p] = decoded.pixels[p * 3];
+      return { pixels: gain, width: decoded.width, height: decoded.height };
+    }
+  } finally {
+    module._free(idsPtr);
+  }
+  return undefined;
+}
+
+function extractExif(module: any, primary: any): Uint8Array {
+  const ptr = primary.$$?.ptr;
+  const count = Number(module._heif_image_handle_get_number_of_metadata_blocks(ptr, 0));
+  if (!count) return new Uint8Array();
+  const idsPtr = module._malloc(count * 4);
+  const actual = Number(module._heif_image_handle_get_list_of_metadata_block_IDs(ptr, 0, idsPtr, count));
+  try {
+    for (let i = 0; i < actual; i++) {
+      const mid = module.HEAPU32[(idsPtr >> 2) + i];
+      const typePtr = module._heif_image_handle_get_metadata_type(ptr, mid);
+      const type = new TextDecoder().decode(module.HEAPU8.subarray(typePtr, typePtr + 8)).split("\0")[0];
+      if (type !== "Exif") continue;
+      const size = Number(module._heif_image_handle_get_metadata_size(ptr, mid));
+      const dst = module._malloc(size), err = module._malloc(32);
+      try {
+        module._heif_image_handle_get_metadata(err, ptr, mid, dst);
+        return new Uint8Array(module.HEAPU8.slice(dst, dst + size));
+      } finally { module._free(dst); module._free(err); }
+    }
+  } finally { module._free(idsPtr); }
+  return new Uint8Array();
+}
+
+async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: number; height: number; pixels: Float32Array; icc: Uint8Array; gain?: { pixels: Float32Array; width: number; height: number }; exif: Uint8Array; warnings: string[] }> {
   postProgress(id, "Decode HEIF/HEIC", 12);
-  const decoder = new libheif.HeifDecoder();
+  const module = libheif as any;
+  const decoder = new module.HeifDecoder();
   const images = decoder.decode(bytes);
   if (!images || images.length === 0) throw new Error("The HEIF file contains no decodable image.");
-  const image = images[0];
-  const width = Number(image.get_width());
-  const height = Number(image.get_height());
+  const image = module.heif_js_context_get_primary_image_handle(decoder.decoder);
+  if (!image || image.code) throw new Error("The HEIF file contains no decodable primary image.");
+  const native = nativeRgb16(image);
+  const width = native.width, height = native.height;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
     throw new Error("The HEIF image has invalid dimensions.");
   }
-  const rgba = await imageDisplay(image, width, height);
-  const pixels = new Float32Array(width * height * 3);
-  for (let i = 0, p = 0; i < rgba.length; i += 4, p += 3) {
-    pixels[p] = rgba[i] / 255;
-    pixels[p + 1] = rgba[i + 1] / 255;
-    pixels[p + 2] = rgba[i + 2] / 255;
+  const ptr = image.$$?.ptr;
+  const profileSize = Number(module._heif_image_handle_get_raw_color_profile_size(ptr));
+  let icc = new Uint8Array();
+  if (profileSize > 0) {
+    const dst = module._malloc(profileSize), err = module._malloc(32);
+    module._heif_image_handle_get_raw_color_profile(err, ptr, dst);
+    icc = new Uint8Array(module.HEAPU8.slice(dst, dst + profileSize));
+    module._free(dst); module._free(err);
   }
-  const warnings = [
-    "libheif-js supplied an 8-bit display RGB buffer; confirm the source gamut and transfer manually.",
-  ];
-  if (images.length > 1) warnings.push(`${images.length - 1} auxiliary HEIF image(s) were present; only the primary image is exposed by this decoder bridge.`);
-  if (textHasGainMap(bytes)) warnings.push("Apple HDR gain-map metadata was detected. The pinned libheif-js high-level API does not expose the auxiliary gain image or headroom values, so no gain-map composition was applied.");
-  return { width, height, pixels, warnings };
+  const exif = extractExif(module, image);
+  const gain = textHasGainMap(bytes) ? nativeAuxiliary(module, decoder.decoder, image) : undefined;
+  const warnings: string[] = [`libheif-js native RGB decode preserved ${native.bitDepth}-bit samples in 16-bit storage.`];
+  if (textHasGainMap(bytes) && !gain) warnings.push("Apple HDR gain-map metadata was detected, but its auxiliary image could not be decoded.");
+  if (gain) warnings.push("Apple HDR gain-map auxiliary decoded and will be reconstructed before ACES conversion.");
+  return { width, height, pixels: native.pixels, icc, gain, exif, warnings };
 }
 
 async function handle(message: JobMessage): Promise<void> {
@@ -268,7 +336,7 @@ async function handle(message: JobMessage): Promise<void> {
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
         const decoded = await decodeHeif(bytes, id);
-        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: null, transfer: null, metadata_source: "libheif-js", automatic_icc: false, warnings: decoded.warnings } });
+        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: null, transfer: null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : "libheif-js nclx metadata", automatic_icc: decoded.icc.length > 0, warnings: decoded.warnings } });
       } else {
         const summary = inspect(bytes, format);
         scope.postMessage({ kind: "inspect-result", id, summary });
@@ -283,7 +351,8 @@ async function handle(message: JobMessage): Promise<void> {
     if (format === "heic" || format === "heif") {
       const decoded = await decodeHeif(bytes, id);
       if (cancelled.has(id)) return;
-      prepared = prepare_pixels(decoded.pixels, decoded.width, decoded.height, message.request);
+      const gain = decoded.gain;
+      prepared = prepare_heic_pixels(decoded.pixels, decoded.width, decoded.height, message.request, decoded.icc, gain?.pixels ?? new Float32Array(), gain?.width ?? 0, gain?.height ?? 0, decoded.exif);
       warnings = decoded.warnings;
     } else {
       prepared = prepare(bytes, message.request);

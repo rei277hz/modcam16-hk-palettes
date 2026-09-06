@@ -20,6 +20,7 @@ serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
 half = "2.6"
 js-sys = "0.3"
+ultrahdr-core = { version = "0.6.0", default-features = false }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
