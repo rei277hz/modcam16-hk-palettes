@@ -8,6 +8,7 @@ This document defines the behavior of the accelerated image decomposition path. 
 - The worker requests a high-performance adapter and keeps one `wgpu` device, queue, pipeline, and lookup-table buffer alive for the duration of the job.
 - The user does not select a backend. The application chooses WebGPU automatically after capability and numerical validation.
 - If WebGPU is unavailable, initialization fails, the device is lost, or validation exceeds the permitted error, the worker runs the existing chunked WASM CPU solver instead.
+- WebGPU requires a secure context. GitHub Pages (`https://`) and `localhost` are valid for development; an HTTP LAN address such as `http://10.42.0.144:5173` may expose neither `navigator.gpu` nor worker WebGPU even when Safari reports WebGPU support in general.
 - The report and status region identify the backend as **WebGPU** or **WASM CPU**. A CPU fallback includes the reason as a warning.
 
 ### Current implementation decisions
@@ -70,6 +71,7 @@ Progress is monotonic. GPU batches report processed pixels, projected pixels, cl
 ## Failure and fallback behavior
 
 - A missing `navigator.gpu`, unavailable adapter, device request failure, shader compilation error, validation mismatch, or unsupported storage limit selects the CPU path before image processing.
+- The report warning identifies insecure origins and missing worker `navigator.gpu` exposure so an HTTP preview is not mistaken for a numerical validation failure.
 - If the device is lost or a GPU batch fails after processing starts, partial GPU buffers are discarded and the complete job restarts through the CPU path. The UI reports that restart and retains no partial downloads.
 - Cancellation terminates the active worker when an in-flight WASM or GPU operation cannot be interrupted directly. Blob URLs and GPU/WASM buffers are released with the worker.
 - A CPU fallback remains a successful calculation when the CPU solver completes; it is not presented as a color interpretation error.

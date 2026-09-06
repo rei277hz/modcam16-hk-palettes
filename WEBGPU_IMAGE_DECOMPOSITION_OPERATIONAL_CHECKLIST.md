@@ -48,6 +48,7 @@ Use this checklist to implement, validate, and release the Rust `wgpu` accelerat
 - [x] Run TypeScript checking, the Vite production build, and the wasm-pack release builds.
 - [ ] Add Chromium WebGPU browser coverage for upload, explicit gamut/transfer confirmation, validation, progress, cancellation, report rendering, and both downloads.
 - [ ] Test the no-WebGPU path and forced initialization/validation/device-loss failures; each must complete through CPU fallback with an actionable warning.
+- [x] Verify and document secure-context requirements for Safari and LAN previews; HTTP IP previews intentionally use the CPU fallback with an explicit warning.
 - [ ] Compare WebGPU and accurate f64 reference outputs for neutral, zero, negative/projected, clipped, high-range, non-finite, and random pixels across all ACES profiles; record maximum and percentile errors.
 - [ ] Round-trip GPU-generated EXRs and verify dimensions, channels, ACEScg metadata, fp16 encoding, finite values, and diagnostic counts.
 - [ ] Run the full `IMG_9607-rec2020d65-linear.exr` benchmark on the Chromium reference device and record total time, GPU batch size, and peak memory.

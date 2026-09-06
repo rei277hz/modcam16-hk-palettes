@@ -107,6 +107,19 @@ function addStats(total: SolveStats, chunk: SolveStats): void {
 
 async function probeGpu(): Promise<GpuProbe | undefined> {
   gpuProbeResult ??= (async () => {
+    const browserGlobal = globalThis as unknown as {
+      isSecureContext?: boolean;
+      navigator?: { gpu?: unknown };
+      location?: { protocol?: string };
+    };
+    if (browserGlobal.isSecureContext === false) {
+      gpuProbeFailure = `WebGPU requires a secure context; this page uses ${browserGlobal.location?.protocol || "an insecure origin"}.`;
+      return undefined;
+    }
+    if (!browserGlobal.navigator?.gpu) {
+      gpuProbeFailure = "WebGPU is not exposed in this worker (the browser may expose it only on the main thread or may require HTTPS).";
+      return undefined;
+    }
     try {
       const result = await gpu_probe();
       return result as GpuProbe;
@@ -259,6 +272,7 @@ async function handle(message: JobMessage): Promise<void> {
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
     warnings = [...warnings, ...preparedWarnings];
     let gpuValidation: GpuValidation | undefined;
+    let gpuValidationFailure: string | undefined;
     postProgress(id, "Initialize WebGPU", 20);
     const probe = await probeGpu();
     if (probe?.available) {
@@ -266,7 +280,8 @@ async function handle(message: JobMessage): Promise<void> {
       try {
         gpuValidation = await validateGpu(message.request, probe);
       } catch (error) {
-        warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${formatError(error)}`);
+        gpuValidationFailure = formatError(error);
+        warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${gpuValidationFailure}`);
       }
     } else if (gpuProbeFailure) {
       warnings.push(`WebGPU was not enabled; the worker will use wasm-cpu: ${gpuProbeFailure}`);
@@ -278,10 +293,10 @@ async function handle(message: JobMessage): Promise<void> {
     const exposure = new Float32Array(width * height);
     let stats = emptyStats();
     stats.compute_backend = backend;
-    stats.gpu_adapter = gpuValidation?.adapter ?? null;
+    stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
     stats.gpu_validation = gpuValidation
       ? `CPU reference: original f64 modCAM16-HK; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops`
-      : null;
+      : gpuValidationFailure ? `failed: ${gpuValidationFailure}` : null;
     stats.batch_size = batchSize;
     // CPU uses deliberately yielded 4,096-pixel chunks. WebGPU uses the
     // adapter's largest validated storage batch to amortize readback costs.
