@@ -19,6 +19,7 @@ from modcam16_palette.decompose import (
     load_decomposition_processor,
     project_unreachable_display_values,
     read_rgb_exr,
+    read_image,
     write_decomposition_exrs,
 )
 
@@ -68,6 +69,17 @@ def test_p3_chromaticities_detection_from_flat_header():
     }
     assert detect_input_color_space(header) == "Linear P3-D65"
     assert detect_input_color_space({"colorInteropID": "\x10\x00\x00\x00Linear P3-D65"}) == "Linear P3-D65"
+
+
+def test_png_without_metadata_requires_explicit_source_selection(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "un tagged.png"
+    Image.fromarray(np.array([[[128, 64, 32]]], dtype=np.uint8), mode="RGB").save(path)
+    decoded = read_image(path)
+    assert decoded.source_gamut is None
+    assert decoded.source_transfer is None
+    assert decoded.pixels.dtype == np.float32
 
 
 def _write_input(path: Path, pixels: np.ndarray, *, color_space="ACES2065-1"):
