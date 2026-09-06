@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use wasm_bindgen::prelude::*;
 
+mod gpu;
+
 const EXPOSURE_MIN: f32 = -10.0;
 const EXPOSURE_MAX: f32 = 10.0;
 const AP0_TO_AP1: [[f32; 3]; 3] = [
@@ -921,6 +923,42 @@ pub fn prepare_pixels(
 pub fn solve_chunk(data: Vec<f32>, request: JsValue) -> Result<JsValue, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     solve_chunk_payload(data, &req).map_err(|e| JsValue::from_str(&e))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn gpu_probe() -> Result<JsValue, JsValue> {
+    gpu::probe().await
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn gpu_solve_chunk(data: Vec<f32>, request: JsValue) -> Result<JsValue, JsValue> {
+    let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+    let result = gpu::solve(data, &req)
+        .await
+        .map_err(|e| JsValue::from_str(&e))?;
+    let object = Object::new();
+    Reflect::set(
+        &object,
+        &JsValue::from_str("base"),
+        &Float32Array::from(result.base.as_slice()).into(),
+    )
+    .map_err(|e| JsValue::from_str(&format!("base: {e:?}")))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure"),
+        &Float32Array::from(result.exposure.as_slice()).into(),
+    )
+    .map_err(|e| JsValue::from_str(&format!("exposure: {e:?}")))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("stats"),
+        &serde_wasm_bindgen::to_value(&result.stats)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?,
+    )
+    .map_err(|e| JsValue::from_str(&format!("stats: {e:?}")))?;
+    Ok(object.into())
 }
 
 #[wasm_bindgen]
