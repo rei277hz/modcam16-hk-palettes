@@ -498,7 +498,7 @@ fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
                 .into(),
         ]
     } else {
-        vec!["The loaded JPEG image has no usable embedded ICC profile; select Primaries and Transfer manually.".into()]
+        vec!["Select gamut and transfer manually: the loaded JPEG image has no usable embedded ICC profile.".into()]
     };
     Ok(Pixels {
         width: info.width as usize,
