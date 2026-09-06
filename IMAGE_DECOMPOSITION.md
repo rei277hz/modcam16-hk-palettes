@@ -166,3 +166,62 @@ Pixels are processed in chunks on all available CPU threads by default; use
 The CLI report includes the number and percentage of base pixels whose stored
 linear ACEScg/AP1 RGB has at least one channel strictly greater than `1.0`.
 The percentage is based on all image pixels, and each pixel is counted once.
+
+## Static web UI behavior
+
+The repository also publishes a browser-only decomposition page at
+`decompose.html`. It is a static GitHub Pages application: uploaded bytes,
+WASM workers, WebGPU buffers, reports, and generated files remain local to the
+browser. The page must not require a server endpoint for decoding, processing,
+or downloading results.
+
+The upload control accepts OpenEXR, JPEG, PNG, HEIF, and HEIC. A file whose
+name ends in `.png` is attempted as PNG first. If the PNG signature or parser
+rejects it, the same bytes are attempted as JPEG before the error is shown.
+The decoder reports the selected format, dimensions, and metadata. A malformed
+file, unsupported codec, or failed fallback is an actionable error.
+
+Color interpretation is explicit. The page applies a manual gamut/transfer
+override first, then a parseable embedded ICC profile, then stops for user
+confirmation. An ICC profile may be used directly to decode an image even when
+the profile cannot be reduced to an exact gamut/gamma pair. The UI may display
+an exact pair when it can be proven, but it never guesses one from a filename,
+extension, weak metadata, or an ambiguous ICC. Manual gamut and transfer
+controls remain available and supersede ICC-backed decoding. Processing is
+disabled until the source interpretation is confirmed.
+
+The options panel exposes the ACES profile used by the decomposition, `Refl`,
+and Gaussian blur sigma. Defaults and numeric ranges are visible, invalid
+values are rejected inline, and a running job can be cancelled. A dedicated
+worker reports decode, interpretation, ACES conversion, blur, decomposition,
+diagnostics, output encoding, and completion as monotonic progress stages with
+pixel and diagnostic counters. The worker yields between solve chunks so a
+large image never remains indefinitely at “preparing pixels”.
+
+The result contains an analytic report and four downloads. The base OpenEXR is
+linear ACEScg/AP1 RGB stored as fp16; the exposure OpenEXR is the normalized
+fp16 `exposure` channel defined above. The two preview downloads are JPEGs with
+sRGB encoded P3-D65 primaries:
+
+* The base preview converts the reconstructed linear ACES2065-1 base pixels
+  through the exact ACES 2.0 `SDR-100nit-P3-D65_2.0` forward transform and
+  then applies the sRGB encoding function.
+* The exposure preview starts with a neutral canvas containing
+  `f(Refl, Refl, Refl)`, multiplies each pixel by
+  `s = 2^(exposure * 20 - 10)`, then applies that same ACES 2.0 P3-D65
+  forward transform and sRGB encoding.
+
+The preview forward transform is the OCIO built-in transform named
+`ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0` from
+`cg-config-v4.0.0_aces-v2.0_ocio-v2.5.ocio`. Its GPU implementation must be a
+faithful fixed-function port of the OCIO/ACES implementation, including the
+profile matrices, tone scale, gamut-compression/JMh operations, and lookup
+tables. A simple tone curve or other approximation is not acceptable. GPU
+arithmetic uses portable `f32`; the exact CPU ACES implementation remains the
+reference and a failed numerical validation selects the CPU preview path.
+
+The page shows both preview JPEGs inline beside their download buttons. The
+report records the source interpretation, selected decomposition options,
+compute backend, preview transform name/version, output sizes, warnings, and
+all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
+are revoked when a new job starts, a file is replaced, or the page is reset.

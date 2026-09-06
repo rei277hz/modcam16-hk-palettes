@@ -1,12 +1,16 @@
 # Multiformat image decomposition checklist
 
-Branch: `feat/decompose-multiformat-inputs`
+Branch: `feat/web-image-decomposition-p3-preview`
 
 ## Documentation and API
 
 - [x] Document supported formats, metadata precedence, explicit fallback, HDR
       transfers, Apple gain maps, ACES2065-1 working space, and tolerance
       reporting in `IMAGE_DECOMPOSITION.md`.
+- [x] Document the static web UI contract, PNG-to-JPEG retry, ICC-backed
+      decoding without an exact gamut/gamma pair, four outputs, inline preview
+      images, and the exact ACES 2.0 P3-D65 preview transform in
+      `IMAGE_DECOMPOSITION.md`.
 - [x] Create this implementation checklist before code changes.
 - [x] Add an explicit source gamut/transfer representation while retaining the
       existing combined OpenEXR input-space API.
@@ -34,6 +38,46 @@ Branch: `feat/decompose-multiformat-inputs`
 - [ ] Keep invalid/non-finite data and fundamentally unavailable inverse/root
       cases as hard errors.
 
+## Static web UI and output behavior
+
+- [x] Publish `decompose.html` as a self-contained GitHub Pages entry point;
+      keep all decoding, computation, and downloads local to the browser.
+- [x] Provide upload, metadata review, manual gamut/transfer confirmation,
+      ACES profile, Refl, Gaussian blur, calculate/cancel, report, and four
+      download controls.
+- [x] Retry JPEG decoding when a `.png` upload has an invalid PNG signature or
+      parser failure, and report the final decoder error only after both paths.
+- [x] Use a parseable embedded ICC profile directly for decoding when no exact
+      gamut/gamma pair is available; permit explicit gamut/transfer controls to
+      override that ICC path and never guess missing values.
+- [x] Return base ACEScg fp16 EXR, normalized exposure fp16 EXR, base preview
+      JPEG, and exposure preview JPEG from the worker.
+- [x] Show both preview JPEGs inline next to their download buttons.
+- [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
+- [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
+      `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.
+- [ ] Split progress labels and counters so preview forward processing is
+      reported separately from EXR encoding.
+
+## GPU ACES forward-transform implementation
+
+- [ ] Add a WebGPU compute pass that converts reconstructed ACES2065-1 base
+      pixels and exposure-neutral pixels to display-reference P3-D65 values.
+- [ ] Port the exact OCIO/ACES 2.0 fixed-function transform, including all
+      profile matrices, tone scale, gamut-compression/JMh operations, and
+      bundled lookup tables. Do not substitute a one-dimensional tone curve or
+      an approximation.
+- [ ] Reuse the existing WebGPU device, queue, parameter buffers, and shader
+      validation infrastructure; keep JPEG compression on the worker CPU after
+      GPU readback of sRGB-ready pixels.
+- [ ] Preserve a CPU implementation using
+      `modcam16_color_core::aces_output::forward(4, ...)` as the exact reference
+      and fallback for missing WebGPU, device loss, shader errors, or failed
+      validation.
+- [ ] Record backend, adapter (when available), transform identifier/version,
+      validation result, fallback reason, and preview timing in the analytic
+      report.
+
 ## Tests and validation
 
 - [x] Test P3-D65 EXR metadata and control-prefix normalization.
@@ -44,6 +88,14 @@ Branch: `feat/decompose-multiformat-inputs`
 - [x] Test successful completion with tolerance exceedances and diagnostics.
 - [x] Run focused decomposition tests, then the full test suite.
 - [x] Review branch status and preserve unrelated user files.
+- [ ] Validate direct WGSL numerical output on a software Vulkan adapter and
+      with CPU-generated vectors for black, neutral, peak, projected/clipped,
+      and seeded-random AP0 values. Compare every channel against the exact
+      CPU ACES 2.0 implementation and measure tolerance against those CPU
+      values.
+- [ ] Add browser smoke coverage proving that GPU-produced preview pixels and
+      CPU JPEG encoding yield the same four downloadable artifacts and inline
+      previews as the CPU fallback within the documented tolerance.
 
 ## Real-file validation
 
@@ -53,3 +105,10 @@ the project's 100-nit ACES reference scale. A complete one-worker
 `p3-hdr1000` decomposition also completed and wrote both EXR outputs. It
 reported 23,820 inverse round-trip tolerance exceedances and 7 J_HK tolerance
 exceedances while continuing to completion, as required.
+
+## Snapshot notes
+
+- 2026-09-07: Updated this checklist and `IMAGE_DECOMPOSITION.md` before the
+  ACES forward-transform GPU work. The exact OCIO ACES 2.0 P3-D65 transform is
+  now the stated source of truth; implementation and numerical validation
+  remain open checklist items until completed.
