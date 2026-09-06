@@ -1,26 +1,50 @@
 # Image Decomposition CLI
 
-`modcam16-decompose` separates an OpenEXR image into a perceptual base-color
-image and a scalar exposure image for a selected ACES 2.0 view.
+`modcam16-decompose` separates an OpenEXR, JPEG, PNG, HEIC, or HEIF image into
+a perceptual base-color image and a scalar exposure image for a selected ACES
+2.0 view. Every accepted input is decoded and interpreted as color-managed
+source data, converted to scene-linear ACES2065-1 (AP0), and then processed by
+the decomposition described below. Outputs remain linear ACEScg/AP1 base and
+scalar exposure OpenEXR files.
 
 ## Inputs
 
-The command accepts a three-channel RGB OpenEXR input. Scanline files with
-half-float (`fp16`) or single-precision (`fp32`) channels are supported. The
-input is interpreted as scene-linear RGB and is converted to ACES2065-1 (AP0)
-before any ACES or appearance-model operation.
+The command accepts a three-channel RGB OpenEXR, JPEG, PNG, HEIC, or HEIF
+input. OpenEXR scanline files with half-float (`fp16`) or single-precision
+(`fp32`) channels are supported. JPEG/PNG integer samples and HEIF 10/12-bit
+samples are normalized before transfer decoding. Alpha is ignored; the input
+must provide RGB samples.
 
-Color-space detection uses metadata in this order:
+Color interpretation uses metadata in this order:
 
-1. `ocioColorSpace` when present;
-2. standard EXR `chromaticities` for ACES2065-1, ACEScg, Linear Rec.2020, or
-   Linear Rec.709 (sRGB).
+1. A recognized embedded ICC profile;
+2. format metadata (`ocioColorSpace`/`colorInteropID` and EXR
+   `chromaticities`; PNG `cICP`, `sRGB`, `gAMA`, and chromaticities; HEIF
+   `nclx`; JPEG EXIF color-space tags);
+3. explicit command-line choices.
 
-If no supported metadata identifies the color space, an interactive terminal
-prompt asks the user to choose one of those four spaces. Non-interactive runs
-must provide `--input-color-space` explicitly when metadata is absent.
-The command accepts only these exact input-space names and exact profile IDs;
-there are no aliases.
+The source gamut and transfer function are separate choices. Supported gamut
+choices include Rec.709/sRGB, Display P3/P3-D65, Rec.2020, Adobe RGB, ACEScg,
+and ACES2065-1. Supported transfer choices include Linear, sRGB, Gamma 1.8,
+Gamma 2.2, Gamma 2.4/BT.1886, BT.709/BT.2020, PQ/ST 2084, and HLG/BT.2100.
+These are exact fixed names; aliases and shorthand spellings are not accepted.
+OpenEXR scene-linear names remain supported through `--input-color-space`, and
+`Linear P3-D65` is included in that list. Explicit `--input-gamut` and
+`--input-transfer-function` values override the corresponding metadata.
+
+When either required component is unresolved, an interactive terminal asks the
+user to choose it. A non-interactive run must provide both components. The
+command never assumes sRGB merely because metadata is absent or unrecognized.
+An ICC profile that cannot be mapped to a supported standard combination is
+reported as unresolved and follows the same explicit-selection path.
+
+HEIC/HEIF primary images use `pillow-heif` and preserve HDR sample precision.
+Apple HDR gain-map HEIC files use the `apple-hdr-heic` decoder (and its
+`exiftool` runtime dependency) to combine the primary Display P3 image and
+gain map into linear Display P3 before conversion to ACES2065-1. A gain map
+that is present but cannot be decoded is an error; the SDR base is never
+silently substituted for an HDR source. The decoder's 203-nit reference-white
+values are normalized to this project's 100-nit ACES scene-reference scale.
 
 ## Transform and decomposition
 
@@ -76,9 +100,14 @@ Q = AP0(base_ACEScg) * 2^(exposure_channel * 20 - 10)
 
 Values requiring an exposure outside the supported range are clipped to the
 nearest endpoint and counted in the command diagnostics; endpoint clipping
-necessarily loses exact scalar reconstruction. Non-finite or negative working
-values, and pixels outside the selected view's invertible domain, are rejected
-with diagnostics and no output files are published by default.
+necessarily loses exact scalar reconstruction. J_HK solve residuals, inverse
+round-trip residuals, and reconstruction residuals that exceed their requested
+tolerances do not stop the command. Both output files are written, and the
+counts and maximum errors are reported in the CLI and output metadata.
+Non-finite data, unavailable exposure roots, and unprojected negative AP0
+values remain errors. Pixels outside the selected view's invertible domain can
+be handled with `--project-unreachable`, which records the projection and
+clamping diagnostics.
 
 For images containing out-of-gamut or over-peak pixels, pass
 `--project-unreachable` to explicitly

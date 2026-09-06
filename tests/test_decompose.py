@@ -9,6 +9,8 @@ from modcam16_palette.decompose import (
     INPUT_COLOR_SPACES,
     base_ap1_above_one_statistics,
     canonical_input_color_space,
+    canonical_input_gamut,
+    canonical_input_transfer_function,
     canonical_profile,
     decompose_file,
     decompose_image,
@@ -17,6 +19,8 @@ from modcam16_palette.decompose import (
     load_decomposition_processor,
     project_unreachable_display_values,
     read_rgb_exr,
+    read_image,
+    _transfer_decode,
     write_decomposition_exrs,
 )
 
@@ -30,6 +34,12 @@ def test_input_spaces_and_profile_names_are_exact():
     assert canonical_profile("p3-hdr1000").name == "p3-hdr1000"
     with pytest.raises(ValueError):
         canonical_input_color_space("lin_rec2020")
+    assert canonical_input_gamut("Display P3 / P3-D65") == "Display P3 / P3-D65"
+    assert canonical_input_transfer_function("PQ / ST 2084") == "PQ / ST 2084"
+    with pytest.raises(ValueError):
+        canonical_input_gamut("p3")
+    with pytest.raises(ValueError):
+        canonical_input_transfer_function("pq")
     with pytest.raises(ValueError):
         canonical_profile("rec709")
 
@@ -51,7 +61,62 @@ def test_chromaticities_detection():
     }
     assert detect_input_color_space(header) == "Linear Rec.2020"
     assert detect_input_color_space({}) is None
-    assert len(INPUT_COLOR_SPACES) == 4
+    assert "Linear P3-D65" in INPUT_COLOR_SPACES
+
+
+def test_p3_chromaticities_detection_from_flat_header():
+    header = {
+        "chromaticities": (0.68, 0.32, 0.265, 0.69, 0.15, 0.06, 0.3127, 0.3290)
+    }
+    assert detect_input_color_space(header) == "Linear P3-D65"
+    assert detect_input_color_space({"colorInteropID": "\x10\x00\x00\x00Linear P3-D65"}) == "Linear P3-D65"
+
+
+def test_png_without_metadata_requires_explicit_source_selection(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "un tagged.png"
+    Image.fromarray(np.array([[[128, 64, 32]]], dtype=np.uint8), mode="RGB").save(path)
+    decoded = read_image(path)
+    assert decoded.source_gamut is None
+    assert decoded.source_transfer is None
+    assert decoded.pixels.dtype == np.float32
+
+
+def test_jpeg_decodes_rgb_without_guessing_missing_metadata(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "untagged.jpg"
+    Image.fromarray(np.array([[[128, 64, 32]]], dtype=np.uint8), mode="RGB").save(path)
+    decoded = read_image(path)
+    assert decoded.pixels.shape == (1, 1, 3)
+    assert decoded.source_gamut is None
+    assert decoded.source_transfer is None
+
+
+def test_heif_nclx_metadata_is_decoded_when_available(tmp_path):
+    pillow_heif = pytest.importorskip("pillow_heif")
+    path = tmp_path / "tagged.heif"
+    image = pillow_heif.from_bytes(
+        "RGB",
+        (1, 1),
+        np.array([[[128, 64, 32]]], dtype=np.uint8).tobytes(),
+        save_nclx_profile=True,
+    )
+    image.save(path)
+    decoded = read_image(path)
+    assert decoded.source_gamut == "Rec.709 / sRGB"
+    assert decoded.source_transfer == "sRGB"
+    assert decoded.metadata_source == "HEIF metadata"
+
+
+def test_common_transfer_functions_decode_to_linear_values():
+    encoded = np.array([[[0.5, 0.5, 0.5]]], dtype=np.float32)
+    assert _transfer_decode(encoded, "sRGB")[0, 0, 0] == pytest.approx(0.21404114, abs=1e-6)
+    assert _transfer_decode(encoded, "Gamma 2.2")[0, 0, 0] == pytest.approx(0.21763764, abs=1e-6)
+    assert _transfer_decode(encoded, "BT.709 / BT.2020")[0, 0, 0] == pytest.approx(0.2595894, abs=1e-6)
+    assert _transfer_decode(encoded, "HLG / BT.2100")[0, 0, 0] == pytest.approx(1.0 / 12.0, abs=1e-6)
+    assert _transfer_decode(np.array([[[0.5080784] * 3]], dtype=np.float32), "PQ / ST 2084")[0, 0, 0] == pytest.approx(1.0, abs=2e-3)
 
 
 def _write_input(path: Path, pixels: np.ndarray, *, color_space="ACES2065-1"):
@@ -141,8 +206,8 @@ def test_base_ap1_above_one_statistics_counts_pixels_once():
 def test_decompose_rejects_unreachable_view_values():
     processor = load_decomposition_processor("ACES2065-1", "rec709-sdr100")
     source = np.array([[[0.02, 0.04, 0.08]]], dtype=np.float32)
-    with pytest.raises(RuntimeError, match="cannot reconstruct|negative AP0"):
-        decompose_image(source, processor, round_trip_tolerance=1.0e-4)
+    result = decompose_image(source, processor, round_trip_tolerance=1.0e-4)
+    assert result.diagnostics["inverse_round_trip_exceedance_count"] >= 1
 
 
 def test_exposure_is_clipped_but_base_keeps_jhk_target():
@@ -161,8 +226,8 @@ def test_exposure_is_clipped_but_base_keeps_jhk_target():
 def test_projection_mode_allows_an_out_of_gamut_pixel():
     processor = load_decomposition_processor("ACES2065-1", "rec709-sdr100")
     source = np.array([[[0.02, 0.04, 0.08]]], dtype=np.float32)
-    with pytest.raises(RuntimeError):
-        decompose_image(source, processor, round_trip_tolerance=1.0e-4)
+    result_without_projection = decompose_image(source, processor, round_trip_tolerance=1.0e-4)
+    assert result_without_projection.diagnostics["inverse_round_trip_exceedance_count"] >= 1
     result = decompose_image(
         source,
         processor,
