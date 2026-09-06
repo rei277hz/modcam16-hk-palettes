@@ -42,8 +42,9 @@ Use this checklist to implement, validate, and release the Rust `wgpu` accelerat
 
 ## Tests
 
-- [x] Run all existing Rust color-core and decomposition tests.
+- [x] Run all existing Rust color-core and decomposition tests, including the software-adapter WGSL execution test.
 - [ ] Add Rust tests for shared GPU parameter packing, table lengths/checksums, buffer alignment, and fallback error mapping. WGSL syntax validation is currently run with Naga 30.0.1 during implementation.
+- [x] Execute the actual WGSL kernel on the Mesa lavapipe software Vulkan adapter and compare all supported profiles, output values, and diagnostic flags against the original f64 CPU solver without requiring a physical GPU.
 - [x] Run TypeScript checking, the Vite production build, and the wasm-pack release builds.
 - [ ] Add Chromium WebGPU browser coverage for upload, explicit gamut/transfer confirmation, validation, progress, cancellation, report rendering, and both downloads.
 - [ ] Test the no-WebGPU path and forced initialization/validation/device-loss failures; each must complete through CPU fallback with an actionable warning.

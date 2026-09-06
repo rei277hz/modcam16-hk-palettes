@@ -39,7 +39,11 @@ const CAT16: mat3x3<f32> = mat3x3<f32>(
   vec3<f32>(0.650173, 1.204414, 0.048952),
   vec3<f32>(-0.051461, 0.045854, 0.953127));
 
-fn bad(x: f32) -> bool { return x != x || abs(x) > 3.402823466e38; }
+fn bad(x: f32) -> bool {
+  // Ordered comparisons reject both NaN (all comparisons false) and +/-inf
+  // without relying on optional floating-point classification builtins.
+  return !(x >= -3.402823466e38 && x <= 3.402823466e38);
+}
 fn bad3(x: vec3<f32>) -> bool { return bad(x.x) || bad(x.y) || bad(x.z); }
 fn signed_pow(x: f32, exponent: f32) -> f32 { return sign(x) * pow(abs(x), exponent); }
 fn clamp3(x: vec3<f32>, low: f32, high: f32) -> vec3<f32> {

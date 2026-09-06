@@ -17,6 +17,7 @@ This document defines the behavior of the accelerated image decomposition path. 
 - Prepared AP0 input is uploaded as padded `vec4<f32>` values. The shader returns packed base RGB plus normalized exposure in a `vec4<f32>` output buffer and a `u32` diagnostic flag buffer. Rust unpacks these buffers into the existing `base`, `exposure`, and `SolveStats` response shape.
 - GPU readback is asynchronous through mapped staging buffers. The CPU remains responsible for report reduction and the existing OpenEXR encoder so output metadata and fp16 semantics stay shared with the CPU path.
 - The WGSL module is validated with the pinned Naga 30.0.1 parser before packaging; browser adapter validation still remains the runtime gate.
+- Host tests also dispatch this exact WGSL module through Mesa lavapipe (software Vulkan), allowing shader output and diagnostic flags to be compared with the f64 CPU implementation on machines without a physical GPU.
 
 ## Color-science accuracy
 

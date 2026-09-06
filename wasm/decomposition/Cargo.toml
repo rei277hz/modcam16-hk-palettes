@@ -24,3 +24,8 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "webg
 bytemuck = { version = "1.22", features = ["derive"] }
 futures-channel = "0.3"
 wasm-bindgen-futures = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
+bytemuck = "1.22"
+pollster = "0.4"
