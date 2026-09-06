@@ -195,7 +195,7 @@ fn is_usable_icc_profile(data: &[u8]) -> bool {
         )
         .is_ok()
 }
-fn icc_rgb_to_ap0(rgb: &[[f32; 3]], icc: &[u8]) -> Result<Vec<[f32; 3]>, String> {
+fn icc_rgb_to_ap0(rgb: &mut [[f32; 3]], icc: &[u8]) -> Result<(), String> {
     let profile = icc_profile::Profile::new(icc).map_err(|e| e.to_string())?;
     if profile.color_space() != icc_profile::ColorSpace::Rgb {
         return Err("Embedded ICC profile must be RGB.".into());
@@ -210,31 +210,23 @@ fn icc_rgb_to_ap0(rgb: &[[f32; 3]], icc: &[u8]) -> Result<Vec<[f32; 3]>, String>
             icc_profile::TransformLimits::default(),
         )
         .map_err(|e| e.to_string())?;
-    let flat = flat_pixels(rgb);
-    let mut xyz = vec![0.0_f32; flat.len()];
-    for (src, dst) in flat.chunks_exact(3).zip(xyz.chunks_exact_mut(3)) {
+    for px in rgb.iter_mut() {
         // ICC device transforms accept normalized device samples only. Native
         // decoders can produce tiny over/under-shoots at the numeric edge;
         // clamp those representational errors before entering the profile.
         let normalized = [
-            src[0].clamp(0.0, 1.0),
-            src[1].clamp(0.0, 1.0),
-            src[2].clamp(0.0, 1.0),
+            px[0].clamp(0.0, 1.0),
+            px[1].clamp(0.0, 1.0),
+            px[2].clamp(0.0, 1.0),
         ];
+        let mut xyz = [0.0_f32; 3];
         transform
-            .transform_f32(&normalized, dst)
+            .transform_f32(&normalized, &mut xyz)
             .map_err(|e| e.to_string())?;
+        let d65 = mat(D50_TO_D65_CAT02, xyz);
+        *px = mat(XYZ_D65_TO_AP0, d65);
     }
-    let mut ap0 = Vec::with_capacity(rgb.len());
-    for chunk in xyz.chunks_exact(3) {
-        let d50 = [chunk[0], chunk[1], chunk[2]];
-        let d65 = mat(D50_TO_D65_CAT02, d50);
-        ap0.push(mat(XYZ_D65_TO_AP0, d65));
-    }
-    Ok(ap0)
-}
-fn decode_icc_profile_to_ap0(rgb: Vec<[f32; 3]>, icc: &[u8]) -> Result<Vec<[f32; 3]>, String> {
-    icc_rgb_to_ap0(&rgb, icc)
+    Ok(())
 }
 fn prepare_rgb(
     mut rgb: Vec<[f32; 3]>,
@@ -260,7 +252,7 @@ fn prepare_rgb(
             *px = source_to_ap0(*px, gamut);
         }
     } else if let Some(icc) = icc_profile {
-        rgb = decode_icc_profile_to_ap0(rgb, icc)?;
+        icc_rgb_to_ap0(&mut rgb, icc)?;
     } else {
         return Err(
             "Select gamut and transfer manually: this image has no usable embedded ICC profile.".into(),
@@ -1174,38 +1166,37 @@ fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
     encode_result(&base, &exposure, p.width, p.height, report)
 }
 
-fn prepared_payload(
-    pixels: Vec<f32>,
-    width: usize,
-    height: usize,
+/// Own the prepared raster in Rust. JavaScript reads only the active batch;
+/// no full-size typed-array copy or borrowed WASM-memory view escapes.
+#[wasm_bindgen]
+pub struct PreparedImage {
+    rgb: Vec<[f32; 3]>,
+    width: u32,
+    height: u32,
     warnings: Vec<String>,
-) -> Result<JsValue, String> {
-    let object = Object::new();
-    Reflect::set(
-        &object,
-        &JsValue::from_str("width"),
-        &JsValue::from_f64(width as f64),
-    )
-    .map_err(|e| format!("width: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("height"),
-        &JsValue::from_f64(height as f64),
-    )
-    .map_err(|e| format!("height: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("pixels"),
-        &Float32Array::from(pixels.as_slice()).into(),
-    )
-    .map_err(|e| format!("pixels: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("warnings"),
-        &serde_wasm_bindgen::to_value(&warnings).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("warnings: {e:?}"))?;
-    Ok(object.into())
+}
+
+#[wasm_bindgen]
+impl PreparedImage {
+    #[wasm_bindgen(getter)]
+    pub fn width(&self) -> u32 { self.width }
+
+    #[wasm_bindgen(getter)]
+    pub fn height(&self) -> u32 { self.height }
+
+    #[wasm_bindgen(getter)]
+    pub fn warnings(&self) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(&self.warnings)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    pub fn read_pixels(&self, start: u32, count: u32) -> Result<Vec<f32>, JsValue> {
+        let start = start as usize;
+        let end = start.checked_add(count as usize)
+            .filter(|end| *end <= self.rgb.len())
+            .ok_or_else(|| JsValue::from_str("Prepared pixel batch is outside the image."))?;
+        Ok(flat_pixels(&self.rgb[start..end]))
+    }
 }
 
 fn prepared_payload_rgb(
@@ -1213,33 +1204,34 @@ fn prepared_payload_rgb(
     width: usize,
     height: usize,
     warnings: Vec<String>,
-) -> Result<JsValue, String> {
+) -> Result<PreparedImage, String> {
     if rgb.len() != width.saturating_mul(height) {
         return Err("Prepared RGB dimensions do not match.".into());
     }
-    let object = Object::new();
-    Reflect::set(&object, &JsValue::from_str("width"), &JsValue::from_f64(width as f64))
-        .map_err(|e| format!("width: {e:?}"))?;
-    Reflect::set(&object, &JsValue::from_str("height"), &JsValue::from_f64(height as f64))
-        .map_err(|e| format!("height: {e:?}"))?;
-    let output = Float32Array::new_with_length((rgb.len() * 3) as u32);
-    for (index, pixel) in rgb.iter().enumerate() {
-        output.set_index((index * 3) as u32, pixel[0]);
-        output.set_index((index * 3 + 1) as u32, pixel[1]);
-        output.set_index((index * 3 + 2) as u32, pixel[2]);
+    Ok(PreparedImage { rgb, width: width as u32, height: height as u32, warnings })
+}
+
+fn flat_to_rgb(data: Vec<f32>) -> Result<Vec<[f32; 3]>, String> {
+    if data.len() % 3 != 0 {
+        return Err("Prepared pixel buffer is not an RGB triple array.".into());
     }
-    Reflect::set(&object, &JsValue::from_str("pixels"), &output.into())
-        .map_err(|e| format!("pixels: {e:?}"))?;
-    Reflect::set(&object, &JsValue::from_str("warnings"), &serde_wasm_bindgen::to_value(&warnings).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("warnings: {e:?}"))?;
-    Ok(object.into())
+    if data.capacity() % 3 != 0 {
+        return Ok(data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect());
+    }
+    let len = data.len() / 3;
+    let capacity = data.capacity() / 3;
+    let pointer = data.as_ptr() as *mut [f32; 3];
+    std::mem::forget(data);
+    // `[f32; 3]` has the same alignment and contiguous representation as
+    // three f32 values. Ownership is transferred without another full raster.
+    Ok(unsafe { Vec::from_raw_parts(pointer, len, capacity) })
 }
 
 fn solve_chunk_payload(data: Vec<f32>, req: &Request) -> Result<JsValue, String> {
     if data.len() % 3 != 0 {
         return Err("Prepared pixel chunk must contain RGB triples.".into());
     }
-    let rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let rgb = flat_to_rgb(data)?;
     let (base, exposure, stats) = solve_prepared(&rgb, req);
     let object = Object::new();
     Reflect::set(
@@ -1264,7 +1256,7 @@ fn solve_chunk_payload(data: Vec<f32>, req: &Request) -> Result<JsValue, String>
 }
 
 #[wasm_bindgen]
-pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<JsValue, JsValue> {
+pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<PreparedImage, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     let p = parse(&data, &req.format).map_err(|e| JsValue::from_str(&e))?;
     let width = p.width;
@@ -1281,14 +1273,14 @@ pub fn prepare_pixels(
     width: u32,
     height: u32,
     request: JsValue,
-) -> Result<JsValue, JsValue> {
+) -> Result<PreparedImage, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     if width == 0 || height == 0 || data.len() != width as usize * height as usize * 3 {
         return Err(JsValue::from_str(
             "HEIF pixel buffer dimensions do not match.",
         ));
     }
-    let rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let rgb = flat_to_rgb(data).map_err(|e| JsValue::from_str(&e))?;
     let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None)
         .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width as usize, height as usize, Vec::new())
@@ -1309,12 +1301,12 @@ pub fn prepare_heic_pixels(
     gain_width: u32,
     gain_height: u32,
     exif: Vec<u8>,
-) -> Result<JsValue, JsValue> {
+) -> Result<PreparedImage, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     if width == 0 || height == 0 || data.len() != width as usize * height as usize * 3 {
         return Err(JsValue::from_str("HEIF pixel buffer dimensions do not match."));
     }
-    let mut rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let mut rgb = flat_to_rgb(data).map_err(|e| JsValue::from_str(&e))?;
     if !gain_map.is_empty() {
         // Apple gain-map primaries are Display P3 with an sRGB-like transfer
         // unless the user explicitly overrides the source interpretation.

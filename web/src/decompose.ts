@@ -45,6 +45,7 @@ type OutputFile = { name: string; size: number; kind: string };
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
+  | { kind: "preview-encode"; id: number; width: number; height: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "result"; id: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "error"; id: number; message: string }
   | { kind: "cancelled"; id: number };
@@ -269,6 +270,31 @@ function renderSummary(summary: SourceSummary): void {
   updateCalculateState();
 }
 
+let previewEncoderId = 0;
+function encodePreviewFile(input: string, output: string, width: number, height: number): Promise<number> {
+  const encoder = new Worker(new URL("./preview_encoder_worker.ts", import.meta.url), { type: "module" });
+  const id = ++previewEncoderId;
+  return new Promise<number>((resolve, reject) => {
+    const finish = () => encoder.terminate();
+    encoder.onmessage = (event: MessageEvent<{ kind: string; id: number; size?: number; message?: string }>) => {
+      if (event.data.id !== id) return;
+      if (event.data.kind === "complete") { finish(); resolve(event.data.size ?? 0); }
+      else if (event.data.kind === "error") { finish(); reject(new Error(event.data.message ?? "Preview JPEG encoding failed.")); }
+    };
+    encoder.onerror = (event) => { finish(); reject(new Error(event.message || "Preview JPEG worker failed.")); };
+    encoder.postMessage({ id, input, output, width, height });
+  });
+}
+
+async function cleanupOpfsJob(id: number): Promise<void> {
+  try {
+    const root = await (navigator.storage as any).getDirectory();
+    for await (const [name] of root.entries()) {
+      if (name.startsWith(`decomposition-${id}-`)) await root.removeEntry(name);
+    }
+  } catch { /* best effort during cancellation */ }
+}
+
 async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   if (message.id !== inspectionId && message.id !== activeJob) return;
   if (message.kind === "progress") {
@@ -295,6 +321,44 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     progressPercent.value = "0";
     progressPercent.textContent = "0%";
     progressCounters.textContent = "Metadata inspection complete.";
+    return;
+  }
+  if (message.kind === "preview-encode") {
+    progressStage.textContent = "Encode base preview JPEG";
+    progressBar.value = 95;
+    progressPercent.value = "95";
+    progressPercent.textContent = "95%";
+    progressCounters.textContent = "Full-resolution preview";
+    // Release the worker that owns the decoder and prepared raster before
+    // allocating the full-resolution JPEG encoder buffers.
+    worker.terminate();
+    try {
+      const baseName = `decomposition-${message.id}-base-preview.jpg`;
+      const exposureName = `decomposition-${message.id}-exposure-preview.jpg`;
+      const baseSize = await encodePreviewFile(`decomposition-${message.id}-base-preview.rgb`, baseName, message.width, message.height);
+      if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
+      progressStage.textContent = "Encode exposure preview JPEG";
+      progressBar.value = 98;
+      progressPercent.value = "98";
+      progressPercent.textContent = "98%";
+      const exposureSize = await encodePreviewFile(`decomposition-${message.id}-exposure-preview.rgb`, exposureName, message.width, message.height);
+      if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
+      const root = await (navigator.storage as any).getDirectory();
+      await root.removeEntry(`decomposition-${message.id}-base-preview.rgb`).catch(() => undefined);
+      await root.removeEntry(`decomposition-${message.id}-exposure-preview.rgb`).catch(() => undefined);
+      const outputs = [...message.outputs,
+        { name: baseName, size: baseSize, kind: "base-preview-jpeg" },
+        { name: exposureName, size: exposureSize, kind: "exposure-preview-jpeg" }];
+      await onWorkerMessage({ kind: "result", id: message.id, report: message.report, outputs, storage: "opfs" });
+    } catch (error) {
+      await cleanupOpfsJob(message.id);
+      activeJob = undefined;
+      setBusy(false);
+      showStatus(error instanceof Error ? error.message : String(error), true);
+      progressStage.textContent = "Error";
+    } finally {
+      worker = createWorker();
+    }
     return;
   }
   if (message.kind === "cancelled") {

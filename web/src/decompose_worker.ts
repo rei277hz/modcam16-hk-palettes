@@ -1,4 +1,4 @@
-import init, { build_report, cpu_preview_pixels, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { build_report, cpu_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -212,11 +212,6 @@ async function cleanupPreviousOutputs(currentId: number): Promise<void> {
   } catch { /* best effort */ }
 }
 
-async function readOpfsFile(name: string): Promise<Uint8Array> {
-  const root = await (navigator.storage as any).getDirectory();
-  const handle = await root.getFileHandle(name);
-  return new Uint8Array(await (await handle.getFile()).arrayBuffer());
-}
 async function removeOpfsFile(name: string): Promise<void> {
   try { const root = await (navigator.storage as any).getDirectory(); await root.removeEntry(name); } catch { /* best effort */ }
 }
@@ -508,10 +503,11 @@ async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: numbe
 
 async function handle(message: JobMessage): Promise<void> {
   const { id, format } = message;
+  let prepared: ReturnType<typeof prepare> | undefined;
   try {
     await ensureWasm();
     if (cancelled.has(id)) return;
-    const bytes = new Uint8Array(message.bytes);
+    let bytes = new Uint8Array(message.bytes);
     if (message.kind === "inspect") {
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
@@ -526,7 +522,6 @@ async function handle(message: JobMessage): Promise<void> {
     }
     if (!message.request) throw new Error("Missing decomposition options.");
     postProgress(id, "Decode and prepare pixels", 18);
-    let prepared: any;
     let warnings: string[] = [];
     if (format === "heic" || format === "heif") {
       const decoded = await decodeHeif(bytes, id);
@@ -546,9 +541,10 @@ async function handle(message: JobMessage): Promise<void> {
     if (cancelled.has(id)) return;
     const width = Number(prepared.width);
     const height = Number(prepared.height);
-    const pixels = prepared.pixels instanceof Float32Array ? prepared.pixels : new Float32Array(prepared.pixels);
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
     warnings = [...warnings, ...preparedWarnings];
+    bytes = new Uint8Array(0);
+    message.bytes = new ArrayBuffer(0);
     let gpuValidation: GpuValidation | undefined;
     let gpuValidationFailure: string | undefined;
     postProgress(id, "Initialize WebGPU", 20);
@@ -595,7 +591,7 @@ async function handle(message: JobMessage): Promise<void> {
       if (cancelled.has(id)) return;
       const rowsPerBatch = Math.max(1, Math.floor(batchSize / width));
       const stop = Math.min(totalPixels, start + rowsPerBatch * width);
-      const chunk = pixels.slice(start * 3, stop * 3);
+      const chunk = prepared.read_pixels(start, stop - start);
       let solved: any;
       try {
         solved = useGpu ? await gpu_solve_chunk(chunk, message.request) : solve_chunk(chunk, message.request);
@@ -668,6 +664,12 @@ async function handle(message: JobMessage): Promise<void> {
       await yieldToUi();
     }
     if (cancelled.has(id)) return;
+    // The source raster and uploaded file are no longer needed after solving.
+    // Drop both before reading/encoding preview data so mobile devices do not
+    // carry decoder, prepared, preview, and encoder allocations together.
+    prepared.free();
+    prepared = undefined;
+    bytes = new Uint8Array(0);
     stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
     stats.preview_transform_ms = performance.now() - previewStartedAt;
     if (cancelled.has(id)) return;
@@ -677,34 +679,17 @@ async function handle(message: JobMessage): Promise<void> {
     await basePreviewRaw.close(); await exposurePreviewRaw.close();
     const report = build_report(width, height, message.request, stats, warnings);
     if (cancelled.has(id)) return;
-    postProgress(id, "Encode base preview JPEG", 95, { processed: totalPixels });
-    await yieldToUi();
-    const basePreviewJpeg = encode_preview_pixels(await readOpfsFile(`decomposition-${id}-base-preview.rgb`), width, height);
-    const basePreviewSink = await OpfsSink.create(`decomposition-${id}-base-preview.jpg`);
-    const basePreviewBytes = basePreviewJpeg instanceof Uint8Array ? basePreviewJpeg : new Uint8Array(basePreviewJpeg);
-    await basePreviewSink.write(basePreviewBytes); await basePreviewSink.close();
-    if (cancelled.has(id)) return;
-    postProgress(id, "Encode exposure preview JPEG", 98, { processed: totalPixels });
-    await yieldToUi();
-    const exposurePreviewJpeg = encode_preview_pixels(await readOpfsFile(`decomposition-${id}-exposure-preview.rgb`), width, height);
-    const exposurePreviewSink = await OpfsSink.create(`decomposition-${id}-exposure-preview.jpg`);
-    const exposurePreviewBytes = exposurePreviewJpeg instanceof Uint8Array ? exposurePreviewJpeg : new Uint8Array(exposurePreviewJpeg);
-    await exposurePreviewSink.write(exposurePreviewBytes); await exposurePreviewSink.close();
-    await removeOpfsFile(`decomposition-${id}-base-preview.rgb`);
-    await removeOpfsFile(`decomposition-${id}-exposure-preview.rgb`);
     const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
-    outputs.push({ name: `decomposition-${id}-base-preview.jpg`, size: basePreviewBytes.byteLength, kind: "base-preview-jpeg" }, { name: `decomposition-${id}-exposure-preview.jpg`, size: exposurePreviewBytes.byteLength, kind: "exposure-preview-jpeg" });
-    postProgress(id, "Complete", 100, {
-      processed: totalPixels,
-      projected: report.projected_pixels,
-      clipped: report.clipped_pixels,
-      non_finite: report.non_finite_pixels,
-      encoded_bytes: outputs.reduce((sum, entry) => sum + entry.size, 0),
-    });
-    scope.postMessage({ kind: "result", id, report, outputs, storage: "opfs" });
+    // The decomposition worker is deliberately finished before JPEG encoding.
+    // The page can terminate this worker and run each full-resolution encoder
+    // in a fresh worker, reclaiming the decoder/preparation WASM heap first.
+    postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
+    scope.postMessage({ kind: "preview-encode", id, width, height, report, outputs, storage: "opfs" });
   } catch (error) {
     await cleanupOutputFiles(id);
     if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, message: formatError(error) });
+  } finally {
+    prepared?.free();
   }
 }
 

@@ -37,9 +37,11 @@ writers. Statistics are accumulated as scalar counters only.
 OpenEXR output is scanline-streamed as fp16 ACEScg/AP1 channels with the
 existing metadata. The default Exposure EXR stores direct scalar exposure
 replicated across RGB; the normalized EV Exposure EXR stores its single
- channel. Preview JPEG encoding currently reads one OPFS RGB8 staging file at
-a time after the exact ACES 2.0 SDR 100-nit Display P3 forward transform and
-sRGB encoding; a row-fed JPEG encoder remains a follow-up task.
+channel. Both preview JPEGs remain full-resolution outputs. Their RGB8 staging
+planes are spooled to OPFS during solving. Each plane is encoded in a fresh,
+short-lived preview worker so the decomposition worker's large WASM
+decoder/prepared raster allocation is not live alongside the JPEG encoder's
+full-resolution input and output buffers.
 
 GPU resources are reused for one batch at a time, explicitly destroyed when
 replaced, and completed before the next tile is submitted. Device loss or GPU
@@ -52,9 +54,10 @@ files. Successful HEIC precision and gain-map decoding remains silent unless a
 failure changes the operation.
 
 Implementation snapshot (2026-09-07): decomposition now writes scanline EXRs
-and raw preview planes directly to OPFS and returns file descriptors to the
-page. The worker no longer allocates full base, exposure, or EXR result
-buffers. Preparation now flattens directly into the returned typed array,
-removing one additional full-size Rust allocation. Source preparation still
-uses one decoder/prepared raster, and JPEG encoding reads one spooled preview
-plane at a time.
+and raw full-resolution preview planes directly to OPFS and returns file
+descriptors to the page. The worker no longer allocates full base, exposure,
+or EXR result buffers. Preparation exposes one flattened WASM view instead of
+copying the complete prepared raster into a second JS buffer, and ICC
+conversion now runs in place. Full source preparation still uses one
+decoder/prepared raster; each full-resolution JPEG is encoded in a separate
+worker and that worker is terminated after completion to reclaim its WASM heap.

@@ -15,7 +15,8 @@
 
 - [ ] Select a default 512×512 tile, bounded by device and GPU limits.
 - [ ] Keep source resolution, dimensions, and meaningful 10/12-bit precision.
-- [ ] Replace full `Float32Array` preparation with tile/row-band access.
+- [x] Keep the prepared raster owned by Rust and expose only one row batch at
+      a time to JavaScript/WebGPU; no full prepared `Float32Array` is copied.
 - [ ] Copy only the active source tile from decoder-owned HEIF buffers.
 - [ ] Process Apple gain-map interpolation per tile and release native images
       when source traversal finishes.
@@ -37,7 +38,8 @@
 - [x] Add stateful scanline OpenEXR writers for Base, Exposure RGB, and
       normalized EV Exposure outputs.
 - [x] Preserve ACEScg/AP1 fp16 channels, chromaticities, and metadata.
-- [ ] Add row-fed JPEG encoders for both Display P3/sRGB previews.
+- [x] Encode both full-resolution Display P3/sRGB previews in short-lived
+      workers, separate from the decomposition worker's large WASM heap.
 - [x] Stream EXR encoder output and raw preview planes directly to local files;
       JPEG encoding reads one spooled plane at a time.
 - [ ] Verify output files can be previewed and downloaded through object URLs
@@ -72,6 +74,8 @@
 ## Snapshot
 
 - 2026-09-07: Added OPFS-backed scanline EXR writers, quota checks, output-file
-  descriptors, and bounded solve/readback batches. Full base, exposure, and
-  EXR byte arrays are no longer retained. Full source preparation and preview
-  RGB staging remain follow-up memory reductions.
+      descriptors, and bounded solve/readback batches. Full base, exposure, and
+      EXR byte arrays are no longer retained. Rust now owns the prepared raster
+      and exposes row batches only; full-resolution preview planes are spooled
+      to OPFS and encoded in isolated workers. Codec APIs still decode a full
+      source raster before the first batch.
