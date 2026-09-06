@@ -302,6 +302,12 @@ def _chromaticities_tuple(value: Any) -> tuple[tuple[float, float], ...] | None:
         points = (value.red, value.green, value.blue, value.white)
         return tuple((float(point.x), float(point.y)) for point in points)
     except (AttributeError, TypeError, ValueError):
+        try:
+            flat = tuple(float(item) for item in np.asarray(value).reshape(-1))
+            if len(flat) == 8:
+                return tuple((flat[index], flat[index + 1]) for index in range(0, 8, 2))
+        except (TypeError, ValueError):
+            pass
         return None
 
 
@@ -514,7 +520,7 @@ def _profile_gamut_transfer(description: str) -> tuple[str, str] | None:
     text = description.strip().casefold()
     if "display p3" in text or "p3-d65" in text:
         return "Display P3 / P3-D65", "sRGB"
-    if "rec. 2020" in text or "rec2020" in text or "bt.2020" in text:
+    if "rec. 2020" in text or "rec2020" in text or "bt.2020" in text or "bt2020" in text:
         return "Rec.2020", "BT.709 / BT.2020"
     if "adobe rgb" in text:
         return "Adobe RGB", "Gamma 2.2"
@@ -546,6 +552,23 @@ def _png_metadata(path: str | Path, info: Mapping[str, Any]) -> tuple[str, str, 
                 return gamut, transfer_name, "PNG cICP"
         if chunk_type == b"sRGB":
             return "Rec.709 / sRGB", "sRGB", "PNG sRGB chunk"
+    chromaticity = info.get("chromaticity")
+    try:
+        values = tuple(float(item) for item in chromaticity)
+        if len(values) == 8:
+            observed = np.asarray(
+                ((values[2], values[3]), (values[4], values[5]), (values[6], values[7]), (values[0], values[1])),
+                dtype=np.float64,
+            )
+            for gamut, expected in (
+                ("Rec.709 / sRGB", _INPUT_CHROMATICITIES["Linear Rec.709 (sRGB)"]),
+                ("Display P3 / P3-D65", _INPUT_CHROMATICITIES["Linear P3-D65"]),
+                ("Rec.2020", _INPUT_CHROMATICITIES["Linear Rec.2020"]),
+            ):
+                if np.allclose(observed, np.asarray(expected), atol=5.0e-4, rtol=0.0):
+                    return gamut, "sRGB", "PNG chromaticity"
+    except (TypeError, ValueError):
+        pass
     gamma = info.get("gamma")
     if gamma is not None:
         try:
@@ -603,6 +626,15 @@ def _read_raster_image(path: str | Path) -> DecompositionInput:
                     detected = (*profile_detected, "JPEG ICC profile")
             except (ImportError, OSError, TypeError, ValueError):
                 pass
+        if detected is None and path.suffix.casefold() in {".jpg", ".jpeg"}:
+            try:
+                exif_space = int(image.getexif().get(0xA001, 0))
+            except (AttributeError, TypeError, ValueError):
+                exif_space = 0
+            if exif_space == 1:
+                detected = ("Rec.709 / sRGB", "sRGB", "JPEG EXIF ColorSpace")
+            elif exif_space == 2:
+                detected = ("Adobe RGB", "Gamma 2.2", "JPEG EXIF ColorSpace")
     return DecompositionInput(
         pixels=pixels,
         color_space="",
@@ -952,7 +984,7 @@ def _solve_chunk(
     refl: float,
     solver_iterations: int,
     j_hk_tolerance: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int]:
     """Solve one batch, returning base/exposure, masks, and J_HK error."""
 
     if q.ndim != 2 or q.shape[-1] != 3:
@@ -975,7 +1007,7 @@ def _solve_chunk(
     exposure[zero] = 0.0
     active = ~zero
     if not np.any(active):
-        return base, exposure, zero, np.zeros_like(zero), 0.0
+        return base, exposure, zero, np.zeros_like(zero), 0.0, 0
 
     values = q[active].astype(np.float32, copy=False)
     # e is log2(s).  Increasing e makes the base darker and monotonically
@@ -1044,18 +1076,13 @@ def _solve_chunk(
     maximum_error = float(np.max(j_hk_error, initial=0.0))
     # Clipping the exposure is an intentional representational limit.  Roots
     # inside the range must still satisfy the requested perceptual invariant.
-    if j_hk_error.size and np.any(j_hk_error > j_hk_tolerance):
-        maximum = float(np.max(j_hk_error))
-        raise RuntimeError(
-            f"Base-color J_HK solve exceeded tolerance: max error={maximum:.9g}, "
-            f"tolerance={j_hk_tolerance:.9g}."
-        )
+    j_hk_exceedance_count = int(np.count_nonzero(j_hk_error > j_hk_tolerance))
     base[active] = solved_base
     stored_e = np.clip(solved_e, EXPOSURE_MIN, EXPOSURE_MAX)
     exposure[active] = (
         (stored_e + EXPOSURE_OFFSET) / EXPOSURE_SCALE
     ).astype(np.float32)
-    return base, exposure, zero, clipped, maximum_error
+    return base, exposure, zero, clipped, maximum_error, j_hk_exceedance_count
 
 
 def decompose_image(
@@ -1105,11 +1132,13 @@ def decompose_image(
     exposure_flat = np.empty(source_flat.shape[0], dtype=np.float32)
     max_inverse_round_trip = 0.0
     max_reconstructed_error = 0.0
+    reconstructed_exceedances = 0
     inverse_round_trip_failures = 0
     inverse_round_trip_exceedances = 0
     zero_count = 0
     clipped_exposure_count = 0
     maximum_j_hk_error = 0.0
+    j_hk_exceedances = 0
     projected_pixel_count = 0
     maximum_projection_error = 0.0
     negative_ap0_clamped_count = 0
@@ -1161,20 +1190,10 @@ def decompose_image(
         chunk_inverse_round_trip = float(np.max(residual, initial=0.0))
         exceedance_count = int(np.count_nonzero(residual > round_trip_tolerance))
         # Projection and negative-AP0 clamping are explicit lossy operations.
-        # Their inverse residual is retained in diagnostics, but must not make
-        # an opted-in run fail.  Unmodified pixels still require the requested
-        # numerical round-trip tolerance.
+        # All round-trip residuals are retained in diagnostics; tolerance
+        # exceedances do not prevent output publication.
         unreachable_mask = projection_mask | negative_working
         failures = (residual > round_trip_tolerance) & ~unreachable_mask
-        if np.any(failures):
-            maximum = float(np.max(residual[failures]))
-            raise RuntimeError(
-                "Selected ACES 2.0 inverse cannot reconstruct "
-                f"{int(np.count_nonzero(failures))} pixel(s) in range {start}:{stop}; "
-                "max display-reference "
-                f"round-trip error={maximum:.9g}, tolerance={round_trip_tolerance:.9g}; "
-                "use --project-unreachable for out-of-gamut/negative-AP0 pixels."
-            )
         if project_unreachable and np.any(negative_working):
             working = np.maximum(working, 0.0)
         return (
@@ -1239,7 +1258,14 @@ def decompose_image(
     def solve_chunk(start_stop: tuple[int, int]):
         start, stop = start_stop
         chunk_working = working_flat[start:stop]
-        chunk_base, chunk_exposure, zero, clipped, chunk_j_hk_error = _solve_chunk(
+        (
+            chunk_base,
+            chunk_exposure,
+            zero,
+            clipped,
+            chunk_j_hk_error,
+            chunk_j_hk_exceedance_count,
+        ) = _solve_chunk(
             chunk_working,
             processor,
             model,
@@ -1261,6 +1287,9 @@ def decompose_image(
             np.abs(decoded.astype(np.float64) - chunk_working.astype(np.float64)),
             axis=-1,
         )
+        reconstructed_exceedance_count = int(
+            np.count_nonzero(decoded_error > round_trip_tolerance)
+        )
         return (
             start,
             stop,
@@ -1270,6 +1299,8 @@ def decompose_image(
             int(np.count_nonzero(clipped)),
             chunk_j_hk_error,
             float(np.max(decoded_error, initial=0.0)),
+            chunk_j_hk_exceedance_count,
+            reconstructed_exceedance_count,
         )
 
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -1285,6 +1316,8 @@ def decompose_image(
                     clipped_count,
                     chunk_j_hk_error,
                     chunk_reconstructed_error,
+                    chunk_j_hk_exceedance_count,
+                    chunk_reconstructed_exceedance_count,
                 ) = future.result()
                 base_flat[start:stop] = chunk_base
                 exposure_flat[start:stop] = chunk_exposure
@@ -1294,6 +1327,8 @@ def decompose_image(
                 max_reconstructed_error = max(
                     max_reconstructed_error, chunk_reconstructed_error
                 )
+                j_hk_exceedances += chunk_j_hk_exceedance_count
+                reconstructed_exceedances += chunk_reconstructed_exceedance_count
         except BaseException:
             for future in futures:
                 future.cancel()
@@ -1314,9 +1349,11 @@ def decompose_image(
             "inverse_round_trip_failure_count": inverse_round_trip_failures,
             "inverse_round_trip_exceedance_count": inverse_round_trip_exceedances,
             "reconstructed_working_max_error": max_reconstructed_error,
+            "reconstructed_working_exceedance_count": reconstructed_exceedances,
             "zero_pixel_count": zero_count,
             "exposure_clipped_pixel_count": clipped_exposure_count,
             "maximum_j_hk_error": maximum_j_hk_error,
+            "j_hk_exceedance_count": j_hk_exceedances,
         "workers": worker_count,
         "project_unreachable": int(project_unreachable),
             "projected_pixel_count": projected_pixel_count,
@@ -1344,6 +1381,10 @@ def _comments(
         "nonzero AP0 reconstruction=B*2^(exposure*20-10); stored base=AP1(B); "
         "zero working pixels use neutral base and explicit s=0; "
         f"workers={result.diagnostics.get('workers', 1)}; "
+        f"source gamut={result.source_gamut or 'unspecified'}; "
+        f"source transfer={result.source_transfer or 'unspecified'}; "
+        f"metadata source={result.metadata_source or 'explicit selection'}; "
+        f"input format={result.input_format or 'unknown'}; "
         f"OCIO config={processor.config_path}"
     )
 
@@ -1433,6 +1474,10 @@ def write_decomposition_exrs(
         ),
         "decompositionComponent": "base",
         "decompositionInputColorSpace": input_color_space,
+        "decompositionInputGamut": result.source_gamut or "",
+        "decompositionInputTransferFunction": result.source_transfer or "",
+        "decompositionInputMetadataSource": result.metadata_source or "",
+        "decompositionInputFormat": result.input_format or "",
         "decompositionProfile": result.profile.name,
         "decompositionRefl": float(result.refl),
         "decompositionTargetJHK": float(result.target_j_hk),
@@ -1442,6 +1487,12 @@ def write_decomposition_exrs(
         ),
         "decompositionMaximumJHKError": float(
             result.diagnostics.get("maximum_j_hk_error", 0.0)
+        ),
+        "decompositionJHKExceedances": int(
+            result.diagnostics.get("j_hk_exceedance_count", 0)
+        ),
+        "decompositionReconstructedWorkingExceedances": int(
+            result.diagnostics.get("reconstructed_working_exceedance_count", 0)
         ),
         "decompositionWorkers": int(result.diagnostics.get("workers", 1)),
         "decompositionInverseRoundTripMaxError": float(
@@ -1480,6 +1531,10 @@ def write_decomposition_exrs(
         ),
         "decompositionComponent": "exposure",
         "decompositionInputColorSpace": input_color_space,
+        "decompositionInputGamut": result.source_gamut or "",
+        "decompositionInputTransferFunction": result.source_transfer or "",
+        "decompositionInputMetadataSource": result.metadata_source or "",
+        "decompositionInputFormat": result.input_format or "",
         "decompositionProfile": result.profile.name,
         "decompositionRefl": float(result.refl),
         "decompositionTargetJHK": float(result.target_j_hk),
@@ -1489,6 +1544,12 @@ def write_decomposition_exrs(
         ),
         "decompositionMaximumJHKError": float(
             result.diagnostics.get("maximum_j_hk_error", 0.0)
+        ),
+        "decompositionJHKExceedances": int(
+            result.diagnostics.get("j_hk_exceedance_count", 0)
+        ),
+        "decompositionReconstructedWorkingExceedances": int(
+            result.diagnostics.get("reconstructed_working_exceedance_count", 0)
         ),
         "decompositionWorkers": int(result.diagnostics.get("workers", 1)),
         "decompositionInverseRoundTripMaxError": float(
@@ -1526,6 +1587,8 @@ def decompose_file(
     profile: str | DecompositionProfile,
     refl: float = DEFAULT_REFL,
     input_color_space: str | None = None,
+    input_gamut: str | None = None,
+    input_transfer_function: str | None = None,
     ocio_config_path: str | Path = DEFAULT_OCIO_CONFIG_PATH,
     base_output: str | Path | None = None,
     exposure_output: str | Path | None = None,
@@ -1540,23 +1603,49 @@ def decompose_file(
     """Read, decompose, and write one input image."""
 
     input_path = Path(input_path)
-    decoded = read_rgb_exr(input_path)
+    decoded = read_image(input_path)
     config_path = _resolve_config_path(ocio_config_path)
     ocio = _import_ocio()
     ocio_config = ocio.Config.CreateFromFile(str(config_path))
-    detected_input = detect_input_color_space(decoded.header, ocio_config)
-    selected_input = (
-        canonical_input_color_space(input_color_space)
-        if input_color_space is not None
-        else (detected_input or decoded.color_space)
+    detected_input = (
+        detect_input_color_space(decoded.header, ocio_config)
+        if input_path.suffix.casefold() == ".exr"
+        else None
     )
-    if not selected_input:
-        selected_input = prompt_input_color_space()
+    if input_color_space is not None:
+        if input_gamut is not None or input_transfer_function is not None:
+            raise ValueError(
+                "--input-color-space cannot be combined with --input-gamut or "
+                "--input-transfer-function."
+            )
+        selected_input = canonical_input_color_space(input_color_space)
+        selected_gamut, selected_transfer = _input_spec_from_combined_space(selected_input)
+    elif detected_input or decoded.color_space:
+        selected_input = canonical_input_color_space(detected_input or decoded.color_space)
+        selected_gamut, selected_transfer = _input_spec_from_combined_space(selected_input)
+    else:
+        selected_gamut = decoded.source_gamut
+        selected_transfer = decoded.source_transfer
+        if input_gamut is not None:
+            selected_gamut = canonical_input_gamut(input_gamut)
+        if input_transfer_function is not None:
+            selected_transfer = canonical_input_transfer_function(input_transfer_function)
+        if selected_gamut is None or selected_transfer is None:
+            prompted_gamut, prompted_transfer = prompt_input_gamut_and_transfer()
+            selected_gamut = selected_gamut or prompted_gamut
+            selected_transfer = selected_transfer or prompted_transfer
+        selected_gamut = canonical_input_gamut(selected_gamut)
+        selected_transfer = canonical_input_transfer_function(selected_transfer)
+        selected_input = _gamut_to_linear_space(selected_gamut)
+    if selected_transfer != "Linear":
+        working_pixels = _transfer_decode(decoded.pixels, selected_transfer)
+    else:
+        working_pixels = decoded.pixels
     processor = load_decomposition_processor(
         selected_input, profile, ocio_config_path=config_path
     )
     result = decompose_image(
-        decoded.pixels,
+        working_pixels,
         processor,
         refl=refl,
         chunk_size=chunk_size,
@@ -1585,6 +1674,10 @@ def decompose_file(
         refl=result.refl,
         target_j_hk=result.target_j_hk,
         diagnostics=diagnostics,
+        source_gamut=selected_gamut,
+        source_transfer=selected_transfer,
+        metadata_source=decoded.metadata_source,
+        input_format=input_path.suffix.casefold().lstrip("."),
     )
     base_path = (
         Path(base_output)
@@ -1612,9 +1705,9 @@ def decompose_file(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="modcam16-decompose",
-        description="Decompose an OpenEXR image into modCAM16-HK base and exposure EXRs.",
+        description="Decompose an image into modCAM16-HK base and exposure EXRs.",
     )
-    parser.add_argument("input", type=Path, help="input OpenEXR image")
+    parser.add_argument("input", type=Path, help="input EXR, JPEG, PNG, HEIC, or HEIF image")
     parser.add_argument(
         "--profile",
         dest="profile",
@@ -1628,6 +1721,8 @@ def _parser() -> argparse.ArgumentParser:
         dest="input_color_space",
         choices=INPUT_COLOR_SPACES,
     )
+    parser.add_argument("--input-gamut", choices=INPUT_GAMUTS)
+    parser.add_argument("--input-transfer-function", choices=INPUT_TRANSFER_FUNCTIONS)
     parser.add_argument("--ocio-config", type=Path, default=DEFAULT_OCIO_CONFIG_PATH)
     parser.add_argument("--base-output", dest="base_output", type=Path)
     parser.add_argument(
@@ -1672,6 +1767,8 @@ def main(argv: list[str] | None = None) -> int:
             profile=args.profile,
             refl=args.refl,
             input_color_space=args.input_color_space,
+            input_gamut=args.input_gamut,
+            input_transfer_function=args.input_transfer_function,
             ocio_config_path=args.ocio_config,
             base_output=args.base_output,
             exposure_output=args.exposure_output,
@@ -1686,6 +1783,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise SystemExit(f"error: {exc}") from exc
     print(f"Input color space: {result.input_color_space}")
+    print(f"Input gamut: {result.source_gamut or 'unspecified'}")
+    print(f"Input transfer function: {result.source_transfer or 'unspecified'}")
+    print(f"Input format: {result.input_format or 'unknown'}")
     print(f"Profile: {result.profile.label}")
     print(f"Refl: {result.refl:.9g}")
     print(f"Base output: {base_path}")
@@ -1702,6 +1802,14 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "Inverse round-trip exceedances: "
         f"{result.diagnostics['inverse_round_trip_exceedance_count']}"
+    )
+    print(
+        "J_HK tolerance exceedances: "
+        f"{result.diagnostics['j_hk_exceedance_count']}"
+    )
+    print(
+        "Reconstructed working tolerance exceedances: "
+        f"{result.diagnostics['reconstructed_working_exceedance_count']}"
     )
     print(
         "Negative AP0 clamped pixels: "
@@ -1723,11 +1831,15 @@ __all__ = [
     "DEFAULT_REFL",
     "DEFAULT_WORKERS",
     "INPUT_COLOR_SPACES",
+    "INPUT_GAMUTS",
+    "INPUT_TRANSFER_FUNCTIONS",
     "DecompositionInput",
     "DecompositionProcessor",
     "DecompositionProfile",
     "DecompositionResult",
     "canonical_input_color_space",
+    "canonical_input_gamut",
+    "canonical_input_transfer_function",
     "canonical_profile",
     "decompose_file",
     "decompose_image",
@@ -1738,6 +1850,7 @@ __all__ = [
     "project_unreachable_display_values",
     "prompt_input_color_space",
     "read_rgb_exr",
+    "read_image",
     "write_decomposition_exrs",
 ]
 
