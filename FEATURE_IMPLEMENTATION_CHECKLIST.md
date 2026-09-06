@@ -73,8 +73,7 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Keep Refl beside the ACES profile selector, use `0.1` increments, and
       display the value with three decimal places.
 - [x] Mark the WebGPU capability indicator with an asterisk and provide a
-      bottom-of-page footnote explaining that GPU acceleration makes processing
-      much faster.
+      bottom-of-page footnote explaining that WebGPU accelerates processing.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.
