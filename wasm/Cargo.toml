@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["color_core"]
+members = ["color_core", "decomposition"]
 
 [profile.release]
 opt-level = 3

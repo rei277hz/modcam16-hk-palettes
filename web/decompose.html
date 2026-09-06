@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#121417" />
+    <title>Image decomposition | modCAM16-HK</title>
+  </head>
+  <body>
+    <main class="decompose-shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">modCAM16-HK / ACES 2.0</p>
+          <h1>Image decomposition</h1>
+          <p class="lede">Decode an image locally, confirm its colour interpretation, and export ACEScg OpenEXR layers.</p>
+        </div>
+        <a class="text-link" href="./index.html">Open colour picker</a>
+      </header>
+
+      <section class="workspace" aria-label="Image decomposition workspace">
+        <div class="column">
+          <section class="panel" aria-labelledby="input-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">01</p>
+                <h2 id="input-heading">Input image</h2>
+              </div>
+              <button id="reset-button" class="button button-quiet" type="button" disabled>Reset</button>
+            </div>
+            <input id="file-input" type="file" accept=".exr,.jpg,.jpeg,.png,.heic,.heif,image/png,image/jpeg,image/heif,image/heic" hidden />
+            <button id="upload-button" class="upload-button" type="button">
+              <span class="upload-mark" aria-hidden="true">+</span>
+              <span><strong>Choose an image</strong><small>EXR, JPEG, PNG, HEIC, or HEIF</small></span>
+            </button>
+            <div id="file-summary" class="file-summary" aria-live="polite">No image selected.</div>
+            <div id="metadata-summary" class="metadata-summary" hidden></div>
+            <div id="metadata-warning" class="callout callout-warning" role="status" hidden></div>
+          </section>
+
+          <section class="panel" aria-labelledby="interpretation-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">02</p>
+                <h2 id="interpretation-heading">Source interpretation</h2>
+              </div>
+              <span class="required-note">Required</span>
+            </div>
+            <p class="panel-copy">Metadata may be shown as a reference, but nothing is selected on your behalf. Confirm both values before calculation.</p>
+            <div class="form-grid">
+              <label class="field">
+                <span>Gamut / primaries</span>
+                <select id="source-gamut">
+                  <option value="">Select a gamut</option>
+                  <option value="Rec.709 / sRGB">Rec.709 / sRGB</option>
+                  <option value="Display P3 / P3-D65">Display P3 / P3-D65</option>
+                  <option value="Rec.2020">Rec.2020</option>
+                  <option value="Adobe RGB">Adobe RGB</option>
+                  <option value="ACEScg">ACEScg</option>
+                  <option value="ACES2065-1">ACES2065-1</option>
+                </select>
+                <small id="gamut-note" class="field-note">No source gamut selected.</small>
+              </label>
+              <label class="field">
+                <span>Gamma / transfer</span>
+                <select id="source-transfer">
+                  <option value="">Select a transfer</option>
+                  <option value="Linear">Linear</option>
+                  <option value="sRGB">sRGB</option>
+                  <option value="Gamma 1.8">Gamma 1.8</option>
+                  <option value="Gamma 2.2">Gamma 2.2</option>
+                  <option value="Gamma 2.4 / BT.1886">Gamma 2.4 / BT.1886</option>
+                  <option value="BT.709 / BT.2020">BT.709 / BT.2020</option>
+                  <option value="PQ / ST 2084">PQ / ST 2084</option>
+                  <option value="HLG / BT.2100">HLG / BT.2100</option>
+                </select>
+                <small id="transfer-note" class="field-note">No transfer selected.</small>
+              </label>
+            </div>
+            <label class="confirm-line">
+              <input id="confirm-color" type="checkbox" />
+              <span>I confirm that the selected gamut and gamma/transfer describe the uploaded pixels.</span>
+            </label>
+            <p id="interpretation-error" class="validation-message" role="alert" hidden></p>
+          </section>
+
+          <section class="panel" aria-labelledby="options-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">03</p>
+                <h2 id="options-heading">Decomposition options</h2>
+              </div>
+            </div>
+            <div class="form-grid form-grid-options">
+              <label class="field field-wide">
+                <span>ACES profile</span>
+                <select id="aces-profile">
+                  <option value="0">Rec.2020 / ACES 2.0 HDR 1000 nits</option>
+                  <option value="1" selected>Rec.709 / ACES 2.0 SDR 100 nits</option>
+                  <option value="2">P3-D65 / ACES 2.0 HDR 1000 nits</option>
+                  <option value="4">P3-D65 / ACES 2.0 SDR 100 nits</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Refl</span>
+                <input id="refl" type="number" min="0.000001" max="1.2" step="0.001" value="0.5" inputmode="decimal" />
+                <small class="field-note">Reflectance/lightness parameter</small>
+              </label>
+              <label class="field">
+                <span>Gaussian blur sigma</span>
+                <input id="blur-sigma" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal" />
+                <small class="field-note">Pixels; zero disables blur</small>
+              </label>
+            </div>
+            <p id="options-error" class="validation-message" role="alert" hidden></p>
+          </section>
+        </div>
+
+        <div class="column column-results">
+          <section class="panel processing-panel" aria-labelledby="processing-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">04</p>
+                <h2 id="processing-heading">Processing</h2>
+              </div>
+              <span id="worker-badge" class="status-badge">Worker ready</span>
+            </div>
+            <div class="action-row">
+              <button id="calculate-button" class="button button-primary" type="button" disabled>Calculate decomposition</button>
+              <button id="cancel-button" class="button button-danger" type="button" hidden>Cancel</button>
+            </div>
+            <div class="progress-block" aria-live="polite">
+              <div class="progress-label-row"><span id="progress-stage">Waiting for an image</span><output id="progress-percent">0%</output></div>
+              <progress id="progress-bar" max="100" value="0">0%</progress>
+              <div id="progress-counters" class="progress-counters">No pixels processed.</div>
+            </div>
+            <div id="processing-status" class="callout" role="status" hidden></div>
+          </section>
+
+          <section class="panel report-panel" aria-labelledby="report-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">05</p>
+                <h2 id="report-heading">Analytic report</h2>
+              </div>
+            </div>
+            <div id="empty-report" class="empty-state">The report will appear after a completed calculation.</div>
+            <div id="report-content" hidden>
+              <div id="report-summary" class="report-summary"></div>
+              <div id="report-warnings" class="callout callout-warning" hidden></div>
+              <dl id="report-metrics" class="metrics"></dl>
+            </div>
+          </section>
+
+          <section class="panel downloads-panel" aria-labelledby="downloads-heading">
+            <div class="panel-heading">
+              <div>
+                <p class="section-kicker">06</p>
+                <h2 id="downloads-heading">Downloads</h2>
+              </div>
+            </div>
+            <p class="panel-copy">Both files are linear ACEScg/AP1 OpenEXR with fp16 channels and ZIP compression.</p>
+            <div class="download-grid">
+              <button id="download-base" class="download-button" type="button" disabled><span>Base EXR</span><small id="base-size">Waiting for calculation</small></button>
+              <button id="download-exposure" class="download-button" type="button" disabled><span>Exposure EXR</span><small id="exposure-size">Waiting for calculation</small></button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <footer class="page-footer">All decoding, analysis, and encoding run locally in Rust/WASM workers. No upload endpoint is used.</footer>
+    </main>
+    <script type="module" src="./src/decompose.ts"></script>
+  </body>
+</html>

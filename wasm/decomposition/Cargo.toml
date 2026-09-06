@@ -1,0 +1,20 @@
+[package]
+name = "modcam16-decomposition-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+exr = { version = "1.74.2", default-features = false }
+icc-profile = "0.0.6"
+jpeg-decoder = { version = "0.3.2", default-features = false }
+modcam16-color-core = { path = "../color_core" }
+png = "0.18.1"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+half = "2.6"
+js-sys = "0.3"

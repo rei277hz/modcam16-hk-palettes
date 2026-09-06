@@ -35,3 +35,12 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## libheif-js 1.23.2
+
+The static decomposition page bundles `libheif-js` 1.23.2 for browser HEIF and
+HEIC decoding. The package is distributed under the GNU Lesser General Public
+License, version 3 (LGPL-3.0); its source and license are available at
+<https://github.com/catdad-experiments/libheif-js>. The generated bundle is
+used through its documented browser API and remains a separately identifiable
+dependency in the npm lockfile.
