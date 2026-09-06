@@ -54,5 +54,7 @@ failure changes the operation.
 Implementation snapshot (2026-09-07): decomposition now writes scanline EXRs
 and raw preview planes directly to OPFS and returns file descriptors to the
 page. The worker no longer allocates full base, exposure, or EXR result
-buffers. Source preparation still uses one decoder/prepared raster, and JPEG
-encoding reads one spooled preview plane at a time.
+buffers. Preparation now flattens directly into the returned typed array,
+removing one additional full-size Rust allocation. Source preparation still
+uses one decoder/prepared raster, and JPEG encoding reads one spooled preview
+plane at a time.

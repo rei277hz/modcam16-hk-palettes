@@ -1208,6 +1208,33 @@ fn prepared_payload(
     Ok(object.into())
 }
 
+fn prepared_payload_rgb(
+    rgb: Vec<[f32; 3]>,
+    width: usize,
+    height: usize,
+    warnings: Vec<String>,
+) -> Result<JsValue, String> {
+    if rgb.len() != width.saturating_mul(height) {
+        return Err("Prepared RGB dimensions do not match.".into());
+    }
+    let object = Object::new();
+    Reflect::set(&object, &JsValue::from_str("width"), &JsValue::from_f64(width as f64))
+        .map_err(|e| format!("width: {e:?}"))?;
+    Reflect::set(&object, &JsValue::from_str("height"), &JsValue::from_f64(height as f64))
+        .map_err(|e| format!("height: {e:?}"))?;
+    let output = Float32Array::new_with_length((rgb.len() * 3) as u32);
+    for (index, pixel) in rgb.iter().enumerate() {
+        output.set_index((index * 3) as u32, pixel[0]);
+        output.set_index((index * 3 + 1) as u32, pixel[1]);
+        output.set_index((index * 3 + 2) as u32, pixel[2]);
+    }
+    Reflect::set(&object, &JsValue::from_str("pixels"), &output.into())
+        .map_err(|e| format!("pixels: {e:?}"))?;
+    Reflect::set(&object, &JsValue::from_str("warnings"), &serde_wasm_bindgen::to_value(&warnings).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("warnings: {e:?}"))?;
+    Ok(object.into())
+}
+
 fn solve_chunk_payload(data: Vec<f32>, req: &Request) -> Result<JsValue, String> {
     if data.len() % 3 != 0 {
         return Err("Prepared pixel chunk must contain RGB triples.".into());
@@ -1245,7 +1272,7 @@ pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<JsValue, JsValue> {
     let warnings = p.summary.warnings.clone();
     let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref())
         .map_err(|e| JsValue::from_str(&e))?;
-    prepared_payload(flat_pixels(&rgb), width, height, warnings).map_err(|e| JsValue::from_str(&e))
+    prepared_payload_rgb(rgb, width, height, warnings).map_err(|e| JsValue::from_str(&e))
 }
 
 #[wasm_bindgen]
@@ -1264,12 +1291,7 @@ pub fn prepare_pixels(
     let rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
     let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None)
         .map_err(|e| JsValue::from_str(&e))?;
-    prepared_payload(
-        flat_pixels(&rgb),
-        width as usize,
-        height as usize,
-        Vec::new(),
-    )
+    prepared_payload_rgb(rgb, width as usize, height as usize, Vec::new())
     .map_err(|e| JsValue::from_str(&e))
 }
 
@@ -1324,7 +1346,7 @@ pub fn prepare_heic_pixels(
             blur(&mut value, width as usize, height as usize, req.blur_sigma);
             value
         };
-        return prepared_payload(flat_pixels(&prepared), width as usize, height as usize, Vec::new())
+        return prepared_payload_rgb(prepared, width as usize, height as usize, Vec::new())
             .map_err(|e| JsValue::from_str(&e));
     }
     let prepared = prepare_rgb(
@@ -1335,7 +1357,7 @@ pub fn prepare_heic_pixels(
         (!icc_profile.is_empty()).then_some(icc_profile.as_slice()),
     )
     .map_err(|e| JsValue::from_str(&e))?;
-    prepared_payload(flat_pixels(&prepared), width as usize, height as usize, Vec::new())
+    prepared_payload_rgb(prepared, width as usize, height as usize, Vec::new())
         .map_err(|e| JsValue::from_str(&e))
 }
 
