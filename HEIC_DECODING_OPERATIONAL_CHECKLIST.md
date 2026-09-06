@@ -44,9 +44,8 @@
 - [ ] Add low-level adapter tests for `IMG_9536.HEIC`: dimensions, primary
       precision, Display P3 ICC, gain-map URN, gain-map dimensions, and XMP.
 - [ ] Add a 10-bit HEIC fixture test proving values are not reduced to 8-bit.
-- [ ] Add a 12-bit HEIC fixture test. If the shipped bundle cannot decode it,
-      rebuild the pinned bundle with a high-bit-depth libde265 configuration
-      before enabling 12-bit acceptance.
+- [x] Add a 12-bit HEIC fixture test using the libheif-rs `test_nclx.heif`
+      fixture; the shipped bundle reports 12-bit native RGB successfully.
 - [ ] Differentially compare host decoding with `libheif-rs` and Apple
       gain-map reconstruction with the established reference implementation.
 - [ ] Test ICC-only input, explicit override, absent/malformed gain-map
@@ -65,3 +64,5 @@
   Exif extraction, Apple gain-map reconstruction, and the Rust/WASM bridge.
   `cargo test -p modcam16-decomposition-wasm`, `npx tsc --noEmit`, and
   `npx vite build` pass.
+- 2026-09-07: Verified the bundled decoder against a real 12-bit HEIF fixture;
+  native RGB decoding reports 12 bits and preserves the 16-bit sample path.
