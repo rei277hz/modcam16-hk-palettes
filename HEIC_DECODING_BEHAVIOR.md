@@ -28,6 +28,12 @@ Recognized nclx values are used when no ICC is available. If neither an
 override nor usable embedded color information exists, the page requires both
 source controls and reports the reason.
 
+For HEIF containers that carry an ISO-BMFF `nclx` color profile instead of an
+ICC profile, the worker reads the CICP primaries and transfer identifiers and
+preselects the corresponding source controls. Those values are used
+automatically during decomposition; the user may still activate the override
+controls and choose a different pair.
+
 An unsupported or malformed high-bit-depth stream is an explicit decoding
 error. The worker never silently converts a 10/12-bit source through an 8-bit
 display buffer. Files without a gain map continue through the ordinary native

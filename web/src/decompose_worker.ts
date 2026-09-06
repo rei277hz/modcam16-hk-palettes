@@ -219,6 +219,19 @@ function textHasGainMap(bytes: Uint8Array): boolean {
   return text.includes("urn:com:apple:photo:2020:aux:hdrgainmap") || text.includes("HDRGainMap");
 }
 
+/** Read the ISO-BMFF colr/nclx CICP pair when no ICC profile is embedded. */
+function parseNclx(bytes: Uint8Array): { gamut: string; transfer: string } | undefined {
+  for (let i = 0; i + 11 < bytes.length; i++) {
+    if (bytes[i] !== 0x6e || bytes[i + 1] !== 0x63 || bytes[i + 2] !== 0x6c || bytes[i + 3] !== 0x78) continue;
+    const primaries = (bytes[i + 4] << 8) | bytes[i + 5];
+    const transfer = (bytes[i + 6] << 8) | bytes[i + 7];
+    const gamut = primaries === 1 ? "Rec.709 / sRGB" : primaries === 9 ? "Rec.2020" : primaries === 12 ? "Display P3 / P3-D65" : undefined;
+    const tr = transfer === 13 ? "sRGB" : transfer === 16 ? "PQ / ST 2084" : transfer === 18 ? "HLG / BT.2100" : transfer === 1 || transfer === 14 || transfer === 15 ? "BT.709 / BT.2020" : transfer === 8 ? "Linear" : undefined;
+    if (gamut && tr) return { gamut, transfer: tr };
+  }
+  return undefined;
+}
+
 function nativeRgb16(image: any): { width: number; height: number; pixels: Float32Array; bitDepth: number } {
   const module = (libheif as any);
   const decoded = module.heif_js_decode_image2(image, module.heif_colorspace_RGB, module.heif_chroma_interleaved_RRGGBB_LE);
@@ -296,7 +309,7 @@ function extractExif(module: any, primary: any): Uint8Array {
   return new Uint8Array();
 }
 
-async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: number; height: number; pixels: Float32Array; icc: Uint8Array; gain?: { pixels: Float32Array; width: number; height: number }; exif: Uint8Array; warnings: string[] }> {
+async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: number; height: number; pixels: Float32Array; icc: Uint8Array; gamut?: string; transfer?: string; gain?: { pixels: Float32Array; width: number; height: number }; exif: Uint8Array; warnings: string[] }> {
   postProgress(id, "Decode HEIF/HEIC", 12);
   const module = libheif as any;
   const decoder = new module.HeifDecoder();
@@ -320,10 +333,10 @@ async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: numbe
   }
   const exif = extractExif(module, image);
   const gain = textHasGainMap(bytes) ? nativeAuxiliary(module, decoder.decoder, image) : undefined;
-  const warnings: string[] = [`libheif-js native RGB decode preserved ${native.bitDepth}-bit samples in 16-bit storage.`];
+  const nclx = parseNclx(bytes);
+  const warnings: string[] = [];
   if (textHasGainMap(bytes) && !gain) warnings.push("Apple HDR gain-map metadata was detected, but its auxiliary image could not be decoded.");
-  if (gain) warnings.push("Apple HDR gain-map auxiliary decoded and will be reconstructed before ACES conversion.");
-  return { width, height, pixels: native.pixels, icc, gain, exif, warnings };
+  return { width, height, pixels: native.pixels, icc, gamut: nclx?.gamut, transfer: nclx?.transfer, gain, exif, warnings };
 }
 
 async function handle(message: JobMessage): Promise<void> {
@@ -336,7 +349,7 @@ async function handle(message: JobMessage): Promise<void> {
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
         const decoded = await decodeHeif(bytes, id);
-        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: null, transfer: null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : "libheif-js nclx metadata", automatic_icc: decoded.icc.length > 0, warnings: decoded.warnings } });
+        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: decoded.gamut ?? null, transfer: decoded.transfer ?? null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : decoded.gamut ? "HEIF nclx metadata" : null, automatic_icc: decoded.icc.length > 0 || Boolean(decoded.gamut && decoded.transfer), warnings: decoded.warnings } });
       } else {
         const summary = inspect(bytes, format);
         scope.postMessage({ kind: "inspect-result", id, summary });
@@ -352,7 +365,12 @@ async function handle(message: JobMessage): Promise<void> {
       const decoded = await decodeHeif(bytes, id);
       if (cancelled.has(id)) return;
       const gain = decoded.gain;
-      prepared = prepare_heic_pixels(decoded.pixels, decoded.width, decoded.height, message.request, decoded.icc, gain?.pixels ?? new Float32Array(), gain?.width ?? 0, gain?.height ?? 0, decoded.exif);
+      const effectiveRequest = { ...message.request };
+      if (!effectiveRequest.gamut && !effectiveRequest.transfer && !decoded.icc.length && decoded.gamut && decoded.transfer) {
+        effectiveRequest.gamut = decoded.gamut;
+        effectiveRequest.transfer = decoded.transfer;
+      }
+      prepared = prepare_heic_pixels(decoded.pixels, decoded.width, decoded.height, effectiveRequest, decoded.icc, gain?.pixels ?? new Float32Array(), gain?.width ?? 0, gain?.height ?? 0, decoded.exif);
       warnings = decoded.warnings;
     } else {
       prepared = prepare(bytes, message.request);

@@ -8,7 +8,7 @@ Branch: `feat/web-image-decomposition-p3-preview`
       transfers, Apple gain maps, ACES2065-1 working space, and tolerance
       reporting in `IMAGE_DECOMPOSITION.md`.
 - [x] Document the static web UI contract, PNG-to-JPEG retry, ICC-backed
-      decoding without an exact gamut/gamma pair, five outputs, inline preview
+      decoding without an exact gamut/gamma pair, three EXR outputs, inline preview
       images, and the exact ACES 2.0 P3-D65 preview transform in
       `IMAGE_DECOMPOSITION.md`.
 - [x] Create this implementation checklist before code changes.
@@ -44,7 +44,7 @@ Branch: `feat/web-image-decomposition-p3-preview`
       keep all decoding, computation, and downloads local to the browser.
 - [x] Provide load, metadata review, manual gamut/transfer confirmation, ACES
       profile, Refl (with blur fixed at zero), decompose/cancel, report, and
-      five output controls.
+      three EXR output controls.
 - [x] Retry JPEG decoding when a `.png` upload has an invalid PNG signature or
       parser failure, and report the final decoder error only after both paths.
 - [x] Use a parseable embedded ICC profile directly for decoding when no exact
@@ -62,9 +62,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Show both preview JPEGs inline next to their download buttons.
 - [x] Use a single no-card, no-page-scroll viewport layout with upload first,
       interpretation/options, progress, previews, and EXR controls.
-- [x] Make previews clickable and open a full-screen overlay with the matching
-      save action; use the mobile file share sheet when available and download
-      as a fallback.
+- [x] Make previews clickable and open a full-screen image-only overlay; users
+      can long-press or context-click the image to save it, and clicking
+      outside the image closes the overlay.
 - [x] Keep preview thumbnails compact with explicit viewport-relative width and
       height bounds, and simplify the controls to detected dropdown defaults,
       a WebGPU availability indicator, and a `Decompose` action.
@@ -117,8 +117,22 @@ Branch: `feat/web-image-decomposition-p3-preview`
       CPU ACES 2.0 implementation and measure tolerance against those CPU
       values.
 - [ ] Add browser smoke coverage proving that GPU-produced preview pixels and
-      CPU JPEG encoding yield the same five downloadable artifacts and inline
+      CPU JPEG encoding yield the same three EXR artifacts and inline
       previews as the CPU fallback within the documented tolerance.
+
+## Current UI/output behavior
+
+- [x] Primaries choices for sRGB (Rec.709) and Display P3 (P3-D65) preselect
+      the sRGB transfer while allowing an explicit user change.
+- [x] Present ICC and decoding errors with the action first: “Select gamut and
+      transfer manually: …”. Successful HEIC precision and gain-map decoding
+      remains silent unless an operational warning is needed.
+- [x] Keep preview thumbnails within their frames and show enlarged previews
+      without forced letterbox bars; clicking outside the image closes them.
+- [x] Provide three EXR downloads: Base EXR and default Exposure EXR as
+      ACEScg/AP1 RGB fp16, plus Exposure EXR (normalized EV) as single-channel
+      fp16. The normalized form is remapped/clipped to [0,1] for Substance 3D
+      Painter material-picking workflows.
 
 ## Real-file validation
 
@@ -139,4 +153,7 @@ exceedances while continuing to completion, as required.
   matrix with WGSL column-major layout, shares the OCIO-derived parameter blob,
   and is checked against the f64 CPU forward implementation on Mesa lavapipe.
 - 2026-09-07: Added the direct-scalar exposure RGB ACEScg fp16 EXR as a fifth
-  output, with an explicit `exposure_rgb_exr` payload key and download control.
+      output, with an explicit `exposure_rgb_exr` payload key and download control.
+- 2026-09-07: Refined the compact preview/download UI, removed non-actionable
+      HEIC success notices, and clamped native samples at the ICC device
+      boundary to avoid normalized-domain failures from decoder edge rounding.

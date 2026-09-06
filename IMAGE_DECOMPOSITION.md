@@ -206,13 +206,13 @@ diagnostics, output encoding, and completion as monotonic progress stages with
 pixel and diagnostic counters. The worker yields between solve chunks so a
 large image never remains indefinitely at “preparing pixels”.
 
-The result contains an analytic report and five downloads. The base OpenEXR is
+The result contains an analytic report and three EXR downloads. The base OpenEXR is
 linear ACEScg/AP1 RGB stored as fp16; the normalized exposure OpenEXR is the
 single fp16 `exposure` channel defined above. An additional exposure RGB
 OpenEXR stores the direct, non-log scalar in all three linear ACEScg channels:
 `E = (s, s, s)` where `s = 2^(exposure * 20 - 10)`. It is fp16 and carries the
-same ACEScg/AP1 metadata as the base file. The two preview downloads are JPEGs with
-sRGB encoded P3-D65 primaries:
+same ACEScg/AP1 metadata as the base file. The two inline preview images are
+JPEGs with sRGB encoded P3-D65 primaries:
 
 * The base preview converts the reconstructed linear ACES2065-1 base pixels
   through the exact ACES 2.0 `SDR-100nit-P3-D65_2.0` forward transform and
@@ -232,7 +232,10 @@ arithmetic uses portable `f32`; the exact CPU ACES implementation remains the
 reference and a failed numerical validation selects the CPU preview path.
 
 The page shows both preview JPEGs inline as compact viewport-bounded thumbnails;
-their save controls appear in the full-screen preview overlay. The report records the source interpretation, selected decomposition options,
+clicking a thumbnail opens a full-screen image-only overlay titled “Base preview
+(Display P3)” or “Exposure preview (Display P3)”. Clicking outside the image
+closes the overlay; the image can be long-pressed or context-clicked to save.
+The report records the source interpretation, selected decomposition options,
 compute backend, preview transform name/version, output sizes, warnings, and
 all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
 are revoked when a new job starts or a file is replaced.
@@ -241,10 +244,11 @@ The web layout is a single viewport workspace without visible title treatment,
 vertical page scrolling, or card containers. Upload is the first control at the
 top, followed by source interpretation and decomposition options, progress,
 then the two preview images and EXR download controls. Preview images are
-buttons: selecting one opens a full-screen overlay with its larger image and a
-matching save action. On mobile browsers that implement `navigator.share` for
-files, the save action opens the native share sheet so the user can save the
-JPEG to Photos/Gallery; unsupported browsers use a normal file download.
+buttons: selecting one opens a full-screen overlay with its larger image.
+The default Exposure EXR stores direct scalar exposure replicated across ACEScg
+RGB. The normalized EV Exposure EXR stores `log2(s)` remapped and clipped to
+`[0,1]`, which is useful for painting in Substance 3D Painter because its
+material picker is limited to that range.
 
 The preview implementation now has a dedicated WebGPU compute pass. It reuses
 the validated ACES parameter buffer and fixed-function shader from the solve

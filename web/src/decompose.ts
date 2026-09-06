@@ -81,8 +81,6 @@ const reportMetrics = $("#report-metrics");
 const downloadBase = $("#download-base") as HTMLButtonElement;
 const downloadExposure = $("#download-exposure") as HTMLButtonElement;
 const downloadExposureRgb = $("#download-exposure-rgb") as HTMLButtonElement;
-const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
-const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
 const basePreviewTrigger = $("#base-preview-trigger") as HTMLButtonElement;
 const exposurePreviewTrigger = $("#exposure-preview-trigger") as HTMLButtonElement;
 const previewOverlay = $("#preview-overlay") as HTMLDivElement;
@@ -94,8 +92,6 @@ const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
 const exposureRgbSize = $("#exposure-rgb-size");
-const basePreviewSize = $("#base-preview-size");
-const exposurePreviewSize = $("#exposure-preview-size");
 
 let worker = createWorker();
 let selectedFile: File | undefined;
@@ -175,9 +171,7 @@ function openPreview(kind: "base" | "exposure"): void {
   if (!url) return;
   previewOverlayImage.src = url;
   previewOverlayImage.alt = kind === "base" ? "Enlarged base preview JPEG" : "Enlarged exposure preview JPEG";
-  previewOverlayLabel.textContent = kind === "base" ? "Base preview · P3-D65 / sRGB" : "Exposure preview · P3-D65 / sRGB";
-  downloadBasePreview.hidden = kind !== "base";
-  downloadExposurePreview.hidden = kind !== "exposure";
+  previewOverlayLabel.textContent = kind === "base" ? "Base preview (Display P3)" : "Exposure preview (Display P3)";
   previewOverlay.hidden = false;
   document.body.classList.add("preview-open");
   closePreviewButton.focus();
@@ -246,8 +240,6 @@ function resetResults(): void {
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
   downloadExposureRgb.disabled = true;
-  downloadBasePreview.disabled = true;
-  downloadExposurePreview.disabled = true;
   basePreviewTrigger.disabled = true;
   exposurePreviewTrigger.disabled = true;
   closePreview();
@@ -255,8 +247,6 @@ function resetResults(): void {
   clearPreview(exposurePreviewImage);
   baseSize.textContent = "Waiting for calculation";
   exposureSize.textContent = "Waiting for calculation";
-  basePreviewSize.textContent = "Waiting for calculation";
-  exposurePreviewSize.textContent = "Waiting for calculation";
   emptyReport.hidden = false;
   reportContent.hidden = true;
 }
@@ -353,15 +343,11 @@ function onWorkerMessage(message: WorkerMessage): void {
   downloadBase.disabled = false;
   downloadExposure.disabled = false;
   downloadExposureRgb.disabled = false;
-  downloadBasePreview.disabled = false;
-  downloadExposurePreview.disabled = false;
   basePreviewTrigger.disabled = false;
   exposurePreviewTrigger.disabled = false;
   baseSize.textContent = formatBytes(baseBytes.byteLength);
   exposureSize.textContent = formatBytes(exposureBytes.byteLength);
   exposureRgbSize.textContent = formatBytes(exposureRgbBytes.byteLength);
-  basePreviewSize.textContent = formatBytes(basePreviewBytes.byteLength);
-  exposurePreviewSize.textContent = formatBytes(exposurePreviewBytes.byteLength);
   setBusy(false);
   showStatus("Calculation complete. Outputs are ready.");
 }
@@ -392,8 +378,8 @@ function renderReport(report: Report): void {
     ["Preview encoding", report.preview_encoding],
     ["Preview backend", `${report.preview_backend} (${report.preview_transform_ms.toFixed(1)} ms)`],
     ["Base output", "Linear ACEScg/AP1 RGB, fp16"],
-    ["Exposure output", "Normalized fp16 exposure channel"],
-    ["Exposure RGB output", "Direct scalar s replicated to linear ACEScg RGB, fp16"],
+    ["Exposure output", "Direct scalar s replicated to linear ACEScg RGB, fp16"],
+    ["Exposure normalized output", "Single-channel fp16 EV value remapped to [0, 1]"],
     ["Base preview", "Display P3 JPEG, sRGB transfer"],
     ["Exposure preview", "Display P3 JPEG, sRGB transfer"],
   ];
@@ -451,7 +437,7 @@ async function calculate(): Promise<void> {
     return;
   }
   if (!manualOverride && !automaticIccAvailable) {
-    interpretationError.textContent = "This file does not provide a usable embedded ICC profile. Select both source values.";
+    interpretationError.textContent = "Select gamut and transfer manually: this file has no usable embedded ICC profile.";
     interpretationError.hidden = false;
     return;
   }
@@ -505,40 +491,34 @@ function download(url: string | undefined, suffix: string, extension: string): v
   link.click();
 }
 
-async function savePreview(kind: "base" | "exposure"): Promise<void> {
-  const bytes = kind === "base" ? basePreviewBytes : exposurePreviewBytes;
-  const url = kind === "base" ? basePreviewUrl : exposurePreviewUrl;
-  const suffix = kind === "base" ? "base-preview-p3d65-srgb" : "exposure-preview-p3d65-srgb";
-  if (!bytes || !selectedFile) return;
-  const file = new File([new Blob([bytes.buffer as ArrayBuffer], { type: "image/jpeg" })], `${selectedFile.name.replace(/\.[^.]+$/, "")}-${suffix}.jpg`, { type: "image/jpeg" });
-  const sharing = navigator as Navigator & { share?: (data: { files: File[]; title?: string }) => Promise<void>; canShare?: (data: { files: File[] }) => boolean };
-  if (sharing.share && (!sharing.canShare || sharing.canShare({ files: [file] }))) {
-    try {
-      await sharing.share({ files: [file], title: kind === "base" ? "Base preview JPEG" : "Exposure preview JPEG" });
-      return;
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-    }
-  }
-  download(url, suffix, "jpg");
-}
-
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
 calculateButton.addEventListener("click", () => { if (activeJob !== undefined) cancel(); else void calculate(); });
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
-downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-acescg-fp16", "exr"));
-downloadBasePreview.addEventListener("click", () => void savePreview("base"));
-downloadExposurePreview.addEventListener("click", () => void savePreview("exposure"));
+downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-normalized-ev", "exr"));
+downloadExposureRgb.addEventListener("click", () => download(exposureRgbUrl, "exposure-acescg-fp16", "exr"));
 basePreviewTrigger.addEventListener("click", () => openPreview("base"));
 exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
 closePreviewButton.addEventListener("click", closePreview);
 previewOverlay.querySelector("[data-close-preview]")?.addEventListener("click", closePreview);
+previewOverlay.addEventListener("click", (event) => {
+  const target = event.target as Node;
+  if (target === previewOverlay || target === previewOverlayImage || (target instanceof HTMLElement && target.closest("#close-preview"))) return;
+  // Keep the enlarged view dismissible from any backdrop or empty panel area.
+  if (!(target instanceof HTMLButtonElement)) closePreview();
+});
 window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !previewOverlay.hidden) closePreview(); });
 for (const control of [gamutSelect, transferSelect, profileSelect, reflInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
 }
+gamutSelect.addEventListener("change", () => {
+  if (gamutSelect.value === "Rec.709 / sRGB" || gamutSelect.value === "Display P3 / P3-D65") {
+    transferSelect.value = "sRGB";
+  }
+  interpretationError.hidden = true;
+  updateCalculateState();
+});
 reflInput.addEventListener("change", normalizeReflDisplay);
 reflInput.addEventListener("blur", normalizeReflDisplay);
 overrideSource.addEventListener("click", () => {

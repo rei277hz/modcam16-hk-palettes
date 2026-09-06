@@ -18,6 +18,8 @@
 - [x] Decode primary RGB/RGBA through `heif_js_decode_image2` using a 16-bit
       interleaved layout and normalize samples from the reported bit depth.
 - [x] Extract ICC profile data from the image handle.
+- [x] Read supported ISO-BMFF `nclx` CICP primaries and transfer identifiers
+      when no ICC profile is present, and use them for automatic interpretation.
 - [x] Enumerate auxiliary image IDs and decode the Apple gain-map auxiliary.
 - [x] Read and validate each auxiliary image's exact URN before selecting the
       Apple gain-map auxiliary.
@@ -48,6 +50,8 @@
       fixture; the shipped bundle reports 12-bit native RGB successfully.
 - [ ] Differentially compare host decoding with `libheif-rs` and Apple
       gain-map reconstruction with the established reference implementation.
+- [ ] Validate nclx-only HEIC samples (including `IMG_9487.HEIC`) complete
+      without requiring a manual source pair.
 - [ ] Test ICC-only input, explicit override, absent/malformed gain-map
       metadata, lower-resolution gain maps, cancellation, and resource limits.
 - [ ] Run Rust host tests, WASM builds, TypeScript checks, and a browser worker

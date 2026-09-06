@@ -213,8 +213,16 @@ fn icc_rgb_to_ap0(rgb: &[[f32; 3]], icc: &[u8]) -> Result<Vec<[f32; 3]>, String>
     let flat = flat_pixels(rgb);
     let mut xyz = vec![0.0_f32; flat.len()];
     for (src, dst) in flat.chunks_exact(3).zip(xyz.chunks_exact_mut(3)) {
+        // ICC device transforms accept normalized device samples only. Native
+        // decoders can produce tiny over/under-shoots at the numeric edge;
+        // clamp those representational errors before entering the profile.
+        let normalized = [
+            src[0].clamp(0.0, 1.0),
+            src[1].clamp(0.0, 1.0),
+            src[2].clamp(0.0, 1.0),
+        ];
         transform
-            .transform_f32(src, dst)
+            .transform_f32(&normalized, dst)
             .map_err(|e| e.to_string())?;
     }
     let mut ap0 = Vec::with_capacity(rgb.len());
@@ -255,7 +263,7 @@ fn prepare_rgb(
         rgb = decode_icc_profile_to_ap0(rgb, icc)?;
     } else {
         return Err(
-            "This image does not provide a usable embedded ICC profile; select a gamut and transfer manually.".into(),
+            "Select gamut and transfer manually: this image has no usable embedded ICC profile.".into(),
         );
     }
     blur(&mut rgb, width, height, req.blur_sigma);
@@ -496,11 +504,11 @@ fn parse_png_inner(data: &[u8]) -> Result<Pixels, String> {
             warnings: if automatic_icc {
                 Vec::new()
             } else if info.icc_profile.is_some() {
-                vec!["Embedded ICC profile is malformed or unsupported; select gamut and transfer manually.".into()]
+                vec!["Select gamut and transfer manually: the embedded ICC profile is malformed or unsupported.".into()]
             } else if cicp.is_some() {
-                vec!["PNG exposes cICP metadata but no usable ICC profile; select gamut and transfer manually.".into()]
+                vec!["Select gamut and transfer manually: the PNG has cICP metadata but no usable embedded ICC profile.".into()]
             } else {
-                vec!["PNG does not expose a usable embedded ICC profile; select gamut and transfer manually.".into()]
+                vec!["Select gamut and transfer manually: the PNG has no usable embedded ICC profile.".into()]
             },
         },
     })
@@ -555,7 +563,7 @@ fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
         Vec::new()
     } else if icc.is_some() {
         vec![
-            "Embedded ICC profile is malformed or unsupported; select gamut and transfer manually."
+            "Select gamut and transfer manually: the embedded ICC profile is malformed or unsupported."
                 .into(),
         ]
     } else {
@@ -648,7 +656,7 @@ fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
             metadata_source: detected_gamut.as_ref().map(|_| "EXR chromaticities".into()),
             automatic_icc: false,
             warnings: if detected_gamut.is_none() {
-                vec!["EXR chromaticities are missing or unsupported; select gamut and transfer manually.".into()]
+                vec!["Select gamut and transfer manually: EXR chromaticities are missing or unsupported.".into()]
             } else {
                 Vec::new()
             },
