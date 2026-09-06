@@ -547,7 +547,14 @@ def _png_metadata(path: str | Path, info: Mapping[str, Any]) -> tuple[str, str, 
         if chunk_type == b"cICP" and len(payload) >= 4:
             primaries, transfer = payload[0], payload[1]
             gamut = {1: "Rec.709 / sRGB", 9: "Rec.2020", 12: "Display P3 / P3-D65"}.get(primaries)
-            transfer_name = {1: "BT.709 / BT.2020", 13: "sRGB", 16: "PQ / ST 2084", 18: "HLG / BT.2100"}.get(transfer)
+            transfer_name = {
+                1: "BT.709 / BT.2020",
+                13: "sRGB",
+                14: "BT.709 / BT.2020",
+                15: "BT.709 / BT.2020",
+                16: "PQ / ST 2084",
+                18: "HLG / BT.2100",
+            }.get(transfer)
             if gamut and transfer_name:
                 return gamut, transfer_name, "PNG cICP"
         if chunk_type == b"sRGB":
@@ -687,7 +694,14 @@ def _read_heif_image(path: str | Path) -> DecompositionInput:
             detected = None
     else:
         gamut = {1: "Rec.709 / sRGB", 9: "Rec.2020", 12: "Display P3 / P3-D65"}.get(profile.get("color_primaries"))
-        transfer = {1: "BT.709 / BT.2020", 13: "sRGB", 16: "PQ / ST 2084", 18: "HLG / BT.2100"}.get(profile.get("transfer_characteristics"))
+        transfer = {
+            1: "BT.709 / BT.2020",
+            13: "sRGB",
+            14: "BT.709 / BT.2020",
+            15: "BT.709 / BT.2020",
+            16: "PQ / ST 2084",
+            18: "HLG / BT.2100",
+        }.get(profile.get("transfer_characteristics"))
         detected = (gamut, transfer) if gamut and transfer else None
     return DecompositionInput(
         pixels=pixels,

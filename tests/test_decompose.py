@@ -83,6 +83,33 @@ def test_png_without_metadata_requires_explicit_source_selection(tmp_path):
     assert decoded.pixels.dtype == np.float32
 
 
+def test_jpeg_decodes_rgb_without_guessing_missing_metadata(tmp_path):
+    from PIL import Image
+
+    path = tmp_path / "untagged.jpg"
+    Image.fromarray(np.array([[[128, 64, 32]]], dtype=np.uint8), mode="RGB").save(path)
+    decoded = read_image(path)
+    assert decoded.pixels.shape == (1, 1, 3)
+    assert decoded.source_gamut is None
+    assert decoded.source_transfer is None
+
+
+def test_heif_nclx_metadata_is_decoded_when_available(tmp_path):
+    pillow_heif = pytest.importorskip("pillow_heif")
+    path = tmp_path / "tagged.heif"
+    image = pillow_heif.from_bytes(
+        "RGB",
+        (1, 1),
+        np.array([[[128, 64, 32]]], dtype=np.uint8).tobytes(),
+        save_nclx_profile=True,
+    )
+    image.save(path)
+    decoded = read_image(path)
+    assert decoded.source_gamut == "Rec.709 / sRGB"
+    assert decoded.source_transfer == "sRGB"
+    assert decoded.metadata_source == "HEIF metadata"
+
+
 def test_common_transfer_functions_decode_to_linear_values():
     encoded = np.array([[[0.5, 0.5, 0.5]]], dtype=np.float32)
     assert _transfer_decode(encoded, "sRGB")[0, 0, 0] == pytest.approx(0.21404114, abs=1e-6)
