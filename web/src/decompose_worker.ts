@@ -3,8 +3,8 @@ import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
   format: string;
-  gamut: string;
-  transfer: string;
+  gamut?: string | null;
+  transfer?: string | null;
   profile: number;
   refl: number;
   blur_sigma: number;
@@ -48,6 +48,13 @@ type SolveStats = {
 
 type GpuProbe = { available: boolean; adapter_name?: string; max_batch_pixels?: number };
 type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number };
+type EncodedOutputs = {
+  report: any;
+  base_exr: Uint8Array | ArrayBuffer;
+  exposure_exr: Uint8Array | ArrayBuffer;
+  base_preview_jpeg: Uint8Array | ArrayBuffer;
+  exposure_preview_jpeg: Uint8Array | ArrayBuffer;
+};
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
@@ -244,7 +251,7 @@ async function handle(message: JobMessage): Promise<void> {
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
         const decoded = await decodeHeif(bytes, id);
-        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: null, transfer: null, metadata_source: "libheif-js", warnings: decoded.warnings } });
+        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: null, transfer: null, metadata_source: "libheif-js", automatic_icc: false, warnings: decoded.warnings } });
       } else {
         const summary = inspect(bytes, format);
         scope.postMessage({ kind: "inspect-result", id, summary });
@@ -354,14 +361,16 @@ async function handle(message: JobMessage): Promise<void> {
     const result = encode_outputs(base, exposure, width, height, message.request, stats, warnings);
     const baseBytes = result.base_exr instanceof Uint8Array ? result.base_exr : new Uint8Array(result.base_exr);
     const exposureBytes = result.exposure_exr instanceof Uint8Array ? result.exposure_exr : new Uint8Array(result.exposure_exr);
+    const basePreviewBytes = result.base_preview_jpeg instanceof Uint8Array ? result.base_preview_jpeg : new Uint8Array(result.base_preview_jpeg);
+    const exposurePreviewBytes = result.exposure_preview_jpeg instanceof Uint8Array ? result.exposure_preview_jpeg : new Uint8Array(result.exposure_preview_jpeg);
     postProgress(id, "Complete", 100, {
       processed: totalPixels,
       projected: result.report?.projected_pixels,
       clipped: result.report?.clipped_pixels,
       non_finite: result.report?.non_finite_pixels,
-      encoded_bytes: baseBytes.byteLength + exposureBytes.byteLength,
+      encoded_bytes: baseBytes.byteLength + exposureBytes.byteLength + basePreviewBytes.byteLength + exposurePreviewBytes.byteLength,
     });
-    scope.postMessage({ kind: "result", id, report: result.report, base_exr: baseBytes, exposure_exr: exposureBytes }, [baseBytes.buffer, exposureBytes.buffer]);
+    scope.postMessage({ kind: "result", id, report: result.report, base_exr: baseBytes, exposure_exr: exposureBytes, base_preview_jpeg: basePreviewBytes, exposure_preview_jpeg: exposurePreviewBytes }, [baseBytes.buffer, exposureBytes.buffer, basePreviewBytes.buffer, exposurePreviewBytes.buffer]);
   } catch (error) {
     if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, message: formatError(error) });
   }

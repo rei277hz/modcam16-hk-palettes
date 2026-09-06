@@ -82,6 +82,10 @@ progress::-moz-progress-bar { background: #8bd5c2; }
 .metrics div { min-width: 0; border-top: 1px solid #2b3038; padding-top: 9px; }
 .metrics dt { color: #7e8993; font-size: 11px; }
 .metrics dd { margin: 4px 0 0; color: #edf0f2; font-size: 13px; overflow-wrap: anywhere; }
+.preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; margin-bottom: 11px; }
+.preview-card { margin: 0; border: 1px solid #2b3038; background: #111419; padding: 10px; }
+.preview-image { display: block; width: 100%; aspect-ratio: 1.5; object-fit: contain; background: #000; border: 1px solid #20252c; }
+.preview-card figcaption { margin-top: 8px; color: #8f9aa2; font-size: 11px; line-height: 1.35; }
 .download-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
 .download-button { min-height: 78px; padding: 13px; text-align: left; }
 .download-button span, .download-button small { display: block; }
@@ -100,7 +104,7 @@ progress::-moz-progress-bar { background: #8bd5c2; }
 
 @media (max-width: 480px) {
   .decompose-shell { width: min(100% - 18px, 620px); }
-  .form-grid, .form-grid-options, .download-grid, .metrics { grid-template-columns: 1fr; }
+  .form-grid, .form-grid-options, .preview-grid, .download-grid, .metrics { grid-template-columns: 1fr; }
   .field-wide { grid-column: auto; }
   .action-row > * { flex: 1 1 100%; }
 }

@@ -7,10 +7,11 @@ type SourceSummary = {
   gamut?: string | null;
   transfer?: string | null;
   metadata_source?: string | null;
+  automatic_icc?: boolean;
   warnings?: string[];
 };
 
-type Request = { format: string; gamut: string; transfer: string; profile: number; refl: number; blur_sigma: number };
+type Request = { format: string; gamut?: string | null; transfer?: string | null; profile: number; refl: number; blur_sigma: number };
 type Report = {
   width: number;
   height: number;
@@ -39,7 +40,7 @@ type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: n
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
-  | { kind: "result"; id: number; report: Report; base_exr: Uint8Array; exposure_exr: Uint8Array }
+  | { kind: "result"; id: number; report: Report; base_exr: Uint8Array; exposure_exr: Uint8Array; base_preview_jpeg: Uint8Array; exposure_preview_jpeg: Uint8Array }
   | { kind: "error"; id: number; message: string }
   | { kind: "cancelled"; id: number };
 
@@ -80,8 +81,14 @@ const reportWarnings = $("#report-warnings");
 const reportMetrics = $("#report-metrics");
 const downloadBase = $("#download-base") as HTMLButtonElement;
 const downloadExposure = $("#download-exposure") as HTMLButtonElement;
+const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
+const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
+const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
+const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
+const basePreviewSize = $("#base-preview-size");
+const exposurePreviewSize = $("#exposure-preview-size");
 
 let worker = createWorker();
 let selectedFile: File | undefined;
@@ -89,10 +96,15 @@ let selectedFormat = "";
 let inspectionId = 0;
 let jobId = 0;
 let activeJob: number | undefined;
+let automaticIccAvailable = false;
 let baseBytes: Uint8Array | undefined;
 let exposureBytes: Uint8Array | undefined;
+let basePreviewBytes: Uint8Array | undefined;
+let exposurePreviewBytes: Uint8Array | undefined;
 let baseUrl: string | undefined;
 let exposureUrl: string | undefined;
+let basePreviewUrl: string | undefined;
+let exposurePreviewUrl: string | undefined;
 
 function createWorker(): Worker {
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
@@ -128,8 +140,26 @@ function detectFormat(file: File): string | undefined {
 function revokeUrls(): void {
   if (baseUrl) URL.revokeObjectURL(baseUrl);
   if (exposureUrl) URL.revokeObjectURL(exposureUrl);
+  if (basePreviewUrl) URL.revokeObjectURL(basePreviewUrl);
+  if (exposurePreviewUrl) URL.revokeObjectURL(exposurePreviewUrl);
   baseUrl = undefined;
   exposureUrl = undefined;
+  basePreviewUrl = undefined;
+  exposurePreviewUrl = undefined;
+}
+
+function clearPreview(image: HTMLImageElement): void {
+  image.src = "";
+  image.hidden = true;
+}
+
+function showPreview(image: HTMLImageElement, url: string | undefined): void {
+  if (!url) {
+    clearPreview(image);
+    return;
+  }
+  image.src = url;
+  image.hidden = false;
 }
 
 function showStatus(message: string, error = false): void {
@@ -155,7 +185,14 @@ function setBusy(busy: boolean): void {
 }
 
 function canCalculate(): boolean {
-  return Boolean(selectedFile && selectedFormat && gamutSelect.value && transferSelect.value && confirmColor.checked && validOptions());
+  const manualOverride = Boolean(gamutSelect.value && transferSelect.value && confirmColor.checked);
+  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value || confirmColor.checked);
+  return Boolean(
+    selectedFile
+      && selectedFormat
+      && validOptions()
+      && (manualOverride || (automaticIccAvailable && !manualSelectionPresent)),
+  );
 }
 
 function validOptions(): boolean {
@@ -172,10 +209,18 @@ function resetResults(): void {
   revokeUrls();
   baseBytes = undefined;
   exposureBytes = undefined;
+  basePreviewBytes = undefined;
+  exposurePreviewBytes = undefined;
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
+  downloadBasePreview.disabled = true;
+  downloadExposurePreview.disabled = true;
+  clearPreview(basePreviewImage);
+  clearPreview(exposurePreviewImage);
   baseSize.textContent = "Waiting for calculation";
   exposureSize.textContent = "Waiting for calculation";
+  basePreviewSize.textContent = "Waiting for calculation";
+  exposurePreviewSize.textContent = "Waiting for calculation";
   emptyReport.hidden = false;
   reportContent.hidden = true;
 }
@@ -194,6 +239,7 @@ function resetAll(): void {
   gamutSelect.value = "";
   transferSelect.value = "";
   confirmColor.checked = false;
+  automaticIccAvailable = false;
   gamutNote.textContent = "No source gamut selected.";
   transferNote.textContent = "No transfer selected.";
   interpretationError.hidden = true;
@@ -210,6 +256,8 @@ function resetAll(): void {
 }
 
 function renderSummary(summary: SourceSummary): void {
+  selectedFormat = summary.format;
+  automaticIccAvailable = Boolean(summary.automatic_icc);
   const rows = [
     ["Format", summary.format.toUpperCase()],
     ["Dimensions", `${formatCount(summary.width)} × ${formatCount(summary.height)}`],
@@ -224,19 +272,20 @@ function renderSummary(summary: SourceSummary): void {
     metadataWarning.textContent = warnings.join(" ");
     metadataWarning.hidden = false;
   }
-  if (summary.gamut && gamutSelect.querySelector(`option[value="${CSS.escape(summary.gamut)}"]`)) {
-    gamutSelect.value = summary.gamut;
-    gamutNote.textContent = `Detected from ${summary.metadata_source ?? "metadata"}; confirmation is still required.`;
-  } else {
-    gamutNote.textContent = "Manual selection required; no unambiguous gamut was detected.";
-  }
-  if (summary.transfer && transferSelect.querySelector(`option[value="${CSS.escape(summary.transfer)}"]`)) {
-    transferSelect.value = summary.transfer;
-    transferNote.textContent = `Detected from ${summary.metadata_source ?? "metadata"}; confirmation is still required.`;
-  } else {
-    transferNote.textContent = "Manual selection required; no unambiguous transfer was detected.";
-  }
+  gamutSelect.value = "";
+  transferSelect.value = "";
   confirmColor.checked = false;
+  if (summary.automatic_icc) {
+    const source = summary.metadata_source ?? "embedded ICC";
+    gamutNote.textContent = `Automatic decode available from ${source}; leave this blank to use it or choose a manual override.`;
+    transferNote.textContent = `Automatic decode available from ${source}; leave this blank to use it or choose a manual override.`;
+  } else if (summary.gamut && summary.transfer) {
+    gamutNote.textContent = `Reference metadata only (${summary.gamut}); select it and confirm only to override the automatic ICC path.`;
+    transferNote.textContent = `Reference metadata only (${summary.transfer}); select it and confirm only to override the automatic ICC path.`;
+  } else {
+    gamutNote.textContent = "Manual selection required; no usable ICC profile was detected.";
+    transferNote.textContent = "Manual selection required; no usable ICC profile was detected.";
+  }
   updateCalculateState();
 }
 
@@ -285,26 +334,43 @@ function onWorkerMessage(message: WorkerMessage): void {
   activeJob = undefined;
   baseBytes = message.base_exr;
   exposureBytes = message.exposure_exr;
+  basePreviewBytes = message.base_preview_jpeg;
+  exposurePreviewBytes = message.exposure_preview_jpeg;
   revokeUrls();
   const basePart = new Uint8Array(baseBytes);
   const exposurePart = new Uint8Array(exposureBytes);
+  const basePreviewPart = new Uint8Array(basePreviewBytes);
+  const exposurePreviewPart = new Uint8Array(exposurePreviewBytes);
   baseUrl = URL.createObjectURL(new Blob([basePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
   exposureUrl = URL.createObjectURL(new Blob([exposurePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
+  basePreviewUrl = URL.createObjectURL(new Blob([basePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
+  exposurePreviewUrl = URL.createObjectURL(new Blob([exposurePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
+  showPreview(basePreviewImage, basePreviewUrl);
+  showPreview(exposurePreviewImage, exposurePreviewUrl);
   renderReport(message.report);
   downloadBase.disabled = false;
   downloadExposure.disabled = false;
+  downloadBasePreview.disabled = false;
+  downloadExposurePreview.disabled = false;
   baseSize.textContent = formatBytes(baseBytes.byteLength);
   exposureSize.textContent = formatBytes(exposureBytes.byteLength);
+  basePreviewSize.textContent = formatBytes(basePreviewBytes.byteLength);
+  exposurePreviewSize.textContent = formatBytes(exposurePreviewBytes.byteLength);
   setBusy(false);
-  showStatus("Calculation complete. Both OpenEXR files are ready.");
+  showStatus("Calculation complete. All four outputs are ready.");
 }
 
 function renderReport(report: Report): void {
   const profile = profileSelect.selectedOptions[0]?.textContent ?? String(report.profile);
   reportSummary.textContent = `${formatCount(report.width)} × ${formatCount(report.height)} pixels · ${profile} · Refl ${report.refl.toFixed(5)} · blur sigma ${report.blur_sigma.toFixed(2)}`;
+  const confirmedSource = gamutSelect.value && transferSelect.value
+    ? `${gamutSelect.value} / ${transferSelect.value}`
+    : automaticIccAvailable
+      ? "Embedded ICC profile"
+      : "Manual selection required";
   const metrics: Array<[string, string]> = [
     ["Pixel count", formatCount(report.pixel_count)],
-    ["Confirmed source", `${gamutSelect.value} / ${transferSelect.value}`],
+    ["Confirmed source", confirmedSource],
     ["Projected pixels", `${formatCount(report.projected_pixels)} (${formatPercent(report.projected_pixels, report.pixel_count)})`],
     ["Clipped exposure", `${formatCount(report.clipped_pixels)} (${formatPercent(report.clipped_pixels, report.pixel_count)})`],
     ["Non-finite pixels", `${formatCount(report.non_finite_pixels)} (${formatPercent(report.non_finite_pixels, report.pixel_count)})`],
@@ -318,6 +384,8 @@ function renderReport(report: Report): void {
     ["Batch size", formatCount(report.batch_size)],
     ["Base output", "Linear ACEScg/AP1 RGB, fp16"],
     ["Exposure output", "Normalized fp16 exposure channel"],
+    ["Base preview", "Display P3 JPEG, sRGB transfer"],
+    ["Exposure preview", "Display P3 JPEG, sRGB transfer"],
   ];
   if (report.gpu_adapter) metrics.push(["GPU adapter", report.gpu_adapter]);
   if (report.gpu_validation) metrics.push(["GPU validation", report.gpu_validation]);
@@ -367,8 +435,15 @@ async function calculate(): Promise<void> {
   if (!selectedFile || !selectedFormat) return;
   interpretationError.hidden = true;
   optionsError.hidden = true;
-  if (!gamutSelect.value || !transferSelect.value || !confirmColor.checked) {
-    interpretationError.textContent = "Select and explicitly confirm both the source gamut and gamma/transfer.";
+  const manualOverride = Boolean(gamutSelect.value && transferSelect.value && confirmColor.checked);
+  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value || confirmColor.checked);
+  if (manualSelectionPresent && !manualOverride) {
+    interpretationError.textContent = "Either leave the source fields blank to use the embedded ICC profile, or select both values and confirm the manual override.";
+    interpretationError.hidden = false;
+    return;
+  }
+  if (!manualOverride && !automaticIccAvailable) {
+    interpretationError.textContent = "This file does not provide a usable embedded ICC profile. Select both source values and confirm the override.";
     interpretationError.hidden = false;
     return;
   }
@@ -388,7 +463,14 @@ async function calculate(): Promise<void> {
   progressCounters.textContent = "Preparing pixels…";
   showStatus("The calculation is running locally in a dedicated worker.");
   const bytes = await selectedFile.arrayBuffer();
-  const request: Request = { format: selectedFormat, gamut: gamutSelect.value, transfer: transferSelect.value, profile: Number(profileSelect.value), refl: Number(reflInput.value), blur_sigma: Number(blurInput.value) };
+  const request: Request = {
+    format: selectedFormat,
+    gamut: manualOverride ? gamutSelect.value : null,
+    transfer: manualOverride ? transferSelect.value : null,
+    profile: Number(profileSelect.value),
+    refl: Number(reflInput.value),
+    blur_sigma: Number(blurInput.value),
+  };
   worker.postMessage({ kind: "calculate", id, format: selectedFormat, bytes, request }, [bytes]);
 }
 
@@ -406,12 +488,12 @@ function cancel(): void {
   progressStage.textContent = "Cancelled";
 }
 
-function download(url: string | undefined, suffix: string): void {
+function download(url: string | undefined, suffix: string, extension: string): void {
   if (!url || !selectedFile) return;
   const baseName = selectedFile.name.replace(/\.[^.]+$/, "");
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${baseName}-${suffix}-acescg-fp16.exr`;
+  link.download = `${baseName}-${suffix}.${extension}`;
   link.click();
 }
 
@@ -420,8 +502,10 @@ fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; 
 resetButton.addEventListener("click", resetAll);
 calculateButton.addEventListener("click", () => void calculate());
 cancelButton.addEventListener("click", cancel);
-downloadBase.addEventListener("click", () => download(baseUrl, "base"));
-downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure"));
+downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
+downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-acescg-fp16", "exr"));
+downloadBasePreview.addEventListener("click", () => download(basePreviewUrl, "base-preview-p3d65-srgb", "jpg"));
+downloadExposurePreview.addEventListener("click", () => download(exposurePreviewUrl, "exposure-preview-p3d65-srgb", "jpg"));
 for (const control of [gamutSelect, transferSelect, confirmColor, profileSelect, reflInput, blurInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });

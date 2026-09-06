@@ -13,12 +13,14 @@ use exr::{
     },
     prelude::{Encoding, ReadChannels, ReadLayers, Vec2, WritableImage},
 };
+use image::{codecs::jpeg::JpegEncoder as ImageJpegEncoder, ExtendedColorType, ImageEncoder as _};
 use half::f16;
 use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat};
 use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use png::{Decoder as PngDecoder, Transformations};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
+use std::sync::OnceLock;
 use wasm_bindgen::prelude::*;
 
 mod gpu;
@@ -58,6 +60,22 @@ const ADOBE_RGB_TO_XYZ: [[f32; 3]; 3] = [
     [0.297345, 0.627364, 0.075291],
     [0.027031, 0.070689, 0.991338],
 ];
+const D50_TO_D65_CAT02: [[f32; 3]; 3] = [
+    [0.9599086, -0.02931107, 0.06569604],
+    [-0.02119125, 0.99885744, 0.02614608],
+    [0.001371287, 0.0044387075, 1.3127874],
+];
+const XYZ_D65_TO_AP0: [[f32; 3]; 3] = [
+    [1.049811, 0.0, -0.0000975],
+    [-0.495903, 1.373314, 0.09824],
+    [0.0, 0.0, 0.918224],
+];
+const XYZ_TO_P3: [[f32; 3]; 3] = [
+    [2.4934969, -0.93138356, -0.40271077],
+    [-0.8294889, 1.7626641, 0.023624685],
+    [0.03584583, -0.07617239, 0.9568845],
+];
+static P3_D65_ICC: OnceLock<&'static [u8]> = OnceLock::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct DecodeSummary {
@@ -67,14 +85,15 @@ pub struct DecodeSummary {
     pub gamut: Option<String>,
     pub transfer: Option<String>,
     pub metadata_source: Option<String>,
+    pub automatic_icc: bool,
     pub warnings: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
     pub format: String,
-    pub gamut: String,
-    pub transfer: String,
+    pub gamut: Option<String>,
+    pub transfer: Option<String>,
     pub profile: u32,
     pub refl: f32,
     pub blur_sigma: f32,
@@ -111,6 +130,7 @@ struct Pixels {
     height: usize,
     rgb: Vec<[f32; 3]>,
     summary: DecodeSummary,
+    icc_profile: Option<Vec<u8>>,
 }
 
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -139,22 +159,6 @@ fn flat_pixels(rgb: &[[f32; 3]]) -> Vec<f32> {
     rgb.iter().flat_map(|pixel| pixel.iter().copied()).collect()
 }
 
-fn prepare_rgb(
-    mut rgb: Vec<[f32; 3]>,
-    width: usize,
-    height: usize,
-    req: &Request,
-) -> Vec<[f32; 3]> {
-    for px in &mut rgb {
-        for c in px.iter_mut() {
-            *c = decode_transfer(*c, &req.transfer);
-        }
-        *px = source_to_ap0(*px, &req.gamut);
-    }
-    blur(&mut rgb, width, height, req.blur_sigma);
-    rgb
-}
-
 fn mat(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
     [
         m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
@@ -165,31 +169,84 @@ fn mat(m: [[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
 fn finite(v: [f32; 3]) -> bool {
     v.iter().all(|x| x.is_finite())
 }
-fn detect_icc(data: &[u8]) -> Option<(String, String)> {
-    let _profile = icc_profile::Profile::parse(data).ok()?;
-    let text = String::from_utf8_lossy(data).to_ascii_lowercase();
-    let mut pairs = Vec::new();
-    if text.contains("display p3") || text.contains("p3-d65") {
-        pairs.push(("Display P3 / P3-D65".to_string(), "sRGB".to_string()));
+fn is_usable_icc_profile(data: &[u8]) -> bool {
+    let Ok(profile) = icc_profile::Profile::new(data) else {
+        return false;
+    };
+    if profile.color_space() != icc_profile::ColorSpace::Rgb
+        || profile.pcs() != icc_profile::Pcs::Xyz
+    {
+        return false;
     }
-    if text.contains("srgb") || text.contains("s rgb") {
-        pairs.push(("Rec.709 / sRGB".to_string(), "sRGB".to_string()));
+    profile
+        .compile(
+            icc_profile::TransformDirection::DeviceToPcs,
+            icc_profile::RenderingIntent::RelativeColorimetric,
+            icc_profile::TransformLimits::default(),
+        )
+        .is_ok()
+}
+fn icc_rgb_to_ap0(rgb: &[[f32; 3]], icc: &[u8]) -> Result<Vec<[f32; 3]>, String> {
+    let profile = icc_profile::Profile::new(icc).map_err(|e| e.to_string())?;
+    if profile.color_space() != icc_profile::ColorSpace::Rgb {
+        return Err("Embedded ICC profile must be RGB.".into());
     }
-    if text.contains("rec.2020") || text.contains("rec2020") || text.contains("bt.2020") {
-        pairs.push(("Rec.2020".to_string(), "BT.709 / BT.2020".to_string()));
+    if profile.pcs() != icc_profile::Pcs::Xyz {
+        return Err("Embedded ICC profile must use XYZ PCS.".into());
     }
-    if text.contains("adobe rgb") {
-        pairs.push(("Adobe RGB".to_string(), "Gamma 2.2".to_string()));
+    let transform = profile
+        .compile(
+            icc_profile::TransformDirection::DeviceToPcs,
+            icc_profile::RenderingIntent::RelativeColorimetric,
+            icc_profile::TransformLimits::default(),
+        )
+        .map_err(|e| e.to_string())?;
+    let flat = flat_pixels(rgb);
+    let mut xyz = vec![0.0_f32; flat.len()];
+    for (src, dst) in flat.chunks_exact(3).zip(xyz.chunks_exact_mut(3)) {
+        transform
+            .transform_f32(src, dst)
+            .map_err(|e| e.to_string())?;
     }
-    if text.contains("acescg") {
-        pairs.push(("ACEScg".to_string(), "Linear".to_string()));
+    let mut ap0 = Vec::with_capacity(rgb.len());
+    for chunk in xyz.chunks_exact(3) {
+        let d50 = [chunk[0], chunk[1], chunk[2]];
+        let d65 = mat(D50_TO_D65_CAT02, d50);
+        ap0.push(mat(XYZ_D65_TO_AP0, d65));
     }
-    pairs.dedup();
-    if pairs.len() == 1 {
-        pairs.pop()
+    Ok(ap0)
+}
+fn decode_icc_profile_to_ap0(rgb: Vec<[f32; 3]>, icc: &[u8]) -> Result<Vec<[f32; 3]>, String> {
+    icc_rgb_to_ap0(&rgb, icc)
+}
+fn prepare_rgb(
+    mut rgb: Vec<[f32; 3]>,
+    width: usize,
+    height: usize,
+    req: &Request,
+    icc_profile: Option<&[u8]>,
+) -> Result<Vec<[f32; 3]>, String> {
+    let manual = match (&req.gamut, &req.transfer) {
+        (Some(gamut), Some(transfer)) => Some((gamut.as_str(), transfer.as_str())),
+        (None, None) => None,
+        _ => return Err("Source gamut and transfer must either both be set or both be omitted.".into()),
+    };
+    if let Some((gamut, transfer)) = manual {
+        for px in &mut rgb {
+            for c in px.iter_mut() {
+                *c = decode_transfer(*c, transfer);
+            }
+            *px = source_to_ap0(*px, gamut);
+        }
+    } else if let Some(icc) = icc_profile {
+        rgb = decode_icc_profile_to_ap0(rgb, icc)?;
     } else {
-        None
+        return Err(
+            "This image does not provide a usable embedded ICC profile; select a gamut and transfer manually.".into(),
+        );
     }
+    blur(&mut rgb, width, height, req.blur_sigma);
+    Ok(rgb)
 }
 fn decode_transfer(x: f32, name: &str) -> f32 {
     let s = x.signum();
@@ -245,15 +302,7 @@ fn source_to_ap0(rgb: [f32; 3], gamut: &str) -> [f32; 3] {
         "ACEScg" => mat(AP1_TO_AP0, rgb),
         _ => [f32::NAN; 3],
     };
-    // D65 XYZ to AP0, with the same Bradford-derived matrix used by the CLI.
-    mat(
-        [
-            [1.049811, 0.0, -0.0000975],
-            [-0.495903, 1.373314, 0.098240],
-            [0.0, 0.0, 0.918224],
-        ],
-        xyz,
-    )
+    mat(XYZ_D65_TO_AP0, xyz)
 }
 fn blur(rgb: &mut [[f32; 3]], width: usize, height: usize, sigma: f32) {
     if sigma <= 0.0 {
@@ -299,7 +348,7 @@ fn blur(rgb: &mut [[f32; 3]], width: usize, height: usize, sigma: f32) {
     }
 }
 
-fn parse_png(data: &[u8]) -> Result<Pixels, String> {
+fn parse_png_inner(data: &[u8]) -> Result<Pixels, String> {
     let mut d = PngDecoder::new(Cursor::new(data));
     d.set_transformations(Transformations::EXPAND);
     let mut r = d.read_info().map_err(|e| e.to_string())?;
@@ -344,37 +393,60 @@ fn parse_png(data: &[u8]) -> Result<Pixels, String> {
         };
         g.zip(tr).map(|(a, b)| (a.to_string(), b.to_string()))
     });
-    let icc = info
+    let icc_profile = info
         .icc_profile
         .as_ref()
-        .and_then(|v| detect_icc(v.as_ref()));
-    let pair = icc.clone().or(cicp.clone());
+        .and_then(|v| if is_usable_icc_profile(v.as_ref()) { Some(v.as_ref().to_vec()) } else { None });
+    let automatic_icc = icc_profile.is_some();
     Ok(Pixels {
         width: out.width as usize,
         height: out.height as usize,
         rgb,
+        icc_profile,
         summary: DecodeSummary {
             format: "png".into(),
             width: out.width,
             height: out.height,
-            gamut: pair.as_ref().map(|x| x.0.clone()),
-            transfer: pair.as_ref().map(|x| x.1.clone()),
-            metadata_source: if icc.is_some() {
+            gamut: cicp.as_ref().map(|x| x.0.clone()),
+            transfer: cicp.as_ref().map(|x| x.1.clone()),
+            metadata_source: if automatic_icc {
                 Some("PNG ICC profile".into())
             } else if cicp.is_some() {
                 Some("PNG cICP".into())
             } else {
                 None
             },
-            warnings: if info.icc_profile.is_some() && icc.is_none() {
-                vec!["Embedded ICC profile is malformed or ambiguous; select gamut and transfer manually.".into()]
-            } else {
+            automatic_icc,
+            warnings: if automatic_icc {
                 Vec::new()
+            } else if info.icc_profile.is_some() {
+                vec!["Embedded ICC profile is malformed or unsupported; select gamut and transfer manually.".into()]
+            } else if cicp.is_some() {
+                vec!["PNG exposes cICP metadata but no usable ICC profile; select gamut and transfer manually.".into()]
+            } else {
+                vec!["PNG does not expose a usable embedded ICC profile; select gamut and transfer manually.".into()]
             },
         },
     })
 }
-fn parse_jpeg(data: &[u8]) -> Result<Pixels, String> {
+fn parse_png(data: &[u8]) -> Result<Pixels, String> {
+    match parse_png_inner(data) {
+        Ok(pixels) => Ok(pixels),
+        Err(png_error) => match parse_jpeg_inner(data) {
+            Ok(mut pixels) => {
+                pixels.summary.format = "jpeg".into();
+                pixels.summary.warnings.push(format!(
+                    "PNG parsing failed ({png_error}); the upload was decoded as JPEG instead."
+                ));
+                Ok(pixels)
+            }
+            Err(jpeg_error) => Err(format!(
+                "PNG parsing failed ({png_error}); JPEG fallback also failed ({jpeg_error})"
+            )),
+        },
+    }
+}
+fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
     let mut d = JpegDecoder::new(Cursor::new(data));
     d.read_info().map_err(|e| e.to_string())?;
     let icc = d.icc_profile();
@@ -393,34 +465,44 @@ fn parse_jpeg(data: &[u8]) -> Result<Pixels, String> {
             ]
         })
         .collect();
-    let pair = icc.as_deref().and_then(detect_icc);
-    let metadata_source = if pair.is_some() {
+    let icc_profile = icc
+        .as_deref()
+        .and_then(|bytes| if is_usable_icc_profile(bytes) { Some(bytes.to_vec()) } else { None });
+    let automatic_icc = icc_profile.is_some();
+    let metadata_source = if automatic_icc {
         Some("JPEG ICC profile".to_string())
     } else {
         None
     };
-    let warnings = if icc.is_some() && pair.is_none() {
+    let warnings = if automatic_icc {
+        Vec::new()
+    } else if icc.is_some() {
         vec![
-            "Embedded ICC profile is malformed or ambiguous; select gamut and transfer manually."
+            "Embedded ICC profile is malformed or unsupported; select gamut and transfer manually."
                 .into(),
         ]
     } else {
-        vec!["JPEG does not expose a supported unambiguous color profile; confirm both fields before processing.".into()]
+        vec!["JPEG does not expose a usable embedded ICC profile; select gamut and transfer manually.".into()]
     };
     Ok(Pixels {
         width: info.width as usize,
         height: info.height as usize,
         rgb,
+        icc_profile,
         summary: DecodeSummary {
             format: "jpeg".into(),
             width: info.width as u32,
             height: info.height as u32,
-            gamut: pair.as_ref().map(|x| x.0.clone()),
-            transfer: pair.as_ref().map(|x| x.1.clone()),
+            gamut: None,
+            transfer: None,
             metadata_source,
+            automatic_icc,
             warnings,
         },
     })
+}
+fn parse_jpeg(data: &[u8]) -> Result<Pixels, String> {
+    parse_jpeg_inner(data)
 }
 fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
     let reader = exr::prelude::read()
@@ -479,6 +561,7 @@ fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
         width,
         height,
         rgb,
+        icc_profile: None,
         summary: DecodeSummary {
             format: "exr".into(),
             width: width as u32,
@@ -486,6 +569,7 @@ fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
             gamut: detected_gamut.clone(),
             transfer,
             metadata_source: detected_gamut.as_ref().map(|_| "EXR chromaticities".into()),
+            automatic_icc: false,
             warnings: if detected_gamut.is_none() {
                 vec!["EXR chromaticities are missing or unsupported; select gamut and transfer manually.".into()]
             } else {
@@ -556,32 +640,37 @@ pub fn inspect(data: Vec<u8>, format: String) -> Result<JsValue, JsValue> {
 
 fn parse_request(value: JsValue) -> Result<Request, String> {
     let req: Request = serde_wasm_bindgen::from_value(value).map_err(|e| e.to_string())?;
-    if req.gamut.is_empty() || req.transfer.is_empty() {
-        return Err("Source gamut and transfer must be explicitly confirmed.".into());
-    }
-    if !matches!(
-        req.gamut.as_str(),
-        "Rec.709 / sRGB"
-            | "Display P3 / P3-D65"
-            | "Rec.2020"
-            | "Adobe RGB"
-            | "ACEScg"
-            | "ACES2065-1"
-    ) {
-        return Err("Unsupported source gamut.".into());
-    }
-    if !matches!(
-        req.transfer.as_str(),
-        "Linear"
-            | "sRGB"
-            | "Gamma 1.8"
-            | "Gamma 2.2"
-            | "Gamma 2.4 / BT.1886"
-            | "BT.709 / BT.2020"
-            | "PQ / ST 2084"
-            | "HLG / BT.2100"
-    ) {
-        return Err("Unsupported source transfer function.".into());
+    match (&req.gamut, &req.transfer) {
+        (None, None) => {}
+        (Some(gamut), Some(transfer)) => {
+            if !matches!(
+                gamut.as_str(),
+                "Rec.709 / sRGB"
+                    | "Display P3 / P3-D65"
+                    | "Rec.2020"
+                    | "Adobe RGB"
+                    | "ACEScg"
+                    | "ACES2065-1"
+            ) {
+                return Err("Unsupported source gamut.".into());
+            }
+            if !matches!(
+                transfer.as_str(),
+                "Linear"
+                    | "sRGB"
+                    | "Gamma 1.8"
+                    | "Gamma 2.2"
+                    | "Gamma 2.4 / BT.1886"
+                    | "BT.709 / BT.2020"
+                    | "PQ / ST 2084"
+                    | "HLG / BT.2100"
+            ) {
+                return Err("Unsupported source transfer function.".into());
+            }
+        }
+        _ => {
+            return Err("Source gamut and transfer must either both be set or both be omitted.".into())
+        }
     }
     if !req.refl.is_finite()
         || req.refl <= 0.0
@@ -596,7 +685,13 @@ fn parse_request(value: JsValue) -> Result<Request, String> {
     Ok(req)
 }
 
-fn payload(report: Report, base: Vec<u8>, exposure: Vec<u8>) -> Result<JsValue, String> {
+fn payload(
+    report: Report,
+    base: Vec<u8>,
+    exposure: Vec<u8>,
+    base_preview: Vec<u8>,
+    exposure_preview: Vec<u8>,
+) -> Result<JsValue, String> {
     let object = Object::new();
     Reflect::set(
         &object,
@@ -616,6 +711,18 @@ fn payload(report: Report, base: Vec<u8>, exposure: Vec<u8>) -> Result<JsValue, 
         &Uint8Array::from(exposure.as_slice()).into(),
     )
     .map_err(|e| format!("exposure: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("base_preview_jpeg"),
+        &Uint8Array::from(base_preview.as_slice()).into(),
+    )
+    .map_err(|e| format!("base_preview: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure_preview_jpeg"),
+        &Uint8Array::from(exposure_preview.as_slice()).into(),
+    )
+    .map_err(|e| format!("exposure_preview: {e:?}"))?;
     Ok(object.into())
 }
 
@@ -789,6 +896,89 @@ fn report_from_stats(
     }
 }
 
+fn srgb_encode_component(value: f32) -> f32 {
+    let value = value.clamp(0.0, 1.0);
+    if value <= 0.0031308 {
+        12.92 * value
+    } else {
+        1.055 * value.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+fn display_p3_icc_profile() -> &'static [u8] {
+    P3_D65_ICC.get_or_init(|| {
+        let bytes = cmx::profile::DisplayProfile::cmx_display_p3(
+            cmx::tag::RenderingIntent::RelativeColorimetric,
+        )
+        .to_bytes()
+        .expect("Display P3 ICC profile")
+        .into_boxed_slice();
+        Box::leak(bytes)
+    })
+}
+
+fn encode_preview_jpeg(width: usize, height: usize, pixels: &[u8]) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    let mut encoder = ImageJpegEncoder::new_with_quality(&mut output, 95);
+    encoder
+        .set_icc_profile(display_p3_icc_profile().to_vec())
+        .map_err(|e| e.to_string())?;
+    encoder
+        .write_image(
+            pixels,
+            width as u32,
+            height as u32,
+            ExtendedColorType::Rgb8,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(output)
+}
+
+fn encode_base_preview_jpeg(base: &[[f32; 3]], width: usize, height: usize) -> Result<Vec<u8>, String> {
+    let mut pixels = Vec::with_capacity(width * height * 3);
+    for rgb in base {
+        let acescg = mat(AP0_TO_AP1, *rgb);
+        let xyz = modcam16_color_core::aces_output::forward(
+            4,
+            [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
+        );
+        let p3 = mat(
+            XYZ_TO_P3,
+            [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
+        );
+        pixels.push((srgb_encode_component(p3[0]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+        pixels.push((srgb_encode_component(p3[1]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+        pixels.push((srgb_encode_component(p3[2]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+    }
+    encode_preview_jpeg(width, height, &pixels)
+}
+
+fn encode_exposure_preview_jpeg(
+    exposure: &[f32],
+    width: usize,
+    height: usize,
+    refl: f32,
+) -> Result<Vec<u8>, String> {
+    let mut pixels = Vec::with_capacity(width * height * 3);
+    for value in exposure {
+        let scale = 2.0_f32.powf(*value * 20.0 - 10.0);
+        let ap0 = [refl * scale; 3];
+        let acescg = mat(AP0_TO_AP1, ap0);
+        let xyz = modcam16_color_core::aces_output::forward(
+            4,
+            [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
+        );
+        let p3 = mat(
+            XYZ_TO_P3,
+            [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
+        );
+        pixels.push((srgb_encode_component(p3[0]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+        pixels.push((srgb_encode_component(p3[1]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+        pixels.push((srgb_encode_component(p3[2]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
+    }
+    encode_preview_jpeg(width, height, &pixels)
+}
+
 fn encode_result(
     base: &[[f32; 3]],
     exposure: &[f32],
@@ -835,11 +1025,26 @@ fn encode_result(
         "exposure",
         &report,
     )?;
-    payload(report, base_exr, exposure_exr)
+    let base_preview_jpeg = encode_base_preview_jpeg(base, width, height)?;
+    let exposure_preview_jpeg =
+        encode_exposure_preview_jpeg(exposure, width, height, report.refl)?;
+    payload(
+        report,
+        base_exr,
+        exposure_exr,
+        base_preview_jpeg,
+        exposure_preview_jpeg,
+    )
 }
 
 fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
-    p.rgb = prepare_rgb(std::mem::take(&mut p.rgb), p.width, p.height, &req);
+    p.rgb = prepare_rgb(
+        std::mem::take(&mut p.rgb),
+        p.width,
+        p.height,
+        &req,
+        p.icc_profile.as_deref(),
+    )?;
     let (base, exposure, stats) = solve_prepared(&p.rgb, &req);
     let report = report_from_stats(p.width, p.height, &req, &stats, p.summary.warnings.clone());
     encode_result(&base, &exposure, p.width, p.height, report)
@@ -914,7 +1119,8 @@ pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<JsValue, JsValue> {
     let width = p.width;
     let height = p.height;
     let warnings = p.summary.warnings.clone();
-    let rgb = prepare_rgb(p.rgb, width, height, &req);
+    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref())
+        .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload(flat_pixels(&rgb), width, height, warnings).map_err(|e| JsValue::from_str(&e))
 }
 
@@ -932,7 +1138,8 @@ pub fn prepare_pixels(
         ));
     }
     let rgb: Vec<[f32; 3]> = data.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
-    let rgb = prepare_rgb(rgb, width as usize, height as usize, &req);
+    let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None)
+        .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload(
         flat_pixels(&rgb),
         width as usize,
@@ -1043,11 +1250,13 @@ pub fn decompose_pixels(
             format: req.format.clone(),
             width,
             height,
-            gamut: Some(req.gamut.clone()),
-            transfer: Some(req.transfer.clone()),
+            gamut: req.gamut.clone(),
+            transfer: req.transfer.clone(),
             metadata_source: Some("libheif-js".into()),
+            automatic_icc: false,
             warnings: Vec::new(),
         },
+        icc_profile: None,
     };
     process(p, req).map_err(|e| JsValue::from_str(&e))
 }

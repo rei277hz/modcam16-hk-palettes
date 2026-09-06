@@ -9,7 +9,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 exr = { version = "1.74.2", default-features = false }
+cmx = "0.2.0"
 icc-profile = "0.0.6"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 jpeg-decoder = { version = "0.3.2", default-features = false }
 modcam16-color-core = { path = "../color_core" }
 png = "0.18.1"
