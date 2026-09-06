@@ -53,7 +53,7 @@ select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid 
 .webgpu-status { position: relative; display: inline-flex; }
 .status-badge { border: 1px solid #3b6359; background: transparent; padding: 4px 7px; color: #89e0c4; font: inherit; font-size: 10px; }
 .status-badge:hover { border-color: #89e0c4; background: #203a35; }
-.webgpu-help { position: absolute; z-index: 5; top: calc(100% + 8px); left: 0; width: min(320px, calc(100vw - 28px)); border: 1px solid #3d505b; background: #10171e; padding: 9px 10px; color: #cbd7da; font-size: 11px; line-height: 1.4; box-shadow: 0 8px 24px rgb(0 0 0 / .35); }
+.webgpu-help { position: absolute; z-index: 5; top: calc(100% + 8px); right: 0; display: block; width: min(300px, calc(100vw - 28px)); max-height: min(38vh, 260px); overflow: auto; white-space: normal; overflow-wrap: anywhere; border: 1px solid #3d505b; background: #10171e; padding: 9px 10px; color: #cbd7da; font-size: 11px; line-height: 1.4; box-shadow: 0 8px 24px rgb(0 0 0 / .35); }
 .progress-block { min-width: 0; }
 .progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 11px; }
 .progress-label-row output { color: #89e0c4; font-variant-numeric: tabular-nums; }
