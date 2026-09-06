@@ -1469,6 +1469,31 @@ pub fn encode_exr_outputs(
         .map_err(|e| JsValue::from_str(&e))
 }
 
+/// Build analytic report metadata without allocating or encoding full image
+/// outputs. The browser worker uses this after streaming EXR rows to OPFS.
+#[wasm_bindgen]
+pub fn build_report(
+    width: u32,
+    height: u32,
+    request: JsValue,
+    stats: JsValue,
+    warnings: JsValue,
+) -> Result<JsValue, JsValue> {
+    let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+    let stats: SolveStats = serde_wasm_bindgen::from_value(stats)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let warnings: Vec<String> = serde_wasm_bindgen::from_value(warnings)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    serde_wasm_bindgen::to_value(&report_from_stats(
+        width as usize,
+        height as usize,
+        &req,
+        &stats,
+        warnings,
+    ))
+    .map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
 #[wasm_bindgen]
 pub fn encode_preview_pixels(pixels: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, JsValue> {
     if width == 0 || height == 0 || pixels.len() != width as usize * height as usize * 3 {

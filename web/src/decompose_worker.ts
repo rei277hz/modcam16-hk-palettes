@@ -1,4 +1,4 @@
-import init, { cpu_preview_pixels, encode_exr_outputs, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { build_report, cpu_preview_pixels, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -59,6 +59,159 @@ type EncodedOutputs = {
   exposure_preview_jpeg: Uint8Array | ArrayBuffer;
 };
 
+type OutputFile = { name: string; size: number; kind: string };
+
+type FileSink = { write(data: Uint8Array, offset?: number): Promise<void>; close(): Promise<void>; size: number; name: string };
+
+class OpfsSink implements FileSink {
+  size = 0;
+  private constructor(private readonly access: any, private readonly synchronous: boolean, readonly name: string) {}
+  static async create(name: string): Promise<OpfsSink> {
+    const root = await (navigator.storage as any).getDirectory();
+    const handle = await root.getFileHandle(name, { create: true });
+    if (handle.createSyncAccessHandle) return new OpfsSink(await handle.createSyncAccessHandle(), true, name);
+    if (handle.createWritable) return new OpfsSink(await handle.createWritable({ keepExistingData: false }), false, name);
+    throw new Error("This browser cannot open an OPFS output stream.");
+  }
+  async write(data: Uint8Array, offset = this.size): Promise<void> {
+    if (this.synchronous) {
+      const result = this.access.write(data, { at: offset });
+      if (result && typeof result.then === "function") await result;
+    } else {
+      if (offset !== this.size) throw new Error("The OPFS streaming writer cannot seek.");
+      await this.access.write(data);
+    }
+    this.size = Math.max(this.size, offset + data.byteLength);
+  }
+  async close(): Promise<void> {
+    if (typeof this.access.flush === "function") this.access.flush();
+    if (typeof this.access.close === "function") {
+      const result = this.access.close();
+      if (result && typeof result.then === "function") await result;
+    }
+  }
+}
+
+function u32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, value >>> 0, true); return b; }
+function i32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, value | 0, true); return b; }
+function f32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, value, true); return b; }
+function u64(value: number): Uint8Array { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(value), true); return b; }
+function ascii(value: string): Uint8Array { return new TextEncoder().encode(`${value}\0`); }
+function concatBytes(...parts: Uint8Array[]): Uint8Array { const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0)); let offset = 0; for (const part of parts) { out.set(part, offset); offset += part.byteLength; } return out; }
+
+function floatToHalf(value: number): number {
+  const f = new Float32Array([value]); const bits = new Uint32Array(f.buffer)[0];
+  const sign = (bits >>> 16) & 0x8000; let exponent = ((bits >>> 23) & 0xff) - 127 + 15; let mantissa = bits & 0x7fffff;
+  if (exponent <= 0) { if (exponent < -10) return sign; mantissa = (mantissa | 0x800000) >>> (1 - exponent); return sign | ((mantissa + 0x1000) >>> 13); }
+  if (exponent >= 31) return sign | 0x7c00 | (mantissa ? 0x200 : 0);
+  return sign | (exponent << 10) | ((mantissa + 0x1000) >>> 13);
+}
+
+const AP0_TO_AP1 = [[1.4514393, -0.23651075, -0.21492857], [-0.07655377, 1.1762297, -0.09967593], [0.008316148, -0.00603245, 0.9977163]];
+function ap0ToAp1(r: number, g: number, b: number): [number, number, number] {
+  return [AP0_TO_AP1[0][0] * r + AP0_TO_AP1[0][1] * g + AP0_TO_AP1[0][2] * b, AP0_TO_AP1[1][0] * r + AP0_TO_AP1[1][1] * g + AP0_TO_AP1[1][2] * b, AP0_TO_AP1[2][0] * r + AP0_TO_AP1[2][1] * g + AP0_TO_AP1[2][2] * b];
+}
+
+class ScanlineExrWriter {
+  private readonly channels: string[];
+  private readonly offsets: number[];
+  private cursor = 0;
+  private rowsWritten = 0;
+  private constructor(private readonly sink: FileSink, readonly height: number, channels: string[]) {
+    this.channels = channels;
+    this.offsets = new Array(height).fill(0);
+  }
+  private async initialize(width: number, height: number, channels: string[], component: string): Promise<void> {
+    const channelEntries = channels.map((name) => concatBytes(ascii(name), i32(1), new Uint8Array([0, 0, 0, 0]), i32(1), i32(1)));
+    const chlist = concatBytes(...channelEntries, new Uint8Array([0]));
+    const chromaticities = new Uint8Array(32); const cv = new DataView(chromaticities.buffer);
+    [[0.713, 0.293], [0.165, 0.830], [0.128, 0.044], [0.32168, 0.33767]].forEach((v, i) => { cv.setFloat32(i * 8, v[0], true); cv.setFloat32(i * 8 + 4, v[1], true); });
+    const attr = (name: string, type: string, value: Uint8Array) => concatBytes(ascii(name), ascii(type), u32(value.byteLength), value);
+    const header = concatBytes(
+      u32(0x762f3101), u32(2),
+      attr("channels", "chlist", chlist), attr("compression", "compression", new Uint8Array([0])),
+      attr("dataWindow", "box2i", concatBytes(i32(0), i32(0), i32(width - 1), i32(height - 1))),
+      attr("displayWindow", "box2i", concatBytes(i32(0), i32(0), i32(width - 1), i32(height - 1))),
+      attr("lineOrder", "lineOrder", new Uint8Array([0])), attr("pixelAspectRatio", "float", f32(1)),
+      attr("screenWindowCenter", "v2f", concatBytes(f32(0), f32(0))), attr("screenWindowWidth", "float", f32(1)),
+      attr("chromaticities", "chromaticities", chromaticities), attr("ocioColorSpace", "string", ascii("ACEScg")),
+      attr("decompositionComponent", "string", ascii(component)), new Uint8Array([0]),
+    );
+    await this.sink.write(header); this.cursor += header.byteLength;
+    const rowBytes = width * channels.length * 2;
+    const firstChunk = this.cursor + height * 8;
+    this.offsets.splice(0, this.offsets.length, ...new Array(height).fill(0).map((_, y) => firstChunk + y * (8 + rowBytes)));
+    await this.sink.write(concatBytes(...this.offsets.map((offset) => u64(offset)))); this.cursor += height * 8;
+  }
+  get size(): number { return this.sink.size; }
+  static async create(sink: FileSink, width: number, height: number, channels: string[], component: string): Promise<ScanlineExrWriter> {
+    const writer = new ScanlineExrWriter(sink, height, channels);
+    await writer.initialize(width, height, channels, component);
+    return writer;
+  }
+  async writeRow(y: number, values: Record<string, Uint16Array>): Promise<void> {
+    if (y !== this.rowsWritten) throw new Error(`EXR rows must be written in order (expected ${this.rowsWritten}, received ${y}).`);
+    const rowParts = this.channels.map((channel) => new Uint8Array(values[channel].buffer, values[channel].byteOffset, values[channel].byteLength));
+    const chunk = concatBytes(i32(y), u32(rowParts.reduce((n, p) => n + p.byteLength, 0)), ...rowParts);
+    this.offsets[y] = this.cursor; await this.sink.write(chunk); this.cursor += chunk.byteLength; this.rowsWritten += 1;
+  }
+  async close(): Promise<void> {
+    if (this.rowsWritten !== this.height) throw new Error(`EXR writer closed after ${this.rowsWritten} of ${this.height} rows.`);
+    await this.sink.close();
+  }
+}
+
+async function createOutputWriters(id: number, width: number, height: number): Promise<{ writers: { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }; outputs: OutputFile[] }> {
+  const storage = (navigator as any).storage;
+  if (!storage?.getDirectory) throw new Error("This browser cannot provide local scratch storage for a full-resolution job.");
+  const estimate = storage.estimate ? await storage.estimate() : undefined;
+  const required = width * height * 16 + 32 * 1024 * 1024;
+  if (estimate?.quota && estimate.usage !== undefined && estimate.quota - estimate.usage < required) {
+    throw new Error(`Insufficient local storage for this full-resolution job (need about ${formatBytes(required)} free).`);
+  }
+  const prefix = `decomposition-${id}`;
+  const specs = [
+    ["base.exr", ["B", "G", "R"], "base", "base"],
+    ["exposure.exr", ["exposure"], "exposure", "exposure"],
+    ["exposure-rgb.exr", ["B", "G", "R"], "exposureRgb", "exposure_rgb"],
+  ] as const;
+  const writers: Partial<{ base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }> = {};
+  const outputs: OutputFile[] = [];
+  for (const [suffix, channels, key, component] of specs) {
+    const name = `${prefix}-${suffix}`;
+    const sink = await OpfsSink.create(name);
+    writers[key] = await ScanlineExrWriter.create(sink, width, height, [...channels], component);
+    outputs.push({ name, size: 0, kind: component === "base" ? "base-exr" : component === "exposure_rgb" ? "exposure-exr" : "exposure-normalized-ev" });
+  }
+  return { writers: writers as { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }, outputs };
+}
+
+async function cleanupOutputFiles(id: number): Promise<void> {
+  const storage = (navigator as any).storage;
+  if (!storage?.getDirectory) return;
+  try {
+    const root = await storage.getDirectory();
+    const prefix = `decomposition-${id}-`;
+    for await (const [name] of root.entries()) {
+      if (name.startsWith(prefix)) await root.removeEntry(name);
+    }
+  } catch {
+    // Cleanup is best effort; quota and cancellation errors are reported by
+    // the operation that caused them.
+  }
+}
+
+async function cleanupPreviousOutputs(currentId: number): Promise<void> {
+  const storage = (navigator as any).storage;
+  if (!storage?.getDirectory) return;
+  try {
+    const root = await storage.getDirectory();
+    for await (const [name] of root.entries()) {
+      if (name.startsWith("decomposition-") && !name.startsWith(`decomposition-${currentId}-`)) await root.removeEntry(name);
+    }
+  } catch { /* best effort */ }
+}
+
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -81,6 +234,11 @@ function ensureWasm(): Promise<void> {
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function yieldToUi(): Promise<void> {
@@ -400,8 +558,13 @@ async function handle(message: JobMessage): Promise<void> {
     let useGpu = Boolean(gpuValidation);
     let backend = useGpu ? "webgpu" : "wasm-cpu";
     let batchSize = useGpu ? gpuValidation!.batchSize : 4096;
-    const base = new Float32Array(width * height * 3);
-    const exposure = new Float32Array(width * height);
+    await cleanupPreviousOutputs(id);
+    const output = await createOutputWriters(id, width, height);
+    const { writers } = output;
+    const basePreviewPixels = new Uint8Array(width * height * 3);
+    const exposurePreviewPixels = new Uint8Array(width * height * 3);
+    const previewStartedAt = performance.now();
+    let previewUseGpu = useGpu;
     let stats = emptyStats();
     stats.compute_backend = backend;
     stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
@@ -421,7 +584,8 @@ async function handle(message: JobMessage): Promise<void> {
     let start = 0;
     while (start < totalPixels) {
       if (cancelled.has(id)) return;
-      const stop = Math.min(totalPixels, start + batchSize);
+      const rowsPerBatch = Math.max(1, Math.floor(batchSize / width));
+      const stop = Math.min(totalPixels, start + rowsPerBatch * width);
       const chunk = pixels.slice(start * 3, stop * 3);
       let solved: any;
       try {
@@ -435,8 +599,6 @@ async function handle(message: JobMessage): Promise<void> {
         useGpu = false;
         backend = "wasm-cpu";
         batchSize = 4096;
-        base.fill(0);
-        exposure.fill(0);
         stats = emptyStats();
         stats.compute_backend = backend;
         stats.gpu_adapter = gpuValidation?.adapter ?? null;
@@ -448,8 +610,37 @@ async function handle(message: JobMessage): Promise<void> {
       }
       const chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
       const chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
-      base.set(chunkBase, start * 3);
-      exposure.set(chunkExposure, start);
+      try {
+        const preview = previewUseGpu
+          ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
+          : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+        const previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
+        const previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
+        basePreviewPixels.set(previewBase, start * 3);
+        exposurePreviewPixels.set(previewExposure, start * 3);
+      } catch (error) {
+        if (previewUseGpu) {
+          previewUseGpu = false;
+          warnings.push(`WebGPU preview transform failed; this job continued with the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
+          const preview = cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+          const previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
+          const previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
+          basePreviewPixels.set(previewBase, start * 3);
+          exposurePreviewPixels.set(previewExposure, start * 3);
+        } else throw error;
+      }
+      for (let row = 0; row < (stop - start) / width; row++) {
+        const y = Math.floor(start / width) + row;
+        const rowBaseR = new Uint16Array(width), rowBaseG = new Uint16Array(width), rowBaseB = new Uint16Array(width), rowExposure = new Uint16Array(width);
+        for (let x = 0; x < width; x++) {
+          const i = row * width + x;
+          const ap1 = ap0ToAp1(chunkBase[i * 3], chunkBase[i * 3 + 1], chunkBase[i * 3 + 2]);
+          rowBaseB[x] = floatToHalf(ap1[2]); rowBaseG[x] = floatToHalf(ap1[1]); rowBaseR[x] = floatToHalf(ap1[0]); rowExposure[x] = floatToHalf(Math.pow(2, chunkExposure[i] * 20 - 10));
+        }
+        await writers.base.writeRow(y, { B: rowBaseB, G: rowBaseG, R: rowBaseR });
+        await writers.exposureRgb.writeRow(y, { B: rowExposure, G: rowExposure, R: rowExposure });
+        await writers.exposure.writeRow(y, { exposure: rowExposure });
+      }
       addStats(stats, solved.stats as SolveStats);
       postProgress(id, useGpu ? "Decompose pixels (WebGPU)" : "Decompose pixels (wasm-cpu)", 25 + (stop / totalPixels) * 65, {
         processed: stop,
@@ -461,68 +652,39 @@ async function handle(message: JobMessage): Promise<void> {
       await yieldToUi();
     }
     if (cancelled.has(id)) return;
-    const previewBasePixels = new Uint8Array(totalPixels * 3);
-    const previewExposurePixels = new Uint8Array(totalPixels * 3);
-    let previewUseGpu = useGpu;
-    let previewBatch = previewUseGpu ? gpuValidation!.batchSize : 4096;
-    let previewStart = 0;
-    const previewStartedAt = performance.now();
-    while (previewStart < totalPixels) {
-      if (cancelled.has(id)) return;
-      const stop = Math.min(totalPixels, previewStart + previewBatch);
-      const stage = `ACES 2.0 P3-D65 preview transform (${previewUseGpu ? "WebGPU" : "wasm-cpu"})`;
-      postProgress(id, stage, 90 + (previewStart / totalPixels) * 2, { processed: previewStart });
-      let preview: any;
-      try {
-        const chunkBase = base.slice(previewStart * 3, stop * 3);
-        const chunkExposure = exposure.slice(previewStart, stop);
-        preview = previewUseGpu
-          ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
-          : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
-      } catch (error) {
-        if (!previewUseGpu) throw error;
-        warnings.push(`WebGPU preview transform failed; both previews were restarted on the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
-        previewUseGpu = false;
-        previewBatch = 4096;
-        previewStart = 0;
-        continue;
-      }
-      const chunkBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
-      const chunkExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
-      previewBasePixels.set(chunkBase, previewStart * 3);
-      previewExposurePixels.set(chunkExposure, previewStart * 3);
-      previewStart = stop;
-      postProgress(id, stage, 90 + (stop / totalPixels) * 2, { processed: stop });
-      await yieldToUi();
-    }
     stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
     stats.preview_transform_ms = performance.now() - previewStartedAt;
     if (cancelled.has(id)) return;
-    postProgress(id, "Encode base and exposure EXRs", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
+    postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
     await yieldToUi();
-    const result = encode_exr_outputs(base, exposure, width, height, message.request, stats, warnings);
+    await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
+    const report = build_report(width, height, message.request, stats, warnings);
     if (cancelled.has(id)) return;
     postProgress(id, "Encode base preview JPEG", 95, { processed: totalPixels });
     await yieldToUi();
-    const basePreviewJpeg = encode_preview_pixels(previewBasePixels, width, height);
+    const basePreviewJpeg = encode_preview_pixels(basePreviewPixels, width, height);
+    const basePreviewSink = await OpfsSink.create(`decomposition-${id}-base-preview.jpg`);
+    const basePreviewBytes = basePreviewJpeg instanceof Uint8Array ? basePreviewJpeg : new Uint8Array(basePreviewJpeg);
+    await basePreviewSink.write(basePreviewBytes); await basePreviewSink.close();
     if (cancelled.has(id)) return;
     postProgress(id, "Encode exposure preview JPEG", 98, { processed: totalPixels });
     await yieldToUi();
-    const exposurePreviewJpeg = encode_preview_pixels(previewExposurePixels, width, height);
-    const baseBytes = result.base_exr instanceof Uint8Array ? result.base_exr : new Uint8Array(result.base_exr);
-    const exposureBytes = result.exposure_exr instanceof Uint8Array ? result.exposure_exr : new Uint8Array(result.exposure_exr);
-    const exposureRgbBytes = result.exposure_rgb_exr instanceof Uint8Array ? result.exposure_rgb_exr : new Uint8Array(result.exposure_rgb_exr);
-    const basePreviewBytes = basePreviewJpeg instanceof Uint8Array ? basePreviewJpeg : new Uint8Array(basePreviewJpeg);
+    const exposurePreviewJpeg = encode_preview_pixels(exposurePreviewPixels, width, height);
+    const exposurePreviewSink = await OpfsSink.create(`decomposition-${id}-exposure-preview.jpg`);
     const exposurePreviewBytes = exposurePreviewJpeg instanceof Uint8Array ? exposurePreviewJpeg : new Uint8Array(exposurePreviewJpeg);
+    await exposurePreviewSink.write(exposurePreviewBytes); await exposurePreviewSink.close();
+    const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
+    outputs.push({ name: `decomposition-${id}-base-preview.jpg`, size: basePreviewBytes.byteLength, kind: "base-preview-jpeg" }, { name: `decomposition-${id}-exposure-preview.jpg`, size: exposurePreviewBytes.byteLength, kind: "exposure-preview-jpeg" });
     postProgress(id, "Complete", 100, {
       processed: totalPixels,
-      projected: result.report?.projected_pixels,
-      clipped: result.report?.clipped_pixels,
-      non_finite: result.report?.non_finite_pixels,
-      encoded_bytes: baseBytes.byteLength + exposureBytes.byteLength + exposureRgbBytes.byteLength + basePreviewBytes.byteLength + exposurePreviewBytes.byteLength,
+      projected: report.projected_pixels,
+      clipped: report.clipped_pixels,
+      non_finite: report.non_finite_pixels,
+      encoded_bytes: outputs.reduce((sum, entry) => sum + entry.size, 0),
     });
-    scope.postMessage({ kind: "result", id, report: result.report, base_exr: baseBytes, exposure_exr: exposureBytes, exposure_rgb_exr: exposureRgbBytes, base_preview_jpeg: basePreviewBytes, exposure_preview_jpeg: exposurePreviewBytes }, [baseBytes.buffer, exposureBytes.buffer, exposureRgbBytes.buffer, basePreviewBytes.buffer, exposurePreviewBytes.buffer]);
+    scope.postMessage({ kind: "result", id, report, outputs, storage: "opfs" });
   } catch (error) {
+    await cleanupOutputFiles(id);
     if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, message: formatError(error) });
   }
 }
@@ -531,6 +693,7 @@ scope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const message = event.data;
   if (message.kind === "cancel") {
     cancelled.add(message.id);
+    void cleanupOutputFiles(message.id);
     scope.postMessage({ kind: "cancelled", id: message.id });
     return;
   }

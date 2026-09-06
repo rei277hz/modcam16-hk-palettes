@@ -41,10 +41,11 @@ type Report = {
   warnings: string[];
 };
 type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: number; counters?: Record<string, number | undefined> };
+type OutputFile = { name: string; size: number; kind: string };
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
-  | { kind: "result"; id: number; report: Report; base_exr: Uint8Array; exposure_exr: Uint8Array; exposure_rgb_exr: Uint8Array; base_preview_jpeg: Uint8Array; exposure_preview_jpeg: Uint8Array }
+  | { kind: "result"; id: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "error"; id: number; message: string }
   | { kind: "cancelled"; id: number };
 
@@ -101,11 +102,6 @@ let jobId = 0;
 let activeJob: number | undefined;
 let automaticIccAvailable = false;
 let sourceOverrideActive = false;
-let baseBytes: Uint8Array | undefined;
-let exposureBytes: Uint8Array | undefined;
-let exposureRgbBytes: Uint8Array | undefined;
-let basePreviewBytes: Uint8Array | undefined;
-let exposurePreviewBytes: Uint8Array | undefined;
 let baseUrl: string | undefined;
 let exposureUrl: string | undefined;
 let exposureRgbUrl: string | undefined;
@@ -232,11 +228,6 @@ function updateCalculateState(): void {
 
 function resetResults(): void {
   revokeUrls();
-  baseBytes = undefined;
-  exposureBytes = undefined;
-  exposureRgbBytes = undefined;
-  basePreviewBytes = undefined;
-  exposurePreviewBytes = undefined;
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
   downloadExposureRgb.disabled = true;
@@ -278,7 +269,7 @@ function renderSummary(summary: SourceSummary): void {
   updateCalculateState();
 }
 
-function onWorkerMessage(message: WorkerMessage): void {
+async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   if (message.id !== inspectionId && message.id !== activeJob) return;
   if (message.kind === "progress") {
     progressStage.textContent = message.stage;
@@ -321,22 +312,27 @@ function onWorkerMessage(message: WorkerMessage): void {
     return;
   }
   activeJob = undefined;
-  baseBytes = message.base_exr;
-  exposureBytes = message.exposure_exr;
-  exposureRgbBytes = message.exposure_rgb_exr;
-  basePreviewBytes = message.base_preview_jpeg;
-  exposurePreviewBytes = message.exposure_preview_jpeg;
-  revokeUrls();
-  const basePart = new Uint8Array(baseBytes);
-  const exposurePart = new Uint8Array(exposureBytes);
-  const exposureRgbPart = new Uint8Array(exposureRgbBytes);
-  const basePreviewPart = new Uint8Array(basePreviewBytes);
-  const exposurePreviewPart = new Uint8Array(exposurePreviewBytes);
-  baseUrl = URL.createObjectURL(new Blob([basePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
-  exposureUrl = URL.createObjectURL(new Blob([exposurePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
-  exposureRgbUrl = URL.createObjectURL(new Blob([exposureRgbPart.buffer as ArrayBuffer], { type: "image/x-exr" }));
-  basePreviewUrl = URL.createObjectURL(new Blob([basePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
-  exposurePreviewUrl = URL.createObjectURL(new Blob([exposurePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
+  let files: Map<string, OutputFile>;
+  try {
+    const root = await (navigator.storage as any).getDirectory();
+    files = new Map(message.outputs.map((entry) => [entry.kind, entry]));
+    const openUrl = async (kind: string, mime: string): Promise<string | undefined> => {
+      const entry = files.get(kind);
+      if (!entry) return undefined;
+      const handle = await root.getFileHandle(entry.name);
+      return URL.createObjectURL(await handle.getFile({ type: mime }));
+    };
+    revokeUrls();
+    baseUrl = await openUrl("base-exr", "image/x-exr");
+    exposureUrl = await openUrl("exposure-normalized-ev", "image/x-exr");
+    exposureRgbUrl = await openUrl("exposure-exr", "image/x-exr");
+    basePreviewUrl = await openUrl("base-preview-jpeg", "image/jpeg");
+    exposurePreviewUrl = await openUrl("exposure-preview-jpeg", "image/jpeg");
+  } catch (error) {
+    setBusy(false);
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    return;
+  }
   showPreview(basePreviewImage, basePreviewUrl);
   showPreview(exposurePreviewImage, exposurePreviewUrl);
   renderReport(message.report);
@@ -345,9 +341,9 @@ function onWorkerMessage(message: WorkerMessage): void {
   downloadExposureRgb.disabled = false;
   basePreviewTrigger.disabled = false;
   exposurePreviewTrigger.disabled = false;
-  baseSize.textContent = formatBytes(baseBytes.byteLength);
-  exposureSize.textContent = formatBytes(exposureBytes.byteLength);
-  exposureRgbSize.textContent = formatBytes(exposureRgbBytes.byteLength);
+  baseSize.textContent = formatBytes(files.get("base-exr")?.size ?? 0);
+  exposureSize.textContent = formatBytes(files.get("exposure-normalized-ev")?.size ?? 0);
+  exposureRgbSize.textContent = formatBytes(files.get("exposure-exr")?.size ?? 0);
   setBusy(false);
   showStatus("Calculation complete. Outputs are ready.");
 }
