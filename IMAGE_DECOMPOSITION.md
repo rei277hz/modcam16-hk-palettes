@@ -231,11 +231,11 @@ tables. A simple tone curve or other approximation is not acceptable. GPU
 arithmetic uses portable `f32`; the exact CPU ACES implementation remains the
 reference and a failed numerical validation selects the CPU preview path.
 
-The page shows both preview JPEGs inline; their save controls appear in the
-full-screen preview overlay. The report records the source interpretation, selected decomposition options,
+The page shows both preview JPEGs inline as compact viewport-bounded thumbnails;
+their save controls appear in the full-screen preview overlay. The report records the source interpretation, selected decomposition options,
 compute backend, preview transform name/version, output sizes, warnings, and
 all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
-are revoked when a new job starts, a file is replaced, or the page is reset.
+are revoked when a new job starts or a file is replaced.
 
 The web layout is a single viewport workspace without visible title treatment,
 vertical page scrolling, or card containers. Upload is the first control at the

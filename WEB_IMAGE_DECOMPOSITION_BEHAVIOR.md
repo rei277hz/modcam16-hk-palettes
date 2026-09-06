@@ -7,8 +7,9 @@ This document describes the user-visible behavior of the standalone image decomp
 - The feature is exposed at `decompose.html` and keeps the existing picker at its current entry point.
 - The page has four areas: input, color interpretation, processing, and results.
 - The page works on desktop and touch mobile layouts. Controls remain keyboard accessible and have visible focus states.
-- The selected file name, format, dimensions, and file size are shown after selection.
-- A reset action clears the file, options, progress, report, and download URLs.
+- The selected file name, format, dimensions, and file size are shown together in
+  the vertical metadata list after selection; loading another file replaces the
+  current state and outputs.
 
 ## Input formats and metadata
 
@@ -22,7 +23,9 @@ Before processing, the source interpretation is established by precedence: expli
 
 - If a supported ICC profile is present and can be parsed, it is used automatically for decoding even when the file does not expose an exact gamut/gamma pair.
 - If the ICC profile can also be mapped to a supported exact gamut/transfer pair, the UI may show that pair as a reference or manual override.
-- If an ICC profile is absent, unsupported, malformed, or ambiguous, the controls start unset and the page explains why manual selection is required.
+- If an ICC profile is absent, unsupported, malformed, or ambiguous, any exact pair
+  detected from authoritative file metadata is pre-selected; otherwise the controls
+  start unset and manual selection is required.
 - Manual gamut choices are the supported source primaries (sRGB/Rec.709, Display P3/D65, Rec.2020/D65, Adobe RGB, ACEScg, and ACES2065-1 where applicable to the input codec).
 - Manual transfer choices include linear, sRGB, gamma 2.2, gamma 2.4, PQ, and HLG where the decoder exposes enough information to interpret them. Unsupported combinations are disabled rather than approximated.
 - For an EXR whose channels are already linear ACES-family data, the UI shows the exact detected profile when metadata permits it; it does not infer a profile from channel names alone.
@@ -39,13 +42,13 @@ The options panel contains:
 
 - **ACES profile**: a menu ordered as ACES 2.0 - SDR 100 nits (Rec.709), ACES 2.0 - SDR 100 nits (P3 D65), ACES 2.0 - HDR 1000 nits (P3 D65), and ACES 2.0 - HDR 1000 nits (Rec.2020). P3-D65 HDR 1000 nits is selected by default.
 - **Refl**: a numeric reflectance/lightness parameter used by the modCAM16-HK decomposition. The control has a documented default, min/max, step, and an editable numeric value.
-- **Gaussian blur**: an optional blur radius in pixels applied in the ACES2065-1/AP0 working space before solving. Zero disables blur. The radius and resulting kernel size are shown in the report.
+- Gaussian blur is fixed at `0` for the web UI; no blur selector is exposed.
 
-Defaults are loaded from the documented pipeline defaults, including `Refl = 0.5` and blur sigma `0`, and are visible before processing. Invalid, non-finite, or out-of-range values are rejected inline.
+Defaults are loaded from the documented pipeline defaults, including `Refl = 0.5`; the worker always receives blur sigma `0`. Invalid, non-finite, or out-of-range values are rejected inline.
 
 ## Processing and progress
 
-Pressing **Calculate decomposition** starts a cancellable job in a dedicated worker. The worker owns the WASM module and never blocks the UI thread. A second click is replaced by a **Cancel** action while work is running.
+Pressing **Decompose** starts a cancellable job in a dedicated worker. The worker owns the WASM module and never blocks the UI thread. A second click is replaced by a **Cancel** action while work is running. The processing row also reports whether WebGPU is available in the current browser context.
 
 The progress region always reports:
 
@@ -68,13 +71,13 @@ After successful calculation, the report includes:
 
 - source file and metadata summary;
 - confirmed source gamut and transfer;
-- ACES profile, Refl, blur radius, and effective blur kernel;
+- ACES profile, Refl, and the fixed zero blur setting;
 - dimensions, pixel count, and processing duration;
 - decomposition statistics (base/exposure ranges and means, projected/clipped/non-finite counts, and solver status);
 - warnings and diagnostic notes;
 - the exact output encoding and channel semantics, including the preview JPEG color pipeline.
 
-The report is rendered as text and a compact table so it can be copied or read without the canvas preview. It remains available until reset or a new file is selected.
+The report is rendered as text and a compact table so it can be copied or read without the canvas preview. It remains available until a new file is selected.
 
 ## Downloads and previews
 
@@ -88,7 +91,7 @@ Five buttons become enabled only after all output encodings finish:
 
 Each download is created from a browser `Blob` and uses a deterministic, descriptive filename derived from the input name and selected options. The UI reports output byte sizes and revokes old object URLs when a new job starts or is reset.
 
-The downloads panel renders the base and exposure preview JPEGs inline. Clicking either image opens a full-screen overlay with the matching save action; mobile browsers use the native file share sheet when available and other browsers use a download.
+The downloads panel renders both preview JPEGs as compact thumbnails. Each thumbnail is bounded by viewport-relative width and height so it cannot consume the full workspace before activation. Clicking either image opens a full-screen overlay with the matching save action; mobile browsers use the native file share sheet when available and other browsers use a download.
 
 ## Implementation contract
 

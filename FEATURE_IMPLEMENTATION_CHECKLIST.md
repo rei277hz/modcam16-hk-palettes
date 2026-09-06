@@ -42,9 +42,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 
 - [x] Publish `decompose.html` as a self-contained GitHub Pages entry point;
       keep all decoding, computation, and downloads local to the browser.
-- [x] Provide upload, metadata review, manual gamut/transfer confirmation,
-      ACES profile, Refl, Gaussian blur, calculate/cancel, report, and four
-      download controls.
+- [x] Provide load, metadata review, manual gamut/transfer confirmation, ACES
+      profile, Refl (with blur fixed at zero), decompose/cancel, report, and
+      five output controls.
 - [x] Retry JPEG decoding when a `.png` upload has an invalid PNG signature or
       parser failure, and report the final decoder error only after both paths.
 - [x] Use a parseable embedded ICC profile directly for decoding when no exact
@@ -65,6 +65,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Make previews clickable and open a full-screen overlay with the matching
       save action; use the mobile file share sheet when available and download
       as a fallback.
+- [x] Keep preview thumbnails compact with explicit viewport-relative width and
+      height bounds, and simplify the controls to detected dropdown defaults,
+      a WebGPU availability indicator, and a `Decompose` action.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.

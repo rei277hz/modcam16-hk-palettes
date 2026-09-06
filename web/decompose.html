@@ -12,38 +12,33 @@
       <section class="upload-row" aria-labelledby="input-heading">
         <h2 id="input-heading" class="sr-only">Input image</h2>
         <input id="file-input" type="file" accept=".exr,.jpg,.jpeg,.png,.heic,.heif,image/png,image/jpeg,image/heif,image/heic" hidden />
-        <button id="upload-button" class="upload-button" type="button"><span class="upload-mark" aria-hidden="true">↑</span><span><strong>Upload image</strong><small>EXR · JPEG · PNG · HEIC · HEIF</small></span></button>
-        <div class="file-summary" id="file-summary" aria-live="polite">No image selected.</div>
+        <button id="upload-button" class="upload-button" type="button"><svg class="upload-mark" aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9.5a2 2 0 0 1 2-2Z"/><path d="M2.5 10h18"/></svg><span><strong>Load image</strong><small>EXR · JPEG · PNG · HEIC · HEIF</small></span></button>
         <div id="metadata-summary" class="metadata-summary" hidden></div>
-        <div id="metadata-warning" class="inline-warning" role="status" hidden></div>
-        <button id="reset-button" class="button button-quiet" type="button" disabled>Reset</button>
-      </section>
-
-      <section class="control-row" aria-label="Color interpretation and decomposition options">
         <div class="control-group interpretation-group">
           <button id="override-source" class="override-button" type="button" hidden>Override embedded ICC</button>
           <div id="interpretation-fields" hidden>
-          <div class="group-label"><span>Source interpretation</span><em>Confirm or override</em></div>
-          <div class="form-grid">
-            <label class="field"><span>Gamut / primaries</span><select id="source-gamut"><option value="">Select gamut</option><option value="Rec.709 / sRGB">Rec.709 / sRGB</option><option value="Display P3 / P3-D65">Display P3 / P3-D65</option><option value="Rec.2020">Rec.2020</option><option value="Adobe RGB">Adobe RGB</option><option value="ACEScg">ACEScg</option><option value="ACES2065-1">ACES2065-1</option></select><small id="gamut-note" class="field-note">No source gamut selected.</small></label>
-            <label class="field"><span>Gamma / transfer</span><select id="source-transfer"><option value="">Select transfer</option><option value="Linear">Linear</option><option value="sRGB">sRGB</option><option value="Gamma 1.8">Gamma 1.8</option><option value="Gamma 2.2">Gamma 2.2</option><option value="Gamma 2.4 / BT.1886">Gamma 2.4 / BT.1886</option><option value="BT.709 / BT.2020">BT.709 / BT.2020</option><option value="PQ / ST 2084">PQ / ST 2084</option><option value="HLG / BT.2100">HLG / BT.2100</option></select><small id="transfer-note" class="field-note">No transfer selected.</small></label>
-          </div>
-          <p id="interpretation-error" class="validation-message" role="alert" hidden></p>
+            <div class="form-grid">
+              <label class="field"><span>Primaries</span><select id="source-gamut"><option value="">Select primaries</option><option value="Rec.709 / sRGB">Rec.709 / sRGB</option><option value="Display P3 / P3-D65">Display P3 / P3-D65</option><option value="Rec.2020">Rec.2020</option><option value="Adobe RGB">Adobe RGB</option><option value="ACEScg">ACEScg</option><option value="ACES2065-1">ACES2065-1</option></select></label>
+              <label class="field"><span>Transfer</span><select id="source-transfer"><option value="">Select transfer</option><option value="Linear">Linear</option><option value="sRGB">sRGB</option><option value="Gamma 1.8">Gamma 1.8</option><option value="Gamma 2.2">Gamma 2.2</option><option value="Gamma 2.4 / BT.1886">Gamma 2.4 / BT.1886</option><option value="BT.709 / BT.2020">BT.709 / BT.2020</option><option value="PQ / ST 2084">PQ / ST 2084</option><option value="HLG / BT.2100">HLG / BT.2100</option></select></label>
+            </div>
+            <p id="interpretation-error" class="validation-message" role="alert" hidden></p>
           </div>
         </div>
+        <div id="metadata-warning" class="inline-warning" role="status" hidden></div>
+      </section>
+
+      <section class="control-row" aria-label="Decomposition options">
         <div class="control-group options-group">
-          <div class="group-label"><span>Decomposition options</span><em>ACES 2.0</em></div>
           <div class="form-grid form-grid-options">
             <label class="field field-wide"><span>ACES profile</span><select id="aces-profile"><option value="1">ACES 2.0 - SDR 100 nits (Rec.709)</option><option value="4">ACES 2.0 - SDR 100 nits (P3 D65)</option><option value="2" selected>ACES 2.0 - HDR 1000 nits (P3 D65)</option><option value="0">ACES 2.0 - HDR 1000 nits (Rec.2020)</option></select></label>
-            <label class="field"><span>Refl</span><input id="refl" type="number" min="0.000001" max="1.2" step="0.001" value="0.5" inputmode="decimal" /><small class="field-note">Reflectance</small></label>
-            <label class="field"><span>Gaussian blur σ</span><input id="blur-sigma" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal" /><small class="field-note">Pixels · 0 off</small></label>
+            <label class="field"><span>Refl</span><input id="refl" type="number" min="0.000001" max="1.2" step="0.001" value="0.5" inputmode="decimal" /></label>
           </div>
           <p id="options-error" class="validation-message" role="alert" hidden></p>
         </div>
       </section>
 
-      <section class="processing-row" aria-labelledby="processing-heading">
-        <div class="process-controls"><h2 id="processing-heading">Process</h2><span id="worker-badge" class="status-badge">Worker ready</span><button id="calculate-button" class="button button-primary" type="button" disabled>Calculate decomposition</button><button id="cancel-button" class="button button-danger" type="button" hidden>Cancel</button></div>
+      <section class="processing-row" aria-label="Processing">
+        <div class="process-controls"><span id="worker-badge" class="status-badge">WebGPU unavailable</span><button id="calculate-button" class="button button-primary" type="button" disabled>Decompose</button><button id="cancel-button" class="button button-danger" type="button" hidden>Cancel</button></div>
         <div class="progress-block" aria-live="polite"><div class="progress-label-row"><span id="progress-stage">Waiting for an image</span><output id="progress-percent">0%</output></div><progress id="progress-bar" max="100" value="0">0%</progress><div id="progress-counters" class="progress-counters">No pixels processed.</div></div>
         <div id="processing-status" class="inline-status" role="status" hidden></div>
       </section>

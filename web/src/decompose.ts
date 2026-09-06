@@ -56,20 +56,15 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
 
 const fileInput = $("#file-input") as HTMLInputElement;
 const uploadButton = $("#upload-button") as HTMLButtonElement;
-const resetButton = $("#reset-button") as HTMLButtonElement;
-const fileSummary = $("#file-summary");
 const metadataSummary = $("#metadata-summary");
 const metadataWarning = $("#metadata-warning");
 const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
-const gamutNote = $("#gamut-note");
-const transferNote = $("#transfer-note");
 const interpretationFields = $("#interpretation-fields") as HTMLDivElement;
 const overrideSource = $("#override-source") as HTMLButtonElement;
 const interpretationError = $("#interpretation-error");
 const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
-const blurInput = $("#blur-sigma") as HTMLInputElement;
 const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
 const cancelButton = $("#cancel-button") as HTMLButtonElement;
@@ -110,6 +105,7 @@ let inspectionId = 0;
 let jobId = 0;
 let activeJob: number | undefined;
 let automaticIccAvailable = false;
+let sourceOverrideActive = false;
 let baseBytes: Uint8Array | undefined;
 let exposureBytes: Uint8Array | undefined;
 let exposureRgbBytes: Uint8Array | undefined;
@@ -125,7 +121,6 @@ function createWorker(): Worker {
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
   instance.onmessage = (event: MessageEvent<WorkerMessage>) => onWorkerMessage(event.data);
   instance.onerror = (event) => {
-    workerBadge.textContent = "Worker error";
     showStatus(event.message || "The decomposition worker failed.", true);
     setBusy(false);
   };
@@ -209,19 +204,15 @@ function setBusy(busy: boolean): void {
   calculateButton.disabled = busy || !canCalculate();
   cancelButton.hidden = !busy;
   uploadButton.disabled = busy;
-  resetButton.disabled = !selectedFile || busy;
   gamutSelect.disabled = busy;
   transferSelect.disabled = busy;
   profileSelect.disabled = busy;
   reflInput.disabled = busy;
-  blurInput.disabled = busy;
-  if (busy) workerBadge.textContent = "Calculating";
-  else if (selectedFile) workerBadge.textContent = "Worker ready";
 }
 
 function canCalculate(): boolean {
-  const manualOverride = Boolean(gamutSelect.value && transferSelect.value);
-  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value);
+  const manualOverride = sourceOverrideActive && Boolean(gamutSelect.value && transferSelect.value);
+  const manualSelectionPresent = sourceOverrideActive && Boolean(gamutSelect.value || transferSelect.value);
   return Boolean(
     selectedFile
       && selectedFormat
@@ -232,8 +223,7 @@ function canCalculate(): boolean {
 
 function validOptions(): boolean {
   const refl = Number(reflInput.value);
-  const blur = Number(blurInput.value);
-  return Number.isFinite(refl) && refl > 0 && refl <= 1.2 && Number.isFinite(blur) && blur >= 0 && blur <= 100;
+  return Number.isFinite(refl) && refl > 0 && refl <= 1.2;
 }
 
 function updateCalculateState(): void {
@@ -265,48 +255,18 @@ function resetResults(): void {
   reportContent.hidden = true;
 }
 
-function resetAll(): void {
-  if (activeJob !== undefined) worker.postMessage({ kind: "cancel", id: activeJob });
-  activeJob = undefined;
-  selectedFile = undefined;
-  selectedFormat = "";
-  fileInput.value = "";
-  fileSummary.textContent = "No image selected.";
-  metadataSummary.innerHTML = "";
-  metadataSummary.hidden = true;
-  metadataWarning.hidden = true;
-  metadataWarning.textContent = "";
-  gamutSelect.value = "";
-  transferSelect.value = "";
-  interpretationFields.hidden = true;
-  overrideSource.hidden = true;
-  automaticIccAvailable = false;
-  gamutNote.textContent = "No source gamut selected.";
-  transferNote.textContent = "No transfer selected.";
-  interpretationError.hidden = true;
-  optionsError.hidden = true;
-  progressStage.textContent = "Waiting for an image";
-  progressPercent.value = "0";
-  progressPercent.textContent = "0%";
-  progressBar.value = 0;
-  progressCounters.textContent = "No pixels processed.";
-  processingStatus.hidden = true;
-  resetResults();
-  setBusy(false);
-  updateCalculateState();
-}
-
 function renderSummary(summary: SourceSummary): void {
   selectedFormat = summary.format;
   automaticIccAvailable = Boolean(summary.automatic_icc);
+  sourceOverrideActive = !automaticIccAvailable;
   interpretationFields.hidden = automaticIccAvailable;
   overrideSource.hidden = !automaticIccAvailable;
   const rows = [
+    ["File", selectedFile?.name ?? "Unknown"],
+    ["Size", selectedFile ? formatBytes(selectedFile.size) : "Unknown"],
     ["Format", summary.format.toUpperCase()],
     ["Dimensions", `${formatCount(summary.width)} × ${formatCount(summary.height)}`],
     ["Metadata", summary.metadata_source ?? "No unambiguous profile metadata"],
-    ["Detected gamut", summary.gamut ?? "Not detected"],
-    ["Detected transfer", summary.transfer ?? "Not detected"],
   ];
   metadataSummary.innerHTML = rows.map(([label, value]) => `<dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd>`).join("");
   metadataSummary.hidden = false;
@@ -315,19 +275,10 @@ function renderSummary(summary: SourceSummary): void {
     metadataWarning.textContent = warnings.join(" ");
     metadataWarning.hidden = false;
   }
-  gamutSelect.value = "";
-  transferSelect.value = "";
-  if (summary.automatic_icc) {
-    const source = summary.metadata_source ?? "embedded ICC";
-    gamutNote.textContent = `ICC decode active (${source}); choose both values only to override it.`;
-    transferNote.textContent = `ICC decode active (${source}); choose both values only to override it.`;
-  } else if (summary.gamut && summary.transfer) {
-    gamutNote.textContent = `Reference metadata (${summary.gamut}); select both values to continue.`;
-    transferNote.textContent = `Reference metadata (${summary.transfer}); select both values to continue.`;
-  } else {
-    gamutNote.textContent = "Manual selection required; no usable ICC profile was detected.";
-    transferNote.textContent = "Manual selection required; no usable ICC profile was detected.";
-  }
+  // Metadata is a starting point for the two override controls. An embedded
+  // ICC profile remains authoritative until the user changes either value.
+  gamutSelect.value = summary.gamut ?? "";
+  transferSelect.value = summary.transfer ?? "";
   updateCalculateState();
 }
 
@@ -411,7 +362,7 @@ function onWorkerMessage(message: WorkerMessage): void {
 
 function renderReport(report: Report): void {
   const profile = profileSelect.selectedOptions[0]?.textContent ?? String(report.profile);
-  reportSummary.textContent = `${formatCount(report.width)} × ${formatCount(report.height)} pixels · ${profile} · Refl ${report.refl.toFixed(5)} · blur sigma ${report.blur_sigma.toFixed(2)}`;
+  reportSummary.textContent = `${formatCount(report.width)} × ${formatCount(report.height)} pixels · ${profile} · Refl ${report.refl.toFixed(5)}`;
   const confirmedSource = gamutSelect.value && transferSelect.value
     ? `${gamutSelect.value} / ${transferSelect.value}`
     : automaticIccAvailable
@@ -459,17 +410,16 @@ async function inspectFile(file: File, format: string): Promise<void> {
 async function chooseFile(file: File): Promise<void> {
   const format = detectFormat(file);
   resetResults();
+  sourceOverrideActive = false;
   if (!format) {
     selectedFile = undefined;
     selectedFormat = "";
-    fileSummary.textContent = "Unsupported file type. Choose EXR, JPEG, PNG, HEIC, or HEIF.";
+    showStatus("Unsupported file type. Choose EXR, JPEG, PNG, HEIC, or HEIF.", true);
     setBusy(false);
     return;
   }
   selectedFile = file;
   selectedFormat = format;
-  resetButton.disabled = false;
-  fileSummary.textContent = `${file.name} · ${formatBytes(file.size)} · inspecting metadata…`;
   metadataSummary.hidden = true;
   metadataWarning.hidden = true;
   progressStage.textContent = "Inspecting metadata";
@@ -477,7 +427,6 @@ async function chooseFile(file: File): Promise<void> {
   progressPercent.textContent = "0%";
   try {
     await inspectFile(file, format);
-    fileSummary.textContent = `${file.name} · ${formatBytes(file.size)}`;
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -488,8 +437,8 @@ async function calculate(): Promise<void> {
   if (!selectedFile || !selectedFormat) return;
   interpretationError.hidden = true;
   optionsError.hidden = true;
-  const manualOverride = Boolean(gamutSelect.value && transferSelect.value);
-  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value);
+  const manualOverride = sourceOverrideActive && Boolean(gamutSelect.value && transferSelect.value);
+  const manualSelectionPresent = sourceOverrideActive && Boolean(gamutSelect.value || transferSelect.value);
   if (manualSelectionPresent && !manualOverride) {
     interpretationError.textContent = "Select both source values, or leave both blank to use the embedded ICC profile.";
     interpretationError.hidden = false;
@@ -501,7 +450,7 @@ async function calculate(): Promise<void> {
     return;
   }
   if (!validOptions()) {
-    optionsError.textContent = "Refl must be greater than zero and blur sigma must be between 0 and 100.";
+    optionsError.textContent = "Refl must be greater than zero and no greater than 1.2.";
     optionsError.hidden = false;
     return;
   }
@@ -522,7 +471,7 @@ async function calculate(): Promise<void> {
     transfer: manualOverride ? transferSelect.value : null,
     profile: Number(profileSelect.value),
     refl: Number(reflInput.value),
-    blur_sigma: Number(blurInput.value),
+    blur_sigma: 0,
   };
   worker.postMessage({ kind: "calculate", id, format: selectedFormat, bytes, request }, [bytes]);
 }
@@ -570,7 +519,6 @@ async function savePreview(kind: "base" | "exposure"): Promise<void> {
 
 uploadButton.addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
-resetButton.addEventListener("click", resetAll);
 calculateButton.addEventListener("click", () => void calculate());
 cancelButton.addEventListener("click", cancel);
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
@@ -582,15 +530,20 @@ exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
 closePreviewButton.addEventListener("click", closePreview);
 previewOverlay.querySelector("[data-close-preview]")?.addEventListener("click", closePreview);
 window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !previewOverlay.hidden) closePreview(); });
-for (const control of [gamutSelect, transferSelect, profileSelect, reflInput, blurInput]) {
+for (const control of [gamutSelect, transferSelect, profileSelect, reflInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
 }
 overrideSource.addEventListener("click", () => {
+  sourceOverrideActive = true;
   interpretationFields.hidden = false;
   overrideSource.hidden = true;
   gamutSelect.focus();
   updateCalculateState();
 });
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
+const browserNavigator = navigator as Navigator & { gpu?: unknown };
+workerBadge.textContent = browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext)
+  ? "WebGPU available"
+  : "WebGPU unavailable";
 setBusy(false);
