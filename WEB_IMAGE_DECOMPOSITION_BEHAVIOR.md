@@ -26,7 +26,7 @@ Before processing, the source interpretation is established by precedence: expli
 - If an ICC profile is absent, unsupported, malformed, or ambiguous, any exact pair
   detected from authoritative file metadata is pre-selected; otherwise the controls
   start unset and manual selection is required.
-- Manual gamut choices are the supported source primaries (sRGB/Rec.709, Display P3/D65, Rec.2020/D65, Adobe RGB, ACEScg, and ACES2065-1 where applicable to the input codec).
+- Manual Primaries choices are the supported source primaries (sRGB (Rec.709), Display P3 (P3-D65), Rec.2020/D65, Adobe RGB, ACEScg, and ACES2065-1 where applicable to the input codec).
 - Manual transfer choices include linear, sRGB, gamma 2.2, gamma 2.4, PQ, and HLG where the decoder exposes enough information to interpret them. Unsupported combinations are disabled rather than approximated.
 - For an EXR whose channels are already linear ACES-family data, the UI shows the exact detected profile when metadata permits it; it does not infer a profile from channel names alone.
 
