@@ -72,6 +72,8 @@ Branch: `feat/web-image-decomposition-p3-preview`
       metadata area on narrow screens; allow long metadata values to wrap.
 - [x] Keep Refl beside the ACES profile selector, use `0.1` increments, and
       display the value with three decimal places.
+- [x] Keep the mobile progress bar and Decompose/Cancel action on one row with
+      the action right-aligned.
 - [x] Report WebGPU availability in a bottom-of-page footnote, explaining GPU
       acceleration or the longer-running CPU-based WASM implementation.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.

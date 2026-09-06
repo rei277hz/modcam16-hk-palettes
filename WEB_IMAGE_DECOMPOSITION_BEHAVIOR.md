@@ -38,6 +38,9 @@ values confirms the override; there is no separate confirmation checkbox. On
 narrow screens, the selectors remain in a right-hand column beside the load and
 metadata area, while long metadata values wrap in their value column.
 
+On narrow screens, the progress bar and the Decompose/Cancel action share one
+row, with the action aligned to the right.
+
 ## Decomposition options
 
 The options panel contains:

@@ -101,8 +101,10 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .inline-warning { grid-column: 1 / -1; }
   .interpretation-group .form-grid { grid-template-columns: 1fr; }
   .control-row { gap: 14px; padding-bottom: 8px; }
-  .processing-row { grid-template-columns: 1fr; gap: 7px; padding-bottom: 8px; }
-  .process-controls { justify-content: space-between; }
+  .processing-row { grid-template-columns: minmax(0, 1fr) auto; gap: 7px; padding-bottom: 8px; }
+  .process-controls { grid-column: 2; grid-row: 1; justify-content: flex-end; }
+  .progress-block { grid-column: 1; grid-row: 1; }
+  #processing-status { grid-column: 1 / -1; grid-row: 2; }
   .results-row { grid-template-columns: 1fr; grid-template-rows: auto auto; gap: 8px; }
   .previews { width: 100%; height: clamp(100px, 18vh, 145px); }
   .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -115,6 +117,7 @@ progress::-moz-progress-bar { background: #89e0c4; }
 @media (max-width: 520px) {
   .control-row { grid-template-columns: 1fr; }
   .form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); }
+  #refl { width: 100%; }
   .field-wide { grid-column: 1 / -1; }
   .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .download-button span { font-size: 10px; }
