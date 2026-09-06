@@ -38,7 +38,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .override-button { border: 0; border-bottom: 1px solid #58776d; background: transparent; padding: 0 0 2px; color: #89e0c4; font-size: 11px; cursor: pointer; }
 .override-button:hover { color: #d5fff2; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); }
+.form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); column-gap: 0; }
 .form-grid-options .field:last-child { justify-items: end; }
 .field { min-width: 0; display: grid; gap: 4px; }
 .field > span { color: #bfcbd0; font-size: 11px; }
