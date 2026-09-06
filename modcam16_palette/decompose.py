@@ -443,7 +443,7 @@ def prompt_input_color_space() -> str:
         print(f"  {index}. {name}")
     while True:
         try:
-            answer = input("Color space [1-4]: ").strip()
+            answer = input(f"Color space [1-{len(INPUT_COLOR_SPACES)}]: ").strip()
         except EOFError as exc:
             raise ValueError(
                 "Input color space selection was cancelled; use --input-color-space."
