@@ -36,6 +36,8 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .control-group { min-width: 0; }
 .group-label { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 9px; color: #dce6e8; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .group-label em { color: #71808b; font-size: 10px; font-style: normal; font-weight: 500; letter-spacing: .02em; text-transform: none; }
+.override-button { border: 0; border-bottom: 1px solid #58776d; background: transparent; padding: 0 0 2px; color: #89e0c4; font-size: 11px; cursor: pointer; }
+.override-button:hover { color: #d5fff2; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .form-grid-options { grid-template-columns: minmax(0, 1.7fr) repeat(2, minmax(0, .8fr)); }
 .field { min-width: 0; display: grid; gap: 4px; }

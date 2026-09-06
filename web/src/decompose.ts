@@ -64,7 +64,8 @@ const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
 const gamutNote = $("#gamut-note");
 const transferNote = $("#transfer-note");
-const confirmColor = $("#confirm-color") as HTMLInputElement;
+const interpretationFields = $("#interpretation-fields") as HTMLDivElement;
+const overrideSource = $("#override-source") as HTMLButtonElement;
 const interpretationError = $("#interpretation-error");
 const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
@@ -211,7 +212,6 @@ function setBusy(busy: boolean): void {
   resetButton.disabled = !selectedFile || busy;
   gamutSelect.disabled = busy;
   transferSelect.disabled = busy;
-  confirmColor.disabled = busy;
   profileSelect.disabled = busy;
   reflInput.disabled = busy;
   blurInput.disabled = busy;
@@ -220,8 +220,8 @@ function setBusy(busy: boolean): void {
 }
 
 function canCalculate(): boolean {
-  const manualOverride = Boolean(gamutSelect.value && transferSelect.value && confirmColor.checked);
-  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value || confirmColor.checked);
+  const manualOverride = Boolean(gamutSelect.value && transferSelect.value);
+  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value);
   return Boolean(
     selectedFile
       && selectedFormat
@@ -278,7 +278,8 @@ function resetAll(): void {
   metadataWarning.textContent = "";
   gamutSelect.value = "";
   transferSelect.value = "";
-  confirmColor.checked = false;
+  interpretationFields.hidden = true;
+  overrideSource.hidden = true;
   automaticIccAvailable = false;
   gamutNote.textContent = "No source gamut selected.";
   transferNote.textContent = "No transfer selected.";
@@ -298,6 +299,8 @@ function resetAll(): void {
 function renderSummary(summary: SourceSummary): void {
   selectedFormat = summary.format;
   automaticIccAvailable = Boolean(summary.automatic_icc);
+  interpretationFields.hidden = automaticIccAvailable;
+  overrideSource.hidden = !automaticIccAvailable;
   const rows = [
     ["Format", summary.format.toUpperCase()],
     ["Dimensions", `${formatCount(summary.width)} × ${formatCount(summary.height)}`],
@@ -314,14 +317,13 @@ function renderSummary(summary: SourceSummary): void {
   }
   gamutSelect.value = "";
   transferSelect.value = "";
-  confirmColor.checked = false;
   if (summary.automatic_icc) {
     const source = summary.metadata_source ?? "embedded ICC";
-    gamutNote.textContent = `Automatic decode available from ${source}; leave this blank to use it or choose a manual override.`;
-    transferNote.textContent = `Automatic decode available from ${source}; leave this blank to use it or choose a manual override.`;
+    gamutNote.textContent = `ICC decode active (${source}); choose both values only to override it.`;
+    transferNote.textContent = `ICC decode active (${source}); choose both values only to override it.`;
   } else if (summary.gamut && summary.transfer) {
-    gamutNote.textContent = `Reference metadata only (${summary.gamut}); select it and confirm only to override the automatic ICC path.`;
-    transferNote.textContent = `Reference metadata only (${summary.transfer}); select it and confirm only to override the automatic ICC path.`;
+    gamutNote.textContent = `Reference metadata (${summary.gamut}); select both values to continue.`;
+    transferNote.textContent = `Reference metadata (${summary.transfer}); select both values to continue.`;
   } else {
     gamutNote.textContent = "Manual selection required; no usable ICC profile was detected.";
     transferNote.textContent = "Manual selection required; no usable ICC profile was detected.";
@@ -486,15 +488,15 @@ async function calculate(): Promise<void> {
   if (!selectedFile || !selectedFormat) return;
   interpretationError.hidden = true;
   optionsError.hidden = true;
-  const manualOverride = Boolean(gamutSelect.value && transferSelect.value && confirmColor.checked);
-  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value || confirmColor.checked);
+  const manualOverride = Boolean(gamutSelect.value && transferSelect.value);
+  const manualSelectionPresent = Boolean(gamutSelect.value || transferSelect.value);
   if (manualSelectionPresent && !manualOverride) {
-    interpretationError.textContent = "Either leave the source fields blank to use the embedded ICC profile, or select both values and confirm the manual override.";
+    interpretationError.textContent = "Select both source values, or leave both blank to use the embedded ICC profile.";
     interpretationError.hidden = false;
     return;
   }
   if (!manualOverride && !automaticIccAvailable) {
-    interpretationError.textContent = "This file does not provide a usable embedded ICC profile. Select both source values and confirm the override.";
+    interpretationError.textContent = "This file does not provide a usable embedded ICC profile. Select both source values.";
     interpretationError.hidden = false;
     return;
   }
@@ -580,9 +582,15 @@ exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
 closePreviewButton.addEventListener("click", closePreview);
 previewOverlay.querySelector("[data-close-preview]")?.addEventListener("click", closePreview);
 window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !previewOverlay.hidden) closePreview(); });
-for (const control of [gamutSelect, transferSelect, confirmColor, profileSelect, reflInput, blurInput]) {
+for (const control of [gamutSelect, transferSelect, profileSelect, reflInput, blurInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
 }
+overrideSource.addEventListener("click", () => {
+  interpretationFields.hidden = false;
+  overrideSource.hidden = true;
+  gamutSelect.focus();
+  updateCalculateState();
+});
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
 setBusy(false);

@@ -188,10 +188,18 @@ the profile cannot be reduced to an exact gamut/gamma pair. The UI may display
 an exact pair when it can be proven, but it never guesses one from a filename,
 extension, weak metadata, or an ambiguous ICC. Manual gamut and transfer
 controls remain available and supersede ICC-backed decoding. Processing is
-disabled until the source interpretation is confirmed.
+disabled until the source interpretation is resolved. The source interpretation
+controls are hidden on initial load and remain collapsed when a usable ICC is
+available; an “Override embedded ICC” action reveals them. If no usable ICC is
+available, the controls are shown automatically and both values are required.
+There is no separate confirmation checkbox: selecting both override values is
+the confirmation.
 
 The options panel exposes the ACES profile used by the decomposition, `Refl`,
-and Gaussian blur sigma. Defaults and numeric ranges are visible, invalid
+and Gaussian blur sigma. The ACES profile menu is ordered as `ACES 2.0 - SDR
+100 nits (Rec.709)`, `ACES 2.0 - SDR 100 nits (P3 D65)`, `ACES 2.0 - HDR 1000
+nits (P3 D65)`, and `ACES 2.0 - HDR 1000 nits (Rec.2020)`; P3-D65 HDR 1000 nits
+is selected by default. Defaults and numeric ranges are visible, invalid
 values are rejected inline, and a running job can be cancelled. A dedicated
 worker reports decode, interpretation, ACES conversion, blur, decomposition,
 diagnostics, output encoding, and completion as monotonic progress stages with

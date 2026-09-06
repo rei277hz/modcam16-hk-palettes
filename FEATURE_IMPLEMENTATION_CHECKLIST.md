@@ -50,6 +50,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Use a parseable embedded ICC profile directly for decoding when no exact
       gamut/gamma pair is available; permit explicit gamut/transfer controls to
       override that ICC path and never guess missing values.
+- [x] Keep source interpretation hidden until it is needed; expose an explicit
+      ICC override action and require both override values without a redundant
+      confirmation checkbox.
 - [x] Return base ACEScg fp16 EXR, normalized exposure fp16 EXR, direct-scalar
       exposure RGB ACEScg fp16 EXR, base preview JPEG, and exposure preview
       JPEG from the worker.

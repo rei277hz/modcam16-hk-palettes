@@ -27,11 +27,17 @@ Before processing, the source interpretation is established by precedence: expli
 - Manual transfer choices include linear, sRGB, gamma 2.2, gamma 2.4, PQ, and HLG where the decoder exposes enough information to interpret them. Unsupported combinations are disabled rather than approximated.
 - For an EXR whose channels are already linear ACES-family data, the UI shows the exact detected profile when metadata permits it; it does not infer a profile from channel names alone.
 
+The source interpretation controls are hidden on initial load and remain
+collapsed when a usable ICC profile is available. An “Override embedded ICC”
+action reveals both fields for an explicit override. If no usable ICC exists,
+the fields are shown automatically and both values are required. Selecting both
+values confirms the override; there is no separate confirmation checkbox.
+
 ## Decomposition options
 
 The options panel contains:
 
-- **ACES profile**: a named profile from the existing Rust color core (Rec.2020 HDR, Rec.709 SDR, P3-D65 HDR, P3-D65 SDR, or direct sRGB). The selected profile controls the exact ACES 2.0 inverse view used by the solver and the preview JPEG transforms.
+- **ACES profile**: a menu ordered as ACES 2.0 - SDR 100 nits (Rec.709), ACES 2.0 - SDR 100 nits (P3 D65), ACES 2.0 - HDR 1000 nits (P3 D65), and ACES 2.0 - HDR 1000 nits (Rec.2020). P3-D65 HDR 1000 nits is selected by default.
 - **Refl**: a numeric reflectance/lightness parameter used by the modCAM16-HK decomposition. The control has a documented default, min/max, step, and an editable numeric value.
 - **Gaussian blur**: an optional blur radius in pixels applied in the ACES2065-1/AP0 working space before solving. Zero disables blur. The radius and resulting kernel size are shown in the report.
 
