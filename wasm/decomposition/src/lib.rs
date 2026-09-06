@@ -13,8 +13,8 @@ use exr::{
     },
     prelude::{Encoding, ReadChannels, ReadLayers, Vec2, WritableImage},
 };
-use image::{codecs::jpeg::JpegEncoder as ImageJpegEncoder, ExtendedColorType, ImageEncoder as _};
 use half::f16;
+use image::{codecs::jpeg::JpegEncoder as ImageJpegEncoder, ExtendedColorType, ImageEncoder as _};
 use jpeg_decoder::{Decoder as JpegDecoder, PixelFormat};
 use js_sys::{Float32Array, Object, Reflect, Uint8Array};
 use png::{Decoder as PngDecoder, Transformations};
@@ -71,9 +71,9 @@ const XYZ_D65_TO_AP0: [[f32; 3]; 3] = [
     [0.0, 0.0, 0.918224],
 ];
 const XYZ_TO_P3: [[f32; 3]; 3] = [
-    [2.4934969, -0.93138356, -0.40271077],
-    [-0.8294889, 1.7626641, 0.023624685],
-    [0.03584583, -0.07617239, 0.9568845],
+    [2.493496911941425, -0.931383617919124, -0.402710784450717],
+    [-0.829488969561575, 1.762664060318347, 0.023624685841944],
+    [0.035845830243784, -0.076172389268042, 0.956884524007687],
 ];
 static P3_D65_ICC: OnceLock<&'static [u8]> = OnceLock::new();
 
@@ -122,6 +122,10 @@ pub struct Report {
     pub gpu_adapter: Option<String>,
     pub gpu_validation: Option<String>,
     pub batch_size: u32,
+    pub preview_transform: String,
+    pub preview_encoding: String,
+    pub preview_backend: String,
+    pub preview_transform_ms: f32,
     pub warnings: Vec<String>,
 }
 
@@ -153,6 +157,10 @@ struct SolveStats {
     gpu_validation: Option<String>,
     #[serde(default)]
     batch_size: u32,
+    #[serde(default)]
+    preview_backend: String,
+    #[serde(default)]
+    preview_transform_ms: f32,
 }
 
 fn flat_pixels(rgb: &[[f32; 3]]) -> Vec<f32> {
@@ -229,7 +237,11 @@ fn prepare_rgb(
     let manual = match (&req.gamut, &req.transfer) {
         (Some(gamut), Some(transfer)) => Some((gamut.as_str(), transfer.as_str())),
         (None, None) => None,
-        _ => return Err("Source gamut and transfer must either both be set or both be omitted.".into()),
+        _ => {
+            return Err(
+                "Source gamut and transfer must either both be set or both be omitted.".into(),
+            )
+        }
     };
     if let Some((gamut, transfer)) = manual {
         for px in &mut rgb {
@@ -393,10 +405,13 @@ fn parse_png_inner(data: &[u8]) -> Result<Pixels, String> {
         };
         g.zip(tr).map(|(a, b)| (a.to_string(), b.to_string()))
     });
-    let icc_profile = info
-        .icc_profile
-        .as_ref()
-        .and_then(|v| if is_usable_icc_profile(v.as_ref()) { Some(v.as_ref().to_vec()) } else { None });
+    let icc_profile = info.icc_profile.as_ref().and_then(|v| {
+        if is_usable_icc_profile(v.as_ref()) {
+            Some(v.as_ref().to_vec())
+        } else {
+            None
+        }
+    });
     let automatic_icc = icc_profile.is_some();
     Ok(Pixels {
         width: out.width as usize,
@@ -465,9 +480,13 @@ fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
             ]
         })
         .collect();
-    let icc_profile = icc
-        .as_deref()
-        .and_then(|bytes| if is_usable_icc_profile(bytes) { Some(bytes.to_vec()) } else { None });
+    let icc_profile = icc.as_deref().and_then(|bytes| {
+        if is_usable_icc_profile(bytes) {
+            Some(bytes.to_vec())
+        } else {
+            None
+        }
+    });
     let automatic_icc = icc_profile.is_some();
     let metadata_source = if automatic_icc {
         Some("JPEG ICC profile".to_string())
@@ -616,6 +635,16 @@ fn write_exr(
         Text::new_or_panic("decompositionProjectedPixels"),
         AttributeValue::I32(report.projected_pixels as i32),
     );
+    if component.starts_with("exposure") {
+        attrs.other.insert(
+            Text::new_or_panic("decompositionExposureEncoding"),
+            AttributeValue::Text(Text::new_or_panic(if component == "exposure_rgb" {
+                "RGB=(s,s,s); s=2^(normalized_exposure*20-10); linear scalar"
+            } else {
+                "normalized_exposure=clamp(log2(s),-10,10)/20+0.5"
+            })),
+        );
+    }
     let layer = Layer::new(
         (width, height),
         LayerAttributes::named("decomposition"),
@@ -669,7 +698,9 @@ fn parse_request(value: JsValue) -> Result<Request, String> {
             }
         }
         _ => {
-            return Err("Source gamut and transfer must either both be set or both be omitted.".into())
+            return Err(
+                "Source gamut and transfer must either both be set or both be omitted.".into(),
+            )
         }
     }
     if !req.refl.is_finite()
@@ -689,6 +720,7 @@ fn payload(
     report: Report,
     base: Vec<u8>,
     exposure: Vec<u8>,
+    exposure_rgb: Vec<u8>,
     base_preview: Vec<u8>,
     exposure_preview: Vec<u8>,
 ) -> Result<JsValue, String> {
@@ -711,6 +743,12 @@ fn payload(
         &Uint8Array::from(exposure.as_slice()).into(),
     )
     .map_err(|e| format!("exposure: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure_rgb_exr"),
+        &Uint8Array::from(exposure_rgb.as_slice()).into(),
+    )
+    .map_err(|e| format!("exposure RGB: {e:?}"))?;
     Reflect::set(
         &object,
         &JsValue::from_str("base_preview_jpeg"),
@@ -892,6 +930,10 @@ fn report_from_stats(
         gpu_adapter: stats.gpu_adapter.clone(),
         gpu_validation: stats.gpu_validation.clone(),
         batch_size: stats.batch_size,
+        preview_transform: "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0".into(),
+        preview_encoding: "Display P3-D65 primaries / sRGB encoding / JPEG".into(),
+        preview_backend: if stats.preview_backend.is_empty() { "wasm-cpu".into() } else { stats.preview_backend.clone() },
+        preview_transform_ms: stats.preview_transform_ms,
         warnings,
     }
 }
@@ -924,32 +966,37 @@ fn encode_preview_jpeg(width: usize, height: usize, pixels: &[u8]) -> Result<Vec
         .set_icc_profile(display_p3_icc_profile().to_vec())
         .map_err(|e| e.to_string())?;
     encoder
-        .write_image(
-            pixels,
-            width as u32,
-            height as u32,
-            ExtendedColorType::Rgb8,
-        )
+        .write_image(pixels, width as u32, height as u32, ExtendedColorType::Rgb8)
         .map_err(|e| e.to_string())?;
     Ok(output)
 }
 
-fn encode_base_preview_jpeg(base: &[[f32; 3]], width: usize, height: usize) -> Result<Vec<u8>, String> {
-    let mut pixels = Vec::with_capacity(width * height * 3);
-    for rgb in base {
-        let acescg = mat(AP0_TO_AP1, *rgb);
-        let xyz = modcam16_color_core::aces_output::forward(
-            4,
-            [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
-        );
-        let p3 = mat(
-            XYZ_TO_P3,
-            [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
-        );
-        pixels.push((srgb_encode_component(p3[0]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-        pixels.push((srgb_encode_component(p3[1]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-        pixels.push((srgb_encode_component(p3[2]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-    }
+// Accurate CPU reference for the production WGSL preview path. The core API
+// accepts ACEScg, so preserve the same AP0 -> AP1 boundary on both backends.
+fn preview_rgb_for_ap0(ap0: [f32; 3]) -> [f32; 3] {
+    let acescg = mat(AP0_TO_AP1, ap0);
+    let xyz = modcam16_color_core::aces_output::forward(
+        4,
+        [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
+    );
+    mat(XYZ_TO_P3, [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32]).map(srgb_encode_component)
+}
+
+fn preview_bytes(rgb: impl Iterator<Item = [f32; 3]>) -> Vec<u8> {
+    rgb.flat_map(|p| p.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8))
+        .collect()
+}
+
+fn exposure_scalar(normalized: f32) -> f32 {
+    2.0_f32.powf(normalized * 20.0 - 10.0)
+}
+
+fn encode_base_preview_jpeg(
+    base: &[[f32; 3]],
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, String> {
+    let pixels = preview_bytes(base.iter().map(|p| preview_rgb_for_ap0(*p)));
     encode_preview_jpeg(width, height, &pixels)
 }
 
@@ -959,33 +1006,21 @@ fn encode_exposure_preview_jpeg(
     height: usize,
     refl: f32,
 ) -> Result<Vec<u8>, String> {
-    let mut pixels = Vec::with_capacity(width * height * 3);
-    for value in exposure {
-        let scale = 2.0_f32.powf(*value * 20.0 - 10.0);
-        let ap0 = [refl * scale; 3];
-        let acescg = mat(AP0_TO_AP1, ap0);
-        let xyz = modcam16_color_core::aces_output::forward(
-            4,
-            [acescg[0] as f64, acescg[1] as f64, acescg[2] as f64],
-        );
-        let p3 = mat(
-            XYZ_TO_P3,
-            [xyz[0] as f32, xyz[1] as f32, xyz[2] as f32],
-        );
-        pixels.push((srgb_encode_component(p3[0]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-        pixels.push((srgb_encode_component(p3[1]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-        pixels.push((srgb_encode_component(p3[2]) * 255.0 + 0.5).clamp(0.0, 255.0) as u8);
-    }
+    let pixels = preview_bytes(
+        exposure
+            .iter()
+            .map(|e| preview_rgb_for_ap0([refl * exposure_scalar(*e); 3])),
+    );
     encode_preview_jpeg(width, height, &pixels)
 }
 
-fn encode_result(
+fn encode_exrs(
     base: &[[f32; 3]],
     exposure: &[f32],
     width: usize,
     height: usize,
-    report: Report,
-) -> Result<JsValue, String> {
+    report: &Report,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
     let rb: Vec<f16> = base
         .iter()
         .flat_map(|v| {
@@ -1025,15 +1060,38 @@ fn encode_result(
         "exposure",
         &report,
     )?;
-    let base_preview_jpeg = encode_base_preview_jpeg(base, width, height)?;
-    let exposure_preview_jpeg =
-        encode_exposure_preview_jpeg(exposure, width, height, report.refl)?;
+    let scalar: Vec<f16> = exposure.iter()
+        .map(|e| f16::from_f32(exposure_scalar(*e)))
+        .collect();
+    let exposure_rgb_exr = write_exr(
+        width, height,
+        vec![
+            AnyChannel::new("R", FlatSamples::F16(scalar.clone())),
+            AnyChannel::new("G", FlatSamples::F16(scalar.clone())),
+            AnyChannel::new("B", FlatSamples::F16(scalar)),
+        ],
+        "exposure_rgb", report,
+    )?;
+    Ok((base_exr, exposure_exr, exposure_rgb_exr))
+}
+
+fn encode_result(
+    base: &[[f32; 3]],
+    exposure: &[f32],
+    width: usize,
+    height: usize,
+    report: Report,
+) -> Result<JsValue, String> {
+    let (base_exr, exposure_exr, exposure_rgb_exr) = encode_exrs(base, exposure, width, height, &report)?;
+    let base_preview = encode_base_preview_jpeg(base, width, height)?;
+    let exposure_preview = encode_exposure_preview_jpeg(exposure, width, height, report.refl)?;
     payload(
         report,
         base_exr,
         exposure_exr,
-        base_preview_jpeg,
-        exposure_preview_jpeg,
+        exposure_rgb_exr,
+        base_preview,
+        exposure_preview,
     )
 }
 
@@ -1191,6 +1249,32 @@ pub async fn gpu_solve_chunk(data: Vec<f32>, request: JsValue) -> Result<JsValue
     Ok(object.into())
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn gpu_preview_pixels(
+    base: Vec<f32>,
+    exposure: Vec<f32>,
+    refl: f32,
+) -> Result<JsValue, JsValue> {
+    let (base_pixels, exposure_pixels) = gpu::preview(base, exposure, refl)
+        .await
+        .map_err(|e| JsValue::from_str(&e))?;
+    let object = Object::new();
+    Reflect::set(
+        &object,
+        &JsValue::from_str("base"),
+        &Uint8Array::from(base_pixels.as_slice()).into(),
+    )
+    .map_err(|e| JsValue::from_str(&format!("base preview: {e:?}")))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure"),
+        &Uint8Array::from(exposure_pixels.as_slice()).into(),
+    )
+    .map_err(|e| JsValue::from_str(&format!("exposure preview: {e:?}")))?;
+    Ok(object.into())
+}
+
 #[wasm_bindgen]
 pub fn encode_outputs(
     base: Vec<f32>,
@@ -1219,6 +1303,80 @@ pub fn encode_outputs(
     let report = report_from_stats(width as usize, height as usize, &req, &stats, warnings);
     encode_result(&base, &exposure, width as usize, height as usize, report)
         .map_err(|e| JsValue::from_str(&e))
+}
+
+// The worker uses these separate exports so progress measures ACES forward
+// processing, EXR encoding, and each JPEG compression call independently.
+#[wasm_bindgen]
+pub fn encode_exr_outputs(
+    base: Vec<f32>,
+    exposure: Vec<f32>,
+    width: u32,
+    height: u32,
+    request: JsValue,
+    stats: JsValue,
+    warnings: JsValue,
+) -> Result<JsValue, JsValue> {
+    let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+    let pixel_count = width as usize * height as usize;
+    if width == 0 || height == 0 || base.len() != pixel_count * 3 || exposure.len() != pixel_count {
+        return Err(JsValue::from_str(
+            "Output buffers do not match the image dimensions.",
+        ));
+    }
+    let stats: SolveStats =
+        serde_wasm_bindgen::from_value(stats).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let warnings: Vec<String> =
+        serde_wasm_bindgen::from_value(warnings).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let base: Vec<[f32; 3]> = base.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
+    let report = report_from_stats(width as usize, height as usize, &req, &stats, warnings);
+    let (base_exr, exposure_exr, exposure_rgb_exr) =
+        encode_exrs(&base, &exposure, width as usize, height as usize, &report)
+            .map_err(|e| JsValue::from_str(&e))?;
+    payload(report, base_exr, exposure_exr, exposure_rgb_exr, Vec::new(), Vec::new())
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+#[wasm_bindgen]
+pub fn encode_preview_pixels(pixels: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, JsValue> {
+    if width == 0 || height == 0 || pixels.len() != width as usize * height as usize * 3 {
+        return Err(JsValue::from_str(
+            "Preview pixels do not match the image dimensions.",
+        ));
+    }
+    encode_preview_jpeg(width as usize, height as usize, &pixels).map_err(|e| JsValue::from_str(&e))
+}
+
+#[wasm_bindgen]
+pub fn cpu_preview_pixels(
+    base: Vec<f32>,
+    exposure: Vec<f32>,
+    refl: f32,
+) -> Result<JsValue, JsValue> {
+    if base.len() != exposure.len() * 3 || !refl.is_finite() || refl <= 0.0 {
+        return Err(JsValue::from_str("Invalid preview input buffers or Refl."));
+    }
+    let base = preview_bytes(
+        base.chunks_exact(3)
+            .map(|p| preview_rgb_for_ap0([p[0], p[1], p[2]])),
+    );
+    let exposure = preview_bytes(
+        exposure
+            .iter()
+            .map(|e| preview_rgb_for_ap0([refl * exposure_scalar(*e); 3])),
+    );
+    let object = Object::new();
+    Reflect::set(
+        &object,
+        &JsValue::from_str("base"),
+        &Uint8Array::from(base.as_slice()).into(),
+    )?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure"),
+        &Uint8Array::from(exposure.as_slice()).into(),
+    )?;
+    Ok(object.into())
 }
 
 #[wasm_bindgen]
@@ -1281,6 +1439,13 @@ mod tests {
         assert_eq!(exposure, 0.0);
         assert_eq!(base, [0.5; 3]);
         assert!(!clipped);
+    }
+
+    #[test]
+    fn exposure_rgb_output_uses_direct_scalar_encoding() {
+        assert!((exposure_scalar(0.5) - 1.0).abs() < 1.0e-6);
+        assert!((exposure_scalar(0.75) - 32.0).abs() < 1.0e-5);
+        assert!((exposure_scalar(0.0) - 0.0009765625).abs() < 1.0e-9);
     }
 
     #[test]

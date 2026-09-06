@@ -198,9 +198,12 @@ diagnostics, output encoding, and completion as monotonic progress stages with
 pixel and diagnostic counters. The worker yields between solve chunks so a
 large image never remains indefinitely at “preparing pixels”.
 
-The result contains an analytic report and four downloads. The base OpenEXR is
-linear ACEScg/AP1 RGB stored as fp16; the exposure OpenEXR is the normalized
-fp16 `exposure` channel defined above. The two preview downloads are JPEGs with
+The result contains an analytic report and five downloads. The base OpenEXR is
+linear ACEScg/AP1 RGB stored as fp16; the normalized exposure OpenEXR is the
+single fp16 `exposure` channel defined above. An additional exposure RGB
+OpenEXR stores the direct, non-log scalar in all three linear ACEScg channels:
+`E = (s, s, s)` where `s = 2^(exposure * 20 - 10)`. It is fp16 and carries the
+same ACEScg/AP1 metadata as the base file. The two preview downloads are JPEGs with
 sRGB encoded P3-D65 primaries:
 
 * The base preview converts the reconstructed linear ACES2065-1 base pixels
@@ -225,3 +228,10 @@ report records the source interpretation, selected decomposition options,
 compute backend, preview transform name/version, output sizes, warnings, and
 all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
 are revoked when a new job starts, a file is replaced, or the page is reset.
+
+The preview implementation now has a dedicated WebGPU compute pass. It reuses
+the validated ACES parameter buffer and fixed-function shader from the solve
+backend, dispatches base and exposure previews in adapter-sized batches, and
+reads back sRGB-ready P3 bytes. JPEG compression remains in Rust/WASM on the
+worker. A device that is unavailable, lost, or outside the validation limits
+uses the exact CPU forward function and records the fallback warning.

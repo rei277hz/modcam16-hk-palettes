@@ -34,13 +34,17 @@ type Report = {
   gpu_adapter?: string | null;
   gpu_validation?: string | null;
   batch_size: number;
+  preview_transform: string;
+  preview_encoding: string;
+  preview_backend: string;
+  preview_transform_ms: number;
   warnings: string[];
 };
 type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: number; counters?: Record<string, number | undefined> };
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
-  | { kind: "result"; id: number; report: Report; base_exr: Uint8Array; exposure_exr: Uint8Array; base_preview_jpeg: Uint8Array; exposure_preview_jpeg: Uint8Array }
+  | { kind: "result"; id: number; report: Report; base_exr: Uint8Array; exposure_exr: Uint8Array; exposure_rgb_exr: Uint8Array; base_preview_jpeg: Uint8Array; exposure_preview_jpeg: Uint8Array }
   | { kind: "error"; id: number; message: string }
   | { kind: "cancelled"; id: number };
 
@@ -81,12 +85,14 @@ const reportWarnings = $("#report-warnings");
 const reportMetrics = $("#report-metrics");
 const downloadBase = $("#download-base") as HTMLButtonElement;
 const downloadExposure = $("#download-exposure") as HTMLButtonElement;
+const downloadExposureRgb = $("#download-exposure-rgb") as HTMLButtonElement;
 const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
 const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
 const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
 const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
+const exposureRgbSize = $("#exposure-rgb-size");
 const basePreviewSize = $("#base-preview-size");
 const exposurePreviewSize = $("#exposure-preview-size");
 
@@ -99,10 +105,12 @@ let activeJob: number | undefined;
 let automaticIccAvailable = false;
 let baseBytes: Uint8Array | undefined;
 let exposureBytes: Uint8Array | undefined;
+let exposureRgbBytes: Uint8Array | undefined;
 let basePreviewBytes: Uint8Array | undefined;
 let exposurePreviewBytes: Uint8Array | undefined;
 let baseUrl: string | undefined;
 let exposureUrl: string | undefined;
+let exposureRgbUrl: string | undefined;
 let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
 
@@ -140,10 +148,12 @@ function detectFormat(file: File): string | undefined {
 function revokeUrls(): void {
   if (baseUrl) URL.revokeObjectURL(baseUrl);
   if (exposureUrl) URL.revokeObjectURL(exposureUrl);
+  if (exposureRgbUrl) URL.revokeObjectURL(exposureRgbUrl);
   if (basePreviewUrl) URL.revokeObjectURL(basePreviewUrl);
   if (exposurePreviewUrl) URL.revokeObjectURL(exposurePreviewUrl);
   baseUrl = undefined;
   exposureUrl = undefined;
+  exposureRgbUrl = undefined;
   basePreviewUrl = undefined;
   exposurePreviewUrl = undefined;
 }
@@ -209,10 +219,12 @@ function resetResults(): void {
   revokeUrls();
   baseBytes = undefined;
   exposureBytes = undefined;
+  exposureRgbBytes = undefined;
   basePreviewBytes = undefined;
   exposurePreviewBytes = undefined;
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
+  downloadExposureRgb.disabled = true;
   downloadBasePreview.disabled = true;
   downloadExposurePreview.disabled = true;
   clearPreview(basePreviewImage);
@@ -334,15 +346,18 @@ function onWorkerMessage(message: WorkerMessage): void {
   activeJob = undefined;
   baseBytes = message.base_exr;
   exposureBytes = message.exposure_exr;
+  exposureRgbBytes = message.exposure_rgb_exr;
   basePreviewBytes = message.base_preview_jpeg;
   exposurePreviewBytes = message.exposure_preview_jpeg;
   revokeUrls();
   const basePart = new Uint8Array(baseBytes);
   const exposurePart = new Uint8Array(exposureBytes);
+  const exposureRgbPart = new Uint8Array(exposureRgbBytes);
   const basePreviewPart = new Uint8Array(basePreviewBytes);
   const exposurePreviewPart = new Uint8Array(exposurePreviewBytes);
   baseUrl = URL.createObjectURL(new Blob([basePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
   exposureUrl = URL.createObjectURL(new Blob([exposurePart.buffer as ArrayBuffer], { type: "image/x-exr" }));
+  exposureRgbUrl = URL.createObjectURL(new Blob([exposureRgbPart.buffer as ArrayBuffer], { type: "image/x-exr" }));
   basePreviewUrl = URL.createObjectURL(new Blob([basePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
   exposurePreviewUrl = URL.createObjectURL(new Blob([exposurePreviewPart.buffer as ArrayBuffer], { type: "image/jpeg" }));
   showPreview(basePreviewImage, basePreviewUrl);
@@ -350,14 +365,16 @@ function onWorkerMessage(message: WorkerMessage): void {
   renderReport(message.report);
   downloadBase.disabled = false;
   downloadExposure.disabled = false;
+  downloadExposureRgb.disabled = false;
   downloadBasePreview.disabled = false;
   downloadExposurePreview.disabled = false;
   baseSize.textContent = formatBytes(baseBytes.byteLength);
   exposureSize.textContent = formatBytes(exposureBytes.byteLength);
+  exposureRgbSize.textContent = formatBytes(exposureRgbBytes.byteLength);
   basePreviewSize.textContent = formatBytes(basePreviewBytes.byteLength);
   exposurePreviewSize.textContent = formatBytes(exposurePreviewBytes.byteLength);
   setBusy(false);
-  showStatus("Calculation complete. All four outputs are ready.");
+  showStatus("Calculation complete. All five outputs are ready.");
 }
 
 function renderReport(report: Report): void {
@@ -382,8 +399,12 @@ function renderReport(report: Report): void {
     ["Solver", report.solver_status],
     ["Compute backend", report.compute_backend],
     ["Batch size", formatCount(report.batch_size)],
+    ["Preview transform", report.preview_transform],
+    ["Preview encoding", report.preview_encoding],
+    ["Preview backend", `${report.preview_backend} (${report.preview_transform_ms.toFixed(1)} ms)`],
     ["Base output", "Linear ACEScg/AP1 RGB, fp16"],
     ["Exposure output", "Normalized fp16 exposure channel"],
+    ["Exposure RGB output", "Direct scalar s replicated to linear ACEScg RGB, fp16"],
     ["Base preview", "Display P3 JPEG, sRGB transfer"],
     ["Exposure preview", "Display P3 JPEG, sRGB transfer"],
   ];

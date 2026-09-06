@@ -86,7 +86,7 @@ The report retains the existing dimensions, source interpretation, options, proj
 - fallback or device-loss warnings;
 - validated batch size.
 
-OpenEXR encoding remains Rust/WASM and produces the same ZIP-compressed ACEScg/AP1 fp16 base file and normalized fp16 exposure file as the CPU path. GPU selection must not change channel names, metadata, filenames, or download enablement.
+OpenEXR encoding remains Rust/WASM and produces the same ZIP-compressed ACEScg/AP1 fp16 base file, normalized fp16 exposure file, and direct-scalar RGB fp16 exposure file as the CPU path. GPU selection must not change channel names, metadata, filenames, or download enablement.
 
 ## Performance contract
 

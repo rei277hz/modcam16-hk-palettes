@@ -1,4 +1,4 @@
-import init, { encode_outputs, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { cpu_preview_pixels, encode_exr_outputs, encode_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -44,14 +44,17 @@ type SolveStats = {
   gpu_adapter?: string | null;
   gpu_validation?: string | null;
   batch_size?: number;
+  preview_backend?: string;
+  preview_transform_ms?: number;
 };
 
 type GpuProbe = { available: boolean; adapter_name?: string; max_batch_pixels?: number };
-type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number };
+type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number; maxPreviewError: number };
 type EncodedOutputs = {
   report: any;
   base_exr: Uint8Array | ArrayBuffer;
   exposure_exr: Uint8Array | ArrayBuffer;
+  exposure_rgb_exr: Uint8Array | ArrayBuffer;
   base_preview_jpeg: Uint8Array | ArrayBuffer;
   exposure_preview_jpeg: Uint8Array | ArrayBuffer;
 };
@@ -184,12 +187,26 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
         || cpuStats.non_finite_pixels !== gpuStats.non_finite_pixels) {
       throw new Error(`WebGPU validation for ACES profile ${profile} exceeded the CPU reference tolerance (base ${maxBaseError}, exposure ${maxExposureErrorStops} stops).`);
     }
+    let maxPreviewError = 0;
+    if (profile === 4) {
+      const cpuPreview = cpu_preview_pixels(cpuBase, cpuExposure, request.refl);
+      const gpuPreview = await gpu_preview_pixels(cpuBase, cpuExposure, request.refl);
+      const cpuBasePreview = cpuPreview.base instanceof Uint8Array ? cpuPreview.base : new Uint8Array(cpuPreview.base);
+      const gpuBasePreview = gpuPreview.base instanceof Uint8Array ? gpuPreview.base : new Uint8Array(gpuPreview.base);
+      const cpuExposurePreview = cpuPreview.exposure instanceof Uint8Array ? cpuPreview.exposure : new Uint8Array(cpuPreview.exposure);
+      const gpuExposurePreview = gpuPreview.exposure instanceof Uint8Array ? gpuPreview.exposure : new Uint8Array(gpuPreview.exposure);
+      for (let i = 0; i < cpuBasePreview.length; i += 1) {
+        maxPreviewError = Math.max(maxPreviewError, Math.abs(cpuBasePreview[i] - gpuBasePreview[i]), Math.abs(cpuExposurePreview[i] - gpuExposurePreview[i]));
+      }
+      if (maxPreviewError > 1) throw new Error(`WebGPU ACES 2.0 P3-D65 preview validation exceeded the exact CPU reference by ${maxPreviewError} encoded levels.`);
+    }
     const validation: GpuValidation = {
       adapter: probe.adapter_name || "WebGPU adapter",
       batchSize: Math.max(1, Math.floor(probe.max_batch_pixels || 262144)),
       key,
       maxBaseError,
       maxExposureErrorStops,
+      maxPreviewError,
     };
     gpuValidationCache.set(key, validation);
     if (profile === request.profile) selected = validation;
@@ -302,7 +319,7 @@ async function handle(message: JobMessage): Promise<void> {
     stats.compute_backend = backend;
     stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
     stats.gpu_validation = gpuValidation
-      ? `CPU reference: original f64 modCAM16-HK; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops`
+      ? `CPU reference: original f64 modCAM16-HK and exact ACES 2.0 P3-D65; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops, max preview error ${gpuValidation.maxPreviewError} encoded levels`
       : gpuValidationFailure ? `failed: ${gpuValidationFailure}` : null;
     stats.batch_size = batchSize;
     // CPU uses deliberately yielded 4,096-pixel chunks. WebGPU uses the
@@ -357,20 +374,67 @@ async function handle(message: JobMessage): Promise<void> {
       await yieldToUi();
     }
     if (cancelled.has(id)) return;
-    postProgress(id, "Encode base and exposure EXR", 92, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
-    const result = encode_outputs(base, exposure, width, height, message.request, stats, warnings);
+    const previewBasePixels = new Uint8Array(totalPixels * 3);
+    const previewExposurePixels = new Uint8Array(totalPixels * 3);
+    let previewUseGpu = useGpu;
+    let previewBatch = previewUseGpu ? gpuValidation!.batchSize : 4096;
+    let previewStart = 0;
+    const previewStartedAt = performance.now();
+    while (previewStart < totalPixels) {
+      if (cancelled.has(id)) return;
+      const stop = Math.min(totalPixels, previewStart + previewBatch);
+      const stage = `ACES 2.0 P3-D65 preview transform (${previewUseGpu ? "WebGPU" : "wasm-cpu"})`;
+      postProgress(id, stage, 90 + (previewStart / totalPixels) * 2, { processed: previewStart });
+      let preview: any;
+      try {
+        const chunkBase = base.slice(previewStart * 3, stop * 3);
+        const chunkExposure = exposure.slice(previewStart, stop);
+        preview = previewUseGpu
+          ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
+          : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+      } catch (error) {
+        if (!previewUseGpu) throw error;
+        warnings.push(`WebGPU preview transform failed; both previews were restarted on the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
+        previewUseGpu = false;
+        previewBatch = 4096;
+        previewStart = 0;
+        continue;
+      }
+      const chunkBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
+      const chunkExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
+      previewBasePixels.set(chunkBase, previewStart * 3);
+      previewExposurePixels.set(chunkExposure, previewStart * 3);
+      previewStart = stop;
+      postProgress(id, stage, 90 + (stop / totalPixels) * 2, { processed: stop });
+      await yieldToUi();
+    }
+    stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
+    stats.preview_transform_ms = performance.now() - previewStartedAt;
+    if (cancelled.has(id)) return;
+    postProgress(id, "Encode base and exposure EXRs", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
+    await yieldToUi();
+    const result = encode_exr_outputs(base, exposure, width, height, message.request, stats, warnings);
+    if (cancelled.has(id)) return;
+    postProgress(id, "Encode base preview JPEG", 95, { processed: totalPixels });
+    await yieldToUi();
+    const basePreviewJpeg = encode_preview_pixels(previewBasePixels, width, height);
+    if (cancelled.has(id)) return;
+    postProgress(id, "Encode exposure preview JPEG", 98, { processed: totalPixels });
+    await yieldToUi();
+    const exposurePreviewJpeg = encode_preview_pixels(previewExposurePixels, width, height);
     const baseBytes = result.base_exr instanceof Uint8Array ? result.base_exr : new Uint8Array(result.base_exr);
     const exposureBytes = result.exposure_exr instanceof Uint8Array ? result.exposure_exr : new Uint8Array(result.exposure_exr);
-    const basePreviewBytes = result.base_preview_jpeg instanceof Uint8Array ? result.base_preview_jpeg : new Uint8Array(result.base_preview_jpeg);
-    const exposurePreviewBytes = result.exposure_preview_jpeg instanceof Uint8Array ? result.exposure_preview_jpeg : new Uint8Array(result.exposure_preview_jpeg);
+    const exposureRgbBytes = result.exposure_rgb_exr instanceof Uint8Array ? result.exposure_rgb_exr : new Uint8Array(result.exposure_rgb_exr);
+    const basePreviewBytes = basePreviewJpeg instanceof Uint8Array ? basePreviewJpeg : new Uint8Array(basePreviewJpeg);
+    const exposurePreviewBytes = exposurePreviewJpeg instanceof Uint8Array ? exposurePreviewJpeg : new Uint8Array(exposurePreviewJpeg);
     postProgress(id, "Complete", 100, {
       processed: totalPixels,
       projected: result.report?.projected_pixels,
       clipped: result.report?.clipped_pixels,
       non_finite: result.report?.non_finite_pixels,
-      encoded_bytes: baseBytes.byteLength + exposureBytes.byteLength + basePreviewBytes.byteLength + exposurePreviewBytes.byteLength,
+      encoded_bytes: baseBytes.byteLength + exposureBytes.byteLength + exposureRgbBytes.byteLength + basePreviewBytes.byteLength + exposurePreviewBytes.byteLength,
     });
-    scope.postMessage({ kind: "result", id, report: result.report, base_exr: baseBytes, exposure_exr: exposureBytes, base_preview_jpeg: basePreviewBytes, exposure_preview_jpeg: exposurePreviewBytes }, [baseBytes.buffer, exposureBytes.buffer, basePreviewBytes.buffer, exposurePreviewBytes.buffer]);
+    scope.postMessage({ kind: "result", id, report: result.report, base_exr: baseBytes, exposure_exr: exposureBytes, exposure_rgb_exr: exposureRgbBytes, base_preview_jpeg: basePreviewBytes, exposure_preview_jpeg: exposurePreviewBytes }, [baseBytes.buffer, exposureBytes.buffer, exposureRgbBytes.buffer, basePreviewBytes.buffer, exposurePreviewBytes.buffer]);
   } catch (error) {
     if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, message: formatError(error) });
   }

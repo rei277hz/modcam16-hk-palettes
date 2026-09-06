@@ -2,7 +2,16 @@
 // and the original modCAM16-HK exposure solve. The profile constants and
 // OCIO-derived lookup tables are serialized by color_core::gpu_parameter_blob.
 
-struct Params { profile: u32, refl_bits: u32, target_bits: u32, count: u32, };
+struct Params {
+  profile: u32,
+  refl_bits: u32,
+  target_bits: u32,
+  count: u32,
+  mode: u32,
+  _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+};
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> input_pixels: array<vec4<f32>>;
 @group(0) @binding(2) var<storage, read_write> output_pixels: array<vec4<f32>>;
@@ -18,6 +27,10 @@ const ACESCG_TO_AP0: mat3x3<f32> = mat3x3<f32>(
   vec3<f32>(0.6954522414, 0.0447945634, -0.0055258826),
   vec3<f32>(0.1406786965, 0.8596711185, 0.0040252103),
   vec3<f32>(0.1638690622, 0.0955343182, 1.0015006723));
+const XYZ_TO_P3: mat3x3<f32> = mat3x3<f32>(
+  vec3<f32>(2.493496911941425, -0.829488969561575, 0.035845830243784),
+  vec3<f32>(-0.931383617919124, 1.762664060318347, -0.076172389268042),
+  vec3<f32>(-0.402710784450717, 0.023624685841944, 0.956884524007687));
 const AP0_TO_LMS: mat3x3<f32> = mat3x3<f32>(
   vec3<f32>(0.4451810420, 0.1237341460, 0.0117007261),
   vec3<f32>(0.3496492800, 0.6136437060, 0.0280607939),
@@ -283,6 +296,22 @@ fn jhk_for_ap0(ap0: vec3<f32>, profile: u32) -> f32 {
   return jhk_from_xyz(aces_forward(profile, mconst(AP0_TO_AP1, ap0)));
 }
 
+fn srgb_encode(value: f32) -> f32 {
+  let v = clamp(value, 0.0, 1.0);
+  if (v <= 0.0031308) { return 12.92 * v; }
+  return 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+}
+
+// The preview transform is fixed to ACES 2.0 SDR 100-nit P3-D65 (profile 4).
+// aces_forward is the same OCIO-derived fixed function used by the solve path;
+// only the final XYZ-to-P3 matrix and sRGB encoding are added here.
+fn preview_pixel(ap0: vec3<f32>) -> vec3<f32> {
+  let acescg = mconst(AP0_TO_AP1, ap0);
+  let xyz = aces_forward(4u, acescg);
+  let p3 = mconst(XYZ_TO_P3, xyz);
+  return vec3<f32>(srgb_encode(p3.x), srgb_encode(p3.y), srgb_encode(p3.z));
+}
+
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let index = global_id.x;
@@ -330,4 +359,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   }
   output_pixels[index] = vec4<f32>(base, normalized);
   output_flags[index] = flags;
+}
+
+@compute @workgroup_size(64)
+fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+  let index = global_id.x;
+  if (index >= params.count) { return; }
+  let input = input_pixels[index];
+  let refl = bitcast<f32>(params.refl_bits);
+  var ap0 = input.xyz;
+  if (params.mode == 2u) {
+    let scale = pow(2.0, input.w * 20.0 - 10.0);
+    ap0 = vec3<f32>(refl * scale);
+  }
+  if (bad3(ap0)) {
+    output_pixels[index] = vec4<f32>(0.0);
+    output_flags[index] = 4u;
+    return;
+  }
+  let rgb = preview_pixel(ap0);
+  output_pixels[index] = vec4<f32>(rgb, 1.0);
+  output_flags[index] = 0u;
 }

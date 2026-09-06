@@ -72,10 +72,11 @@ The report is rendered as text and a compact table so it can be copied or read w
 
 ## Downloads and previews
 
-Four buttons become enabled only after all output encodings finish:
+Five buttons become enabled only after all output encodings finish:
 
 - **Download base EXR** downloads a ZIP-compressed OpenEXR with linear ACEScg/AP1 RGB channels stored as fp16.
 - **Download exposure EXR** downloads a ZIP-compressed OpenEXR with the exposure channel stored as fp16 using `clamp(log2(s), -10, 10) / 20 + 0.5` and the documented channel metadata.
+- **Download exposure RGB EXR** downloads a ZIP-compressed OpenEXR with linear ACEScg/AP1 fp16 `R`, `G`, and `B` channels, each storing the direct scalar `s = 2^(exposure * 20 - 10)`.
 - **Download base preview JPEG** downloads an sRGB JPEG produced from the ACES2065-1 linear base data through the exact `ACES 2.0 - SDR 100 nits (P3 D65)` forward transform, then through sRGB encoding.
 - **Download exposure preview JPEG** downloads an sRGB JPEG produced by starting from a neutral `f(Refl, Refl, Refl)` canvas, multiplying each pixel by `s = 2^(exposure * 20 - 10)`, then applying the exact `ACES 2.0 - SDR 100 nits (P3 D65)` forward transform and sRGB encoding.
 
@@ -91,7 +92,7 @@ The page uses a dedicated Rust crate, `modcam16-decomposition-wasm`, compiled wi
 - `decompose(bytes, request)` handles PNG, JPEG, and EXR entirely in Rust/WASM.
 - `decompose_pixels(rgb, width, height, request)` accepts decoded linear-in-container RGB from the browser HEIF bridge and runs the same processing and encoding path.
 
-The versioned request fields are `format`, confirmed `gamut`, confirmed `transfer`, `profile`, `refl`, and `blur_sigma`. A successful response contains `report`, `base_exr`, `exposure_exr`, `base_preview_jpeg`, and `exposure_preview_jpeg`; the output values are `Uint8Array` instances and are transferred from the worker to the UI as `ArrayBuffer`s where the browser permits it. Current OpenEXR output uses ZIP scanline compression and fp16 channels. Preview JPEG generation uses the exact ACES 2.0 implementation from `modcam16-color-core`; the browser does not substitute an approximation path for the preview transforms.
+The versioned request fields are `format`, confirmed `gamut`, confirmed `transfer`, `profile`, `refl`, and `blur_sigma`. A successful response contains `report`, `base_exr`, `exposure_exr`, `exposure_rgb_exr`, `base_preview_jpeg`, and `exposure_preview_jpeg`; the output values are `Uint8Array` instances and are transferred from the worker to the UI as `ArrayBuffer`s where the browser permits it. Current OpenEXR output uses ZIP scanline compression and fp16 channels. Preview JPEG generation uses the exact ACES 2.0 implementation from `modcam16-color-core`; the browser does not substitute an approximation path for the preview transforms.
 
 The browser HEIF bridge is pinned to `libheif-js` 1.23.2. It is responsible for decoding HEIF/HEIC and passing an explicit RGB buffer to `decompose_pixels`. The current high-level API exposes the primary image and auxiliary-image count; Apple HDR gain-map XMP/auxiliary markers are reported as warnings, and gain-map composition is not silently substituted for the primary image. Full gain-map composition remains a release-blocking codec task until the bridge can expose the auxiliary image and headroom metadata together.
 

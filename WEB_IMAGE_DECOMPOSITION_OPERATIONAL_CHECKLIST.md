@@ -35,7 +35,7 @@ This checklist is the implementation and release contract for the static web ima
 - [x] Add a dedicated decomposition WASM crate without changing the existing color-core crate's public behavior.
 - [x] Define a versioned worker-facing request containing bytes, format hint, confirmed source gamut/transfer, ACES profile, Refl, and blur radius. The UI envelope adds the cancellation/job id and progress protocol.
 - [x] Define structured progress events with stage, monotonic overall percentage, pixel counters, projection/clipping/non-finite counters, and encoded byte counters. The worker emits an initial decomposition event and solves 4,096-pixel chunks so large EXRs report progress promptly.
-- [x] Return a structured analytic report plus base/exposure OpenEXR byte buffers and base/exposure preview JPEG byte buffers. The response keys should be `report`, `base_exr`, `exposure_exr`, `base_preview_jpeg`, and `exposure_preview_jpeg`.
+- [x] Return a structured analytic report plus base, normalized exposure, direct-scalar exposure RGB OpenEXR byte buffers and base/exposure preview JPEG byte buffers. The response keys should be `report`, `base_exr`, `exposure_exr`, `exposure_rgb_exr`, `base_preview_jpeg`, and `exposure_preview_jpeg`.
 - [x] Keep heavy loops and allocations in the worker; send output `ArrayBuffer`s as transferables.
 - [x] Check cancellation between solve chunks/stages and release buffers on cancellation or failure; the UI replaces the worker if cancellation arrives during a synchronous WASM call.
 - [ ] Apply automatic gamut projection and preserve per-pixel diagnostic counters.
@@ -60,7 +60,7 @@ This checklist is the implementation and release contract for the static web ima
 ## Web UI and worker integration
 
 - [x] Add standalone `web/decompose.html` and TypeScript controller/worker entry points; leave the existing picker route intact. Vite is configured with explicit multi-page Rollup inputs for `index.html` and `decompose.html`.
-- [x] Provide upload, metadata display, source interpretation, ACES profile, Refl, blur, calculate/cancel, report, and four download controls.
+- [x] Provide upload, metadata display, source interpretation, ACES profile, Refl, blur, calculate/cancel, report, and five download controls.
 - [x] Show the base and exposure preview JPEGs inline in the downloads area near the download buttons.
 - [x] Disable calculation until the source interpretation is established and options validate.
 - [x] Show stage, percentage, and live counters throughout processing.
