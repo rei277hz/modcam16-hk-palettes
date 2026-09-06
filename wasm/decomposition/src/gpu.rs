@@ -6,6 +6,7 @@
 #[cfg(target_arch = "wasm32")]
 mod webgpu {
     use super::super::{jhk_for_ap0, Request, SolveStats};
+    use modcam16_color_core::aces_output::gpu_parameter_blob;
     use futures_channel::oneshot;
     use js_sys::{Object, Reflect};
     use std::cell::RefCell;
@@ -21,6 +22,7 @@ mod webgpu {
         queue: wgpu::Queue,
         pipeline: wgpu::ComputePipeline,
         bind_group_layout: wgpu::BindGroupLayout,
+        parameter_buffer: wgpu::Buffer,
         max_batch_pixels: usize,
         adapter_name: String,
     }
@@ -52,6 +54,7 @@ mod webgpu {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
                 compatible_surface: None,
+                apply_limit_buckets: false,
             })
             .await
             .map_err(context_error)?;
@@ -108,12 +111,22 @@ mod webgpu {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("decomposition compute pipeline layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("decomposition compute pipeline"),
@@ -123,6 +136,12 @@ mod webgpu {
             compilation_options: Default::default(),
             cache: None,
         });
+        let parameter_data = gpu_parameter_blob();
+        let parameter_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ACES 2.0 fixed-function parameters"),
+            contents: bytemuck::cast_slice(&parameter_data),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
         let bytes_per_pixel = 16 + 16 + 4;
         let max_by_limit = (limits.max_storage_buffer_binding_size as usize / bytes_per_pixel)
             .max(WORKGROUP_SIZE as usize);
@@ -131,6 +150,7 @@ mod webgpu {
             queue,
             pipeline,
             bind_group_layout,
+            parameter_buffer,
             max_batch_pixels: MAX_BATCH_PIXELS.min(max_by_limit),
             adapter_name,
         })
@@ -167,16 +187,17 @@ mod webgpu {
         device
             .poll(wgpu::PollType::Poll)
             .map_err(|error| format!("WebGPU polling failed: {error}"))?;
-        let result = receiver
+        receiver
             .await
             .map_err(|_| "WebGPU readback channel was dropped".to_string())?
             .map_err(|error| format!("WebGPU readback failed: {error}"))?;
         device
-            .poll(wgpu::PollType::Wait)
+            .poll(wgpu::PollType::Wait { submission_index: None, timeout: None })
             .map_err(|error| format!("WebGPU polling failed: {error}"))?;
         let view = buffer
             .slice(..size)
             .get_mapped_range()
+            .map_err(|error| format!("WebGPU mapped range failed: {error}"))?
             .to_vec();
         buffer.unmap();
         Ok(view)
@@ -205,16 +226,17 @@ mod webgpu {
         for pixel in data.chunks_exact(3) {
             input.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0.0]);
         }
-        let (device, queue, pipeline, bind_group_layout, max_batch_pixels) = CONTEXT.with(|slot| {
+        let (device, queue, pipeline, bind_group_layout, parameter_buffer, max_batch_pixels) = CONTEXT.with(|slot| {
             let context = slot.borrow();
             let context = context
                 .as_ref()
                 .ok_or_else(|| "WebGPU has not been initialized.".to_string())?;
-            Ok((
+            Ok::<_, String>((
                 context.device.clone(),
                 context.queue.clone(),
                 context.pipeline.clone(),
                 context.bind_group_layout.clone(),
+                context.parameter_buffer.clone(),
                 context.max_batch_pixels,
             ))
         })?;
@@ -274,6 +296,7 @@ mod webgpu {
                     wgpu::BindGroupEntry { binding: 1, resource: input_buffer.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: output_buffer.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 3, resource: flags_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 4, resource: parameter_buffer.as_entire_binding() },
                 ],
         });
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

@@ -13,9 +13,18 @@ This document defines the behavior of the accelerated image decomposition path. 
 ### Current implementation decisions
 
 - The browser dependency is Rust `wgpu` `30.0.1`, built for `wasm32-unknown-unknown` with only the `std`, `webgpu`, and `wgsl` features enabled.
-- The GPU context is owned by the existing module worker rather than the page thread. It keeps the adapter, device, queue, compute pipeline, bind-group layout, and adapter-derived batch limit alive across solve calls.
+- The GPU context is owned by the existing module worker rather than the page thread. It keeps the adapter, device, queue, compute pipeline, bind-group layout, and adapter-derived batch limit alive across solve calls; per-batch transfer buffers are released after readback.
 - Prepared AP0 input is uploaded as padded `vec4<f32>` values. The shader returns packed base RGB plus normalized exposure in a `vec4<f32>` output buffer and a `u32` diagnostic flag buffer. Rust unpacks these buffers into the existing `base`, `exposure`, and `SolveStats` response shape.
 - GPU readback is asynchronous through mapped staging buffers. The CPU remains responsible for report reduction and the existing OpenEXR encoder so output metadata and fp16 semantics stay shared with the CPU path.
+- The WGSL module is validated with the pinned Naga 30.0.1 parser before packaging; browser adapter validation still remains the runtime gate.
+
+## Color-science accuracy
+
+The GPU implementation uses accurate, GPU-suitable ports of the same ACES 2.0 fixed-function output processors used by the color core. It includes the profile-specific matrices, tone scale, gamut compression, JMh conversions, and bundled OCIO-derived reach/cusp lookup tables for Rec.2020 HDR, Rec.709 SDR, P3-D65 HDR, and P3-D65 SDR. The shader also ports the default modCAM16-HK appearance equations used by the CPU reference.
+
+The GPU path must not replace these transforms with a one-dimensional tone curve, a simple exposure-only approximation, a reduced gamut model, or any other shortcut that changes the ACES view. Shader arithmetic uses `f32` because that is the portable WebGPU baseline; the validation tolerance and CPU fallback make that precision difference explicit.
+
+For modCAM16-HK, the original CPU implementation is the reference implementation: GPU `J_HK`, projection, exposure, and base values are compared directly with the CPU model and solver. ACES output values are separately compared with the exact CPU ACES 2.0 implementation. No GPU-to-GPU comparison is sufficient for enabling the accelerated backend.
 
 ## GPU initialization and validation
 
@@ -24,7 +33,7 @@ Before processing image pixels, the worker:
 1. Creates a browser WebGPU instance using the Rust `wgpu` WebGPU backend.
 2. Requests an adapter and device with no optional device features.
 3. Compiles the WGSL compute pipeline and uploads the shared ACES/modCAM16 parameter tables.
-4. Runs deterministic neutral, projected, clipped, high-range, zero, and non-finite validation samples through both the GPU and existing CPU solver.
+4. Runs deterministic neutral, projected, clipped, high-range, zero, non-finite, and seeded-random validation samples for all four supported profiles through both the GPU and existing CPU solver.
 
 The GPU path is enabled only when every validation sample meets both limits:
 
@@ -44,7 +53,7 @@ The WGSL kernel:
 - performs the existing 32-step exposure bisection;
 - writes ACES2065-1/AP0 base RGB, normalized exposure, and diagnostic flags.
 
-Pixels are dispatched in batches of up to 1,048,576 pixels, reduced when the adapter reports a smaller storage-buffer limit. Workgroups contain 64 invocations. Rust reuses the GPU buffers across batches and reads each batch back before encoding the final EXRs.
+Pixels are dispatched in batches of up to 1,048,576 pixels, reduced when the adapter reports a smaller storage-buffer limit. Workgroups contain 64 invocations. Rust reuses the GPU pipeline and parameter buffer across batches and reads each batch back before encoding the final EXRs.
 
 The worker reports these stages:
 
@@ -72,7 +81,7 @@ The report retains the existing dimensions, source interpretation, options, proj
 - GPU adapter information when WebGPU ran;
 - GPU validation status;
 - fallback or device-loss warnings;
-- total processing duration and batch size.
+- validated batch size.
 
 OpenEXR encoding remains Rust/WASM and produces the same ZIP-compressed ACEScg/AP1 fp16 base file and normalized fp16 exposure file as the CPU path. GPU selection must not change channel names, metadata, filenames, or download enablement.
 

@@ -96,6 +96,10 @@ pub struct Report {
     pub base_mean: f32,
     pub target_j_hk: f32,
     pub solver_status: String,
+    pub compute_backend: String,
+    pub gpu_adapter: Option<String>,
+    pub gpu_validation: Option<String>,
+    pub batch_size: u32,
     pub warnings: Vec<String>,
 }
 
@@ -118,6 +122,14 @@ struct SolveStats {
     base_max: f32,
     base_sum: f64,
     finite_pixels: u64,
+    #[serde(default)]
+    compute_backend: String,
+    #[serde(default)]
+    gpu_adapter: Option<String>,
+    #[serde(default)]
+    gpu_validation: Option<String>,
+    #[serde(default)]
+    batch_size: u32,
 }
 
 fn flat_pixels(rgb: &[[f32; 3]]) -> Vec<f32> {
@@ -762,6 +774,14 @@ fn report_from_stats(
         },
         target_j_hk: jhk_for_ap0([req.refl; 3], req.profile) as f32,
         solver_status: "J_HK bisection (32 iterations)".into(),
+        compute_backend: if stats.compute_backend.is_empty() {
+            "wasm-cpu".into()
+        } else {
+            stats.compute_backend.clone()
+        },
+        gpu_adapter: stats.gpu_adapter.clone(),
+        gpu_validation: stats.gpu_validation.clone(),
+        batch_size: stats.batch_size,
         warnings,
     }
 }

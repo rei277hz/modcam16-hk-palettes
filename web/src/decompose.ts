@@ -29,6 +29,10 @@ type Report = {
   base_mean: number;
   target_j_hk: number;
   solver_status: string;
+  compute_backend: string;
+  gpu_adapter?: string | null;
+  gpu_validation?: string | null;
+  batch_size: number;
   warnings: string[];
 };
 type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: number; counters?: Record<string, number | undefined> };
@@ -310,9 +314,13 @@ function renderReport(report: Report): void {
     ["Base mean", report.base_mean.toFixed(4)],
     ["Target J_HK", report.target_j_hk.toFixed(4)],
     ["Solver", report.solver_status],
+    ["Compute backend", report.compute_backend],
+    ["Batch size", formatCount(report.batch_size)],
     ["Base output", "Linear ACEScg/AP1 RGB, fp16"],
     ["Exposure output", "Normalized fp16 exposure channel"],
   ];
+  if (report.gpu_adapter) metrics.push(["GPU adapter", report.gpu_adapter]);
+  if (report.gpu_validation) metrics.push(["GPU validation", report.gpu_validation]);
   reportMetrics.innerHTML = metrics.map(([label, value]) => `<div><dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd></div>`).join("");
   const warnings = report.warnings ?? [];
   reportWarnings.hidden = warnings.length === 0;

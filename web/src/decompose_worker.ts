@@ -1,4 +1,4 @@
-import init, { encode_outputs, inspect, prepare, prepare_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { encode_outputs, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -40,13 +40,23 @@ type SolveStats = {
   base_max: number;
   base_sum: number;
   finite_pixels: number;
+  compute_backend?: string;
+  gpu_adapter?: string | null;
+  gpu_validation?: string | null;
+  batch_size?: number;
 };
+
+type GpuProbe = { available: boolean; adapter_name?: string; max_batch_pixels?: number };
+type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number };
 
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
 };
 let wasmReady: Promise<void> | undefined;
+let gpuProbeResult: Promise<GpuProbe | undefined> | undefined;
+let gpuProbeFailure: string | undefined;
+const gpuValidationCache = new Map<string, GpuValidation>();
 const cancelled = new Set<number>();
 
 function postProgress(id: number, stage: string, percent: number, counters?: Progress["counters"]): void {
@@ -93,6 +103,78 @@ function addStats(total: SolveStats, chunk: SolveStats): void {
   total.base_max = Math.max(total.base_max, chunk.base_max);
   total.base_sum += chunk.base_sum;
   total.finite_pixels += chunk.finite_pixels;
+}
+
+async function probeGpu(): Promise<GpuProbe | undefined> {
+  gpuProbeResult ??= (async () => {
+    try {
+      const result = await gpu_probe();
+      return result as GpuProbe;
+    } catch (error) {
+      gpuProbeFailure = formatError(error);
+      return undefined;
+    }
+  })();
+  return gpuProbeResult;
+}
+
+const VALIDATION_PIXELS = new Float32Array([
+  0.0, 0.0, 0.0,
+  0.001, 0.02, 0.12,
+  0.15, 0.25, 0.4,
+  0.5, 0.5, 0.5,
+  1.0, 0.25, 0.03125,
+  4.0, 2.0, 0.5,
+  -0.05, 0.2, 0.7,
+  20.0, 20.0, 20.0,
+  // Values generated once with the fixed seed 0x4d43414d and kept literal so
+  // validation remains reproducible across browsers and worker restarts.
+  0.6123, 0.0417, 1.8731,
+  3.1042, 0.0081, 0.2274,
+  0.0922, 1.4418, 0.3186,
+  7.75, 2.125, 0.015625,
+]);
+
+async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Promise<GpuValidation | undefined> {
+  if (!probe.available) return undefined;
+  let selected: GpuValidation | undefined;
+  for (const profile of [0, 1, 2, 4]) {
+    const profileRequest = { ...request, profile };
+    const key = `${profile}:${request.refl.toPrecision(9)}`;
+    const cached = gpuValidationCache.get(key);
+    if (cached) {
+      if (profile === request.profile) selected = cached;
+      continue;
+    }
+    const cpu = solve_chunk(VALIDATION_PIXELS, profileRequest);
+    const gpu = await gpu_solve_chunk(VALIDATION_PIXELS, profileRequest);
+    const cpuBase = cpu.base instanceof Float32Array ? cpu.base : new Float32Array(cpu.base);
+    const gpuBase = gpu.base instanceof Float32Array ? gpu.base : new Float32Array(gpu.base);
+    const cpuExposure = cpu.exposure instanceof Float32Array ? cpu.exposure : new Float32Array(cpu.exposure);
+    const gpuExposure = gpu.exposure instanceof Float32Array ? gpu.exposure : new Float32Array(gpu.exposure);
+    let maxBaseError = 0;
+    let maxExposureErrorStops = 0;
+    for (let i = 0; i < cpuBase.length; i += 1) maxBaseError = Math.max(maxBaseError, Math.abs(cpuBase[i] - gpuBase[i]));
+    for (let i = 0; i < cpuExposure.length; i += 1) maxExposureErrorStops = Math.max(maxExposureErrorStops, Math.abs(cpuExposure[i] - gpuExposure[i]) * 20);
+    const cpuStats = cpu.stats as SolveStats;
+    const gpuStats = gpu.stats as SolveStats;
+    if (maxBaseError > 0.0002 || maxExposureErrorStops > 0.002
+        || cpuStats.projected_pixels !== gpuStats.projected_pixels
+        || cpuStats.clipped_pixels !== gpuStats.clipped_pixels
+        || cpuStats.non_finite_pixels !== gpuStats.non_finite_pixels) {
+      throw new Error(`WebGPU validation for ACES profile ${profile} exceeded the CPU reference tolerance (base ${maxBaseError}, exposure ${maxExposureErrorStops} stops).`);
+    }
+    const validation: GpuValidation = {
+      adapter: probe.adapter_name || "WebGPU adapter",
+      batchSize: Math.max(1, Math.floor(probe.max_batch_pixels || 262144)),
+      key,
+      maxBaseError,
+      maxExposureErrorStops,
+    };
+    gpuValidationCache.set(key, validation);
+    if (profile === request.profile) selected = validation;
+  }
+  return selected;
 }
 
 function textHasGainMap(bytes: Uint8Array): boolean {
@@ -176,13 +258,33 @@ async function handle(message: JobMessage): Promise<void> {
     const pixels = prepared.pixels instanceof Float32Array ? prepared.pixels : new Float32Array(prepared.pixels);
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
     warnings = [...warnings, ...preparedWarnings];
+    let gpuValidation: GpuValidation | undefined;
+    postProgress(id, "Initialize WebGPU", 20);
+    const probe = await probeGpu();
+    if (probe?.available) {
+      postProgress(id, "Validate WebGPU against CPU reference", 21);
+      try {
+        gpuValidation = await validateGpu(message.request, probe);
+      } catch (error) {
+        warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${formatError(error)}`);
+      }
+    } else if (gpuProbeFailure) {
+      warnings.push(`WebGPU was not enabled; the worker will use wasm-cpu: ${gpuProbeFailure}`);
+    }
+    let useGpu = Boolean(gpuValidation);
+    let backend = useGpu ? "webgpu" : "wasm-cpu";
+    let batchSize = useGpu ? gpuValidation!.batchSize : 4096;
     const base = new Float32Array(width * height * 3);
     const exposure = new Float32Array(width * height);
-    const stats = emptyStats();
-    // A J_HK solve is deliberately yielded in small chunks. A large chunk
-    // keeps WASM call overhead low but can starve the worker event loop for
-    // many seconds on large EXRs, hiding progress and delaying cancellation.
-    const chunkPixels = 4096;
+    let stats = emptyStats();
+    stats.compute_backend = backend;
+    stats.gpu_adapter = gpuValidation?.adapter ?? null;
+    stats.gpu_validation = gpuValidation
+      ? `CPU reference: original f64 modCAM16-HK; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops`
+      : null;
+    stats.batch_size = batchSize;
+    // CPU uses deliberately yielded 4,096-pixel chunks. WebGPU uses the
+    // adapter's largest validated storage batch to amortize readback costs.
     const totalPixels = width * height;
     postProgress(id, "Decompose pixels", 25, {
       processed: 0,
@@ -190,22 +292,46 @@ async function handle(message: JobMessage): Promise<void> {
       clipped: 0,
       non_finite: 0,
     });
-    for (let start = 0; start < totalPixels; start += chunkPixels) {
+    let start = 0;
+    while (start < totalPixels) {
       if (cancelled.has(id)) return;
-      const stop = Math.min(totalPixels, start + chunkPixels);
+      const stop = Math.min(totalPixels, start + batchSize);
       const chunk = pixels.slice(start * 3, stop * 3);
-      const solved = solve_chunk(chunk, message.request);
+      let solved: any;
+      try {
+        solved = useGpu ? await gpu_solve_chunk(chunk, message.request) : solve_chunk(chunk, message.request);
+      } catch (error) {
+        if (!useGpu) throw error;
+        // A device loss or adapter limit failure invalidates every in-flight
+        // GPU result. Restart the complete image on the authoritative CPU
+        // implementation so outputs never combine two numerical paths.
+        warnings.push(`WebGPU stopped during processing and the complete job was restarted on wasm-cpu: ${formatError(error)}`);
+        useGpu = false;
+        backend = "wasm-cpu";
+        batchSize = 4096;
+        base.fill(0);
+        exposure.fill(0);
+        stats = emptyStats();
+        stats.compute_backend = backend;
+        stats.gpu_adapter = gpuValidation?.adapter ?? null;
+        stats.gpu_validation = "GPU validation passed; processing fell back to original f64 CPU modCAM16-HK after a device error";
+        stats.batch_size = batchSize;
+        start = 0;
+        postProgress(id, "Restarting on wasm-cpu", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
+        continue;
+      }
       const chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
       const chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
       base.set(chunkBase, start * 3);
       exposure.set(chunkExposure, start);
       addStats(stats, solved.stats as SolveStats);
-      postProgress(id, "Decompose pixels", 25 + (stop / totalPixels) * 65, {
+      postProgress(id, useGpu ? "Decompose pixels (WebGPU)" : "Decompose pixels (wasm-cpu)", 25 + (stop / totalPixels) * 65, {
         processed: stop,
         projected: stats.projected_pixels,
         clipped: stats.clipped_pixels,
         non_finite: stats.non_finite_pixels,
       });
+      start = stop;
       await yieldToUi();
     }
     if (cancelled.has(id)) return;
