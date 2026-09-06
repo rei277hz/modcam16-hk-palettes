@@ -67,7 +67,7 @@ const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
 const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
-const workerBadge = $("#worker-badge");
+const webGpuFootnote = $("#webgpu-footnote");
 const progressStage = $("#progress-stage");
 const progressPercent = $("#progress-percent") as HTMLOutputElement;
 const progressBar = $("#progress-bar") as HTMLProgressElement;
@@ -551,5 +551,7 @@ overrideSource.addEventListener("click", () => {
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
 const browserNavigator = navigator as Navigator & { gpu?: unknown };
 const webGpuAvailable = Boolean(browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext));
-workerBadge.textContent = webGpuAvailable ? "WebGPU available*" : "WebGPU unavailable*";
+webGpuFootnote.textContent = webGpuAvailable
+  ? "* (WebGPU available) We use WebGPU to accelerate decomposition and preview generation."
+  : "* (WebGPU unavailable) We use a CPU-based WASM implementation, so decomposition and preview generation may take longer.";
 setBusy(false);

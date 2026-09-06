@@ -50,10 +50,11 @@ Defaults are loaded from the documented pipeline defaults, including `Refl = 0.5
 
 ## Processing and progress
 
-Pressing **Decompose** starts a cancellable job in a dedicated worker. The worker owns the WASM module and never blocks the UI thread. A second click is replaced by a **Cancel** action while work is running. The processing row also reports whether WebGPU is available in the current browser context.
+Pressing **Decompose** starts a cancellable job in a dedicated worker. The worker owns the WASM module and never blocks the UI thread. A second click is replaced by a **Cancel** action while work is running.
 
-The WebGPU status carries an asterisk. A footnote at the bottom of the page
-states that we use WebGPU to accelerate decomposition and preview generation.
+The bottom footnote reports either that WebGPU is available and used to
+accelerate decomposition and preview generation, or that a CPU-based WASM
+implementation is used and processing may take longer.
 
 The progress region always reports:
 

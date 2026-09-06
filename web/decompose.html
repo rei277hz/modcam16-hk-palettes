@@ -38,7 +38,7 @@
       </section>
 
       <section class="processing-row" aria-label="Processing">
-        <div class="process-controls"><span id="worker-badge" class="status-badge">WebGPU unavailable*</span><button id="calculate-button" class="button button-primary" type="button" disabled>Decompose</button></div>
+        <div class="process-controls"><button id="calculate-button" class="button button-primary" type="button" disabled>Decompose</button></div>
         <div class="progress-block" aria-live="polite"><div class="progress-label-row"><span id="progress-stage">Waiting for an image</span><output id="progress-percent">0%</output></div><progress id="progress-bar" max="100" value="0">0%</progress><div id="progress-counters" class="progress-counters">No pixels processed.</div></div>
         <div id="processing-status" class="inline-status" role="status" hidden></div>
       </section>
@@ -49,7 +49,7 @@
       </section>
 
       <section class="report-row" aria-labelledby="report-heading"><h2 id="report-heading">Analytic report</h2><div id="empty-report" class="empty-state">Complete a calculation to see diagnostics.</div><div id="report-content" hidden><div id="report-summary" class="report-summary"></div><div id="report-warnings" class="inline-warning" hidden></div><dl id="report-metrics" class="metrics"></dl></div></section>
-      <footer class="page-footer"><small class="webgpu-footnote">* We use WebGPU to accelerate decomposition and preview generation.</small><a class="picker-link" href="./index.html">Colour picker ↗</a></footer>
+      <footer class="page-footer"><small id="webgpu-footnote" class="webgpu-footnote">* (WebGPU unavailable) We use a CPU-based WASM implementation, so decomposition and preview generation may take longer.</small><a class="picker-link" href="./index.html">Colour picker ↗</a></footer>
     </main>
     <div id="preview-overlay" class="preview-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="preview-overlay-label"><div class="overlay-backdrop" data-close-preview></div><div class="overlay-panel"><div class="overlay-toolbar"><strong id="preview-overlay-label">Preview</strong><button id="close-preview" class="button button-quiet" type="button">Close</button></div><img id="preview-overlay-image" class="overlay-image" alt="" /><div class="overlay-actions"><button id="download-base-preview" class="download-button" type="button" disabled><span>Save base JPEG</span><small id="base-preview-size">Waiting</small></button><button id="download-exposure-preview" class="download-button" type="button" disabled><span>Save exposure JPEG</span><small id="exposure-preview-size">Waiting</small></button></div></div></div>
     <script type="module" src="./src/decompose.ts"></script>
