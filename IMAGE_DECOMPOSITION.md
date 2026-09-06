@@ -27,6 +27,7 @@ The source gamut and transfer function are separate choices. Supported gamut
 choices include Rec.709/sRGB, Display P3/P3-D65, Rec.2020, Adobe RGB, ACEScg,
 and ACES2065-1. Supported transfer choices include Linear, sRGB, Gamma 1.8,
 Gamma 2.2, Gamma 2.4/BT.1886, BT.709/BT.2020, PQ/ST 2084, and HLG/BT.2100.
+These are exact fixed names; aliases and shorthand spellings are not accepted.
 OpenEXR scene-linear names remain supported through `--input-color-space`, and
 `Linear P3-D65` is included in that list. Explicit `--input-gamut` and
 `--input-transfer-function` values override the corresponding metadata.

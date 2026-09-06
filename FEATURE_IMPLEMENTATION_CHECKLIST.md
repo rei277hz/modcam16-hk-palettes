@@ -37,9 +37,19 @@ Branch: `feat/decompose-multiformat-inputs`
 ## Tests and validation
 
 - [x] Test P3-D65 EXR metadata and control-prefix normalization.
-- [ ] Test JPEG/PNG metadata and explicit fallback behavior.
-- [ ] Test PQ/HLG transfer decoding and ACES conversion.
-- [ ] Test HEIF nclx and mocked Apple gain-map paths.
-- [ ] Test successful completion with tolerance exceedances and diagnostics.
+- [x] Test JPEG/PNG metadata and explicit fallback behavior.
+- [x] Test PQ/HLG transfer decoding and ACES conversion.
+- [x] Test HEIF nclx and Apple gain-map paths (including the real
+      `IMG_9536.HEIC` sample with `exiftool`).
+- [x] Test successful completion with tolerance exceedances and diagnostics.
 - [x] Run focused decomposition tests, then the full test suite.
-- [ ] Review branch status and preserve unrelated user files.
+- [x] Review branch status and preserve unrelated user files.
+
+## Real-file validation
+
+`IMG_9536.HEIC` was decoded successfully as an Apple HDR gain-map image:
+Display P3 / P3-D65, linearized by `apple-hdr-heic`, with values normalized to
+the project's 100-nit ACES reference scale. A complete one-worker
+`p3-hdr1000` decomposition also completed and wrote both EXR outputs. It
+reported 23,820 inverse round-trip tolerance exceedances and 7 J_HK tolerance
+exceedances while continuing to completion, as required.
