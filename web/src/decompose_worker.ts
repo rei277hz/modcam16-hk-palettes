@@ -568,10 +568,10 @@ async function handle(message: JobMessage): Promise<void> {
     let backend = useGpu ? "webgpu" : "wasm-cpu";
     let batchSize = useGpu ? gpuValidation!.batchSize : 4096;
     await cleanupPreviousOutputs(id);
-    const output = await createOutputWriters(id, width, height);
-    const { writers } = output;
-    const basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
-    const exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
+    let output = await createOutputWriters(id, width, height);
+    let { writers } = output;
+    let basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
+    let exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
     const previewStartedAt = performance.now();
     let previewUseGpu = useGpu;
     let stats = emptyStats();
@@ -608,6 +608,13 @@ async function handle(message: JobMessage): Promise<void> {
         useGpu = false;
         backend = "wasm-cpu";
         batchSize = 4096;
+        await writers.base.close().catch(() => undefined); await writers.exposure.close().catch(() => undefined); await writers.exposureRgb.close().catch(() => undefined);
+        await basePreviewRaw.close().catch(() => undefined); await exposurePreviewRaw.close().catch(() => undefined);
+        await cleanupOutputFiles(id);
+        output = await createOutputWriters(id, width, height);
+        writers = output.writers;
+        basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
+        exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
         stats = emptyStats();
         stats.compute_backend = backend;
         stats.gpu_adapter = gpuValidation?.adapter ?? null;
