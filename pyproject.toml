@@ -12,6 +12,9 @@ dependencies = [
     "numpy>=1.24",
     "OpenEXR>=3.2",
     "opencolorio==2.5.2",
+    "Pillow>=10.0",
+    "pillow-heif>=0.20",
+    "apple-hdr-heic>=0.1.0",
 ]
 
 [project.optional-dependencies]
