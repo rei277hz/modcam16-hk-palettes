@@ -363,7 +363,7 @@ function onWorkerMessage(message: WorkerMessage): void {
   basePreviewSize.textContent = formatBytes(basePreviewBytes.byteLength);
   exposurePreviewSize.textContent = formatBytes(exposurePreviewBytes.byteLength);
   setBusy(false);
-  showStatus("Calculation complete. All five outputs are ready.");
+  showStatus("Calculation complete. Outputs are ready.");
 }
 
 function renderReport(report: Report): void {
