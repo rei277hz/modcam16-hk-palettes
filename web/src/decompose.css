@@ -59,8 +59,8 @@ progress::-webkit-progress-bar { background: #27323b; }
 progress::-webkit-progress-value { background: #89e0c4; }
 progress::-moz-progress-bar { background: #89e0c4; }
 .progress-counters { min-height: 14px; margin-top: 4px; color: #71808b; font-size: 10px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.results-row { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .9fr); gap: 22px; }
-.previews { min-width: 0; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.results-row { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .9fr); align-items: start; gap: 22px; }
+.previews { min-width: 0; min-height: 0; height: clamp(150px, 26vh, 250px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-self: start; }
 .previews figure { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; margin: 0; }
 .preview-trigger { min-width: 0; min-height: 0; width: 100%; height: 100%; border: 1px solid #33414c; background: #080b0e; padding: 0; }
 .preview-trigger:hover:not(:disabled) { border-color: #89e0c4; }
@@ -98,7 +98,8 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .control-row { gap: 14px; padding-bottom: 8px; }
   .processing-row { grid-template-columns: 1fr; gap: 7px; padding-bottom: 8px; }
   .process-controls { justify-content: space-between; }
-  .results-row { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
+  .results-row { grid-template-columns: 1fr; grid-template-rows: auto auto; gap: 8px; }
+  .previews { height: clamp(135px, 24vh, 190px); }
   .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .download-button { min-height: 46px; padding: 7px; }
   .download-button small { margin-top: 2px; }
