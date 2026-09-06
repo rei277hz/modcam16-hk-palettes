@@ -212,6 +212,15 @@ async function cleanupPreviousOutputs(currentId: number): Promise<void> {
   } catch { /* best effort */ }
 }
 
+async function readOpfsFile(name: string): Promise<Uint8Array> {
+  const root = await (navigator.storage as any).getDirectory();
+  const handle = await root.getFileHandle(name);
+  return new Uint8Array(await (await handle.getFile()).arrayBuffer());
+}
+async function removeOpfsFile(name: string): Promise<void> {
+  try { const root = await (navigator.storage as any).getDirectory(); await root.removeEntry(name); } catch { /* best effort */ }
+}
+
 const scope = self as unknown as {
   onmessage: ((event: MessageEvent<WorkerMessage>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -561,8 +570,8 @@ async function handle(message: JobMessage): Promise<void> {
     await cleanupPreviousOutputs(id);
     const output = await createOutputWriters(id, width, height);
     const { writers } = output;
-    const basePreviewPixels = new Uint8Array(width * height * 3);
-    const exposurePreviewPixels = new Uint8Array(width * height * 3);
+    const basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
+    const exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
     const previewStartedAt = performance.now();
     let previewUseGpu = useGpu;
     let stats = emptyStats();
@@ -616,8 +625,8 @@ async function handle(message: JobMessage): Promise<void> {
           : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
         const previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
         const previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
-        basePreviewPixels.set(previewBase, start * 3);
-        exposurePreviewPixels.set(previewExposure, start * 3);
+        await basePreviewRaw.write(previewBase);
+        await exposurePreviewRaw.write(previewExposure);
       } catch (error) {
         if (previewUseGpu) {
           previewUseGpu = false;
@@ -625,8 +634,8 @@ async function handle(message: JobMessage): Promise<void> {
           const preview = cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
           const previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
           const previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
-          basePreviewPixels.set(previewBase, start * 3);
-          exposurePreviewPixels.set(previewExposure, start * 3);
+          await basePreviewRaw.write(previewBase);
+          await exposurePreviewRaw.write(previewExposure);
         } else throw error;
       }
       for (let row = 0; row < (stop - start) / width; row++) {
@@ -658,21 +667,24 @@ async function handle(message: JobMessage): Promise<void> {
     postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
     await yieldToUi();
     await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
+    await basePreviewRaw.close(); await exposurePreviewRaw.close();
     const report = build_report(width, height, message.request, stats, warnings);
     if (cancelled.has(id)) return;
     postProgress(id, "Encode base preview JPEG", 95, { processed: totalPixels });
     await yieldToUi();
-    const basePreviewJpeg = encode_preview_pixels(basePreviewPixels, width, height);
+    const basePreviewJpeg = encode_preview_pixels(await readOpfsFile(`decomposition-${id}-base-preview.rgb`), width, height);
     const basePreviewSink = await OpfsSink.create(`decomposition-${id}-base-preview.jpg`);
     const basePreviewBytes = basePreviewJpeg instanceof Uint8Array ? basePreviewJpeg : new Uint8Array(basePreviewJpeg);
     await basePreviewSink.write(basePreviewBytes); await basePreviewSink.close();
     if (cancelled.has(id)) return;
     postProgress(id, "Encode exposure preview JPEG", 98, { processed: totalPixels });
     await yieldToUi();
-    const exposurePreviewJpeg = encode_preview_pixels(exposurePreviewPixels, width, height);
+    const exposurePreviewJpeg = encode_preview_pixels(await readOpfsFile(`decomposition-${id}-exposure-preview.rgb`), width, height);
     const exposurePreviewSink = await OpfsSink.create(`decomposition-${id}-exposure-preview.jpg`);
     const exposurePreviewBytes = exposurePreviewJpeg instanceof Uint8Array ? exposurePreviewJpeg : new Uint8Array(exposurePreviewJpeg);
     await exposurePreviewSink.write(exposurePreviewBytes); await exposurePreviewSink.close();
+    await removeOpfsFile(`decomposition-${id}-base-preview.rgb`);
+    await removeOpfsFile(`decomposition-${id}-exposure-preview.rgb`);
     const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
     outputs.push({ name: `decomposition-${id}-base-preview.jpg`, size: basePreviewBytes.byteLength, kind: "base-preview-jpeg" }, { name: `decomposition-${id}-exposure-preview.jpg`, size: exposurePreviewBytes.byteLength, kind: "exposure-preview-jpeg" });
     postProgress(id, "Complete", 100, {

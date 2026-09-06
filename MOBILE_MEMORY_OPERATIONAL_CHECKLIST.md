@@ -38,8 +38,8 @@
       normalized EV Exposure outputs.
 - [x] Preserve ACEScg/AP1 fp16 channels, chromaticities, and metadata.
 - [ ] Add row-fed JPEG encoders for both Display P3/sRGB previews.
-- [x] Stream EXR encoder output directly to local files; preview encoding still
-      uses a temporary RGB8 staging plane until the row-fed encoder lands.
+- [x] Stream EXR encoder output and raw preview planes directly to local files;
+      JPEG encoding reads one spooled plane at a time.
 - [ ] Verify output files can be previewed and downloaded through object URLs
       backed by OPFS/IndexedDB files.
 

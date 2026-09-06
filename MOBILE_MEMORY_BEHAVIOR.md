@@ -7,9 +7,9 @@ are processed as bounded row-major tiles in the decomposition worker.
 The worker keeps one prepared source raster, one validated WebGPU batch (or the
 equivalent CPU row batch), small readback buffers, and bounded EXR encoder state.
 Full-resolution base/exposure arrays and EXR byte arrays are never accumulated
-in JavaScript or WASM memory. Preview RGB rows are currently retained until the
-bounded JPEG encoder is finalized; the next iteration will replace that
-temporary plane with a row-fed encoder.
+in JavaScript or WASM memory. Preview RGB rows are spooled to OPFS; one preview
+plane is read back while its JPEG is encoded, then released before the second
+preview is encoded.
 
 The worker uses the Origin Private File System (OPFS) for per-job output files.
 It writes the three full-resolution fp16 EXRs incrementally. The main thread opens
@@ -37,10 +37,9 @@ writers. Statistics are accumulated as scalar counters only.
 OpenEXR output is scanline-streamed as fp16 ACEScg/AP1 channels with the
 existing metadata. The default Exposure EXR stores direct scalar exposure
 replicated across RGB; the normalized EV Exposure EXR stores its single
- channel. Preview JPEG encoding currently uses one bounded full-resolution
-RGB8 staging plane after the exact ACES 2.0 SDR 100-nit Display P3 forward
-transform and sRGB encoding; replacing this plane with a row-fed encoder is a
-follow-up task.
+ channel. Preview JPEG encoding currently reads one OPFS RGB8 staging file at
+a time after the exact ACES 2.0 SDR 100-nit Display P3 forward transform and
+sRGB encoding; a row-fed JPEG encoder remains a follow-up task.
 
 GPU resources are reused for one batch at a time, explicitly destroyed when
 replaced, and completed before the next tile is submitted. Device loss or GPU
@@ -53,7 +52,7 @@ files. Successful HEIC precision and gain-map decoding remains silent unless a
 failure changes the operation.
 
 Implementation snapshot (2026-09-07): decomposition now writes scanline EXRs
-directly to OPFS and returns file descriptors to the page. The worker no longer
-allocates full base, exposure, or EXR result buffers. Source preparation still
-uses one decoder/prepared raster, and preview JPEGs still use a temporary RGB8
-plane pending a streaming JPEG encoder.
+and raw preview planes directly to OPFS and returns file descriptors to the
+page. The worker no longer allocates full base, exposure, or EXR result
+buffers. Source preparation still uses one decoder/prepared raster, and JPEG
+encoding reads one spooled preview plane at a time.
