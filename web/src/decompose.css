@@ -64,13 +64,13 @@ progress::-moz-progress-bar { background: #89e0c4; }
 .previews figure { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; margin: 0; }
 .preview-trigger { min-width: 0; min-height: 0; width: 100%; height: 100%; border: 1px solid #33414c; background: #080b0e; padding: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .preview-trigger:hover:not(:disabled) { border-color: #89e0c4; }
-.preview-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
+.preview-image { display: block; min-width: 0; min-height: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: cover; }
 .previews figcaption { padding-top: 6px; color: #7f8e97; font-size: 10px; }
 .preview-download { min-width: 0; min-height: 36px; padding: 3px 5px; margin-top: 4px; font-size: 10px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
 .preview-download span, .preview-download small { display: block; }
 .preview-download small { color: #aebbc2; font-size: 9px; }
-.downloads { align-content: start; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-.download-button { min-height: 58px; border: 1px solid #35434d; background: #151d25; padding: 10px; text-align: left; }
+.downloads { min-width: 0; align-content: start; display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr)); gap: 9px; }
+.download-button { min-width: 0; min-height: 58px; border: 1px solid #35434d; background: #151d25; padding: 10px; text-align: left; overflow-wrap: anywhere; }
 .download-button span, .download-button small { display: block; }
 .download-button span { color: #e4ecee; font-size: 12px; font-weight: 700; }
 .download-button small { margin-top: 3px; color: #71808b; font-size: 10px; line-height: 1.25; }
@@ -109,9 +109,8 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .process-controls { grid-column: 2; grid-row: 1; justify-content: flex-end; }
   .progress-block { grid-column: 1; grid-row: 1; }
   #processing-status { grid-column: 1 / -1; grid-row: 2; }
-  .results-row { grid-template-columns: 1fr; grid-template-rows: auto auto; gap: 8px; }
-  .previews { width: 100%; height: clamp(100px, 18vh, 145px); }
-  .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .results-row { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
+  .previews { width: 100%; height: clamp(100px, 18vh, 145px); max-height: 100%; }
   .download-button { min-height: 46px; padding: 7px; }
   .download-button small { margin-top: 2px; }
   .report-row { display: none; }
@@ -123,7 +122,6 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); }
   #refl { width: 100%; }
   .field-wide { grid-column: 1 / -1; }
-  .downloads { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .download-button span { font-size: 10px; }
   .previews figcaption { font-size: 9px; }
   .overlay-panel { width: 100vw; height: 100dvh; border: 0; }

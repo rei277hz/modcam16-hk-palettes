@@ -247,8 +247,11 @@ P3 pixels. Completed reduced rows go through the same exact ACES 2.0 SDR
 full-size outputs. Resampling retains bounded row state across solve batches
 and spools rendered display rows to OPFS.
 
-The page shows both display JPEGs inline as compact viewport-bounded thumbnails;
-clicking a thumbnail opens a full-screen image-only overlay titled “Base preview
+The page shows both display JPEGs inline as compact viewport-bounded thumbnails.
+Each thumbnail fills its frame while preserving aspect ratio, with centered
+cropping permitted so there are no letterbox borders. The enlarged overlay
+shows the complete image without cropping. Clicking a thumbnail opens a
+full-screen image-only overlay titled “Base preview
 (Display P3)” or “Exposure preview (Display P3)”. Clicking outside the image
 closes the overlay; the image can be long-pressed or context-clicked to save.
 The report records the source interpretation, selected decomposition options,
@@ -265,6 +268,13 @@ The default Exposure EXR stores direct scalar exposure replicated across ACEScg
 RGB. The normalized EV Exposure EXR stores `log2(s)` remapped and clipped to
 `[0,1]`, which is useful for painting in Substance 3D Painter because its
 material picker is limited to that range.
+
+The EXR download buttons share one row on desktop and mobile. Base EXR is
+on the left with 1.5 times the width of each exposure button to its right;
+the two exposure buttons have equal widths. Their encoding labels are
+`ACEScg fp16` for RGB outputs and `fp16 scalar` for normalized EV.
+All three buttons reset to disabled with `Waiting` on a new input or job,
+then show their respective file sizes when the outputs are ready.
 
 The preview implementation now has a dedicated WebGPU compute pass. It reuses
 the validated ACES parameter buffer and fixed-function shader from the solve

@@ -59,6 +59,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Add a download control and analytic-report metadata for the direct-scalar
       exposure RGB EXR; its three channels must each contain `s` without log or
       normalization.
+- [x] Reset all three EXR download labels together to `Waiting`; use concise
+      encoding labels and a single row with Base EXR on the left wider than
+      either equal-width exposure button on desktop and mobile.
 - [x] Show both preview JPEGs inline next to their download buttons.
 - [x] Separate full-size JPEG downloads from capped 2048-pixel display files;
       use only the capped files for thumbnails and overlays. Preserve every
@@ -76,6 +79,9 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Keep preview thumbnails compact with explicit viewport-relative width and
       height bounds, and simplify the controls to detected dropdown defaults,
       a WebGPU availability indicator, and a `Decompose` action.
+- [x] Fill thumbnail frames proportionally with centered cropping; keep the
+      complete image visible in the enlarged overlay. Bound mobile previews
+      to the space above the EXR controls and footnote.
 - [x] Keep Primaries and Transfer in a right-hand column beside the load and
       metadata area on narrow screens; allow long metadata values to wrap.
 - [x] Keep Refl beside the ACES profile selector, use `0.1` increments, and

@@ -251,10 +251,9 @@ function resetResults(): void {
   exposurePreviewTrigger.disabled = true;
   downloadBasePreview.disabled = true;
   downloadExposurePreview.disabled = true;
-  basePreviewSize.textContent = "Waiting";
-  exposurePreviewSize.textContent = "Waiting";
-  baseSize.textContent = "Waiting for calculation";
-  exposureSize.textContent = "Waiting for calculation";
+  for (const size of [baseSize, exposureRgbSize, exposureSize, basePreviewSize, exposurePreviewSize]) {
+    size.textContent = "Waiting";
+  }
   emptyReport.hidden = false;
   reportContent.hidden = true;
 }
