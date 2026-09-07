@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:batches": "node --experimental-strip-types --test tests/source_batches.test.mjs",
     "build:wasm": "wasm-pack build ../wasm/color_core --target web --release --out-dir ../../web/src/wasm/pkg --no-pack",
     "build:wasm:decomposition": "wasm-pack build ../wasm/decomposition --target web --release --out-dir ../../web/src/wasm/decomposition --no-pack",
     "dev": "vite",

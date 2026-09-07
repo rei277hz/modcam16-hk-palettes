@@ -4,11 +4,28 @@ The web application preserves the uploaded image's full pixel dimensions and
 precision. It does not resize the source to avoid memory pressure. Large jobs
 are processed as bounded row-major tiles in the decomposition worker.
 
-The worker keeps one decoder-owned source raster, one Rust-owned prepared raster,
-one small validated WebGPU batch (or the equivalent CPU row batch), small
-readback buffers, and bounded EXR encoder state. On mobile, CPU batches are
-limited to 1,024 pixels (or one image row when the row is wider), and WebGPU
-batches to 8,192 pixels (or one row when wider).
+Preparation may retain decoder-owned and Rust-owned full source rasters. It
+spools prepared AP0 RGB f32 pixels to OPFS, then the preparation worker is
+terminated. A fresh solve worker keeps one working batch and exactly one
+loading/ready next source batch, bounded GPU readback buffers, and scanline EXR
+encoder state. No decoder/preparation heap remains live in the solve worker.
+
+GPU and source-spooling batches target 524,288 pixels. CPU solve batches target
+32,768 pixels because CPU calls block the worker. Both budgets round down to
+whole rows, with at least one complete row; GPU batches also respect the
+adapter's pixel limit. If even one row exceeds that limit, use CPU. These
+budgets apply on desktop and mobile without relying on user-agent detection.
+For 6000x4000, GPU batches contain 522,000 pixels (87 rows), giving 46 batches
+instead of the earlier 4,000 single-row batches. Each source buffer is about
+6 MiB, so current plus prefetched source use about 12 MiB, in addition to the
+current batch's WASM/GPU/result allocations.
+
+The solve worker opens one immutable source `File` and reads only its required
+ranges. It starts the next range read before processing the current batch,
+without queuing a third source batch or submitting a second GPU solve. A
+prefetched read failure is observed immediately and reported when consumed.
+On restart or error, the outstanding read is drained and discarded before a
+new traversal begins. Cancellation terminates the worker from the UI.
 Full-resolution base/exposure arrays and EXR byte arrays are never accumulated
 in JavaScript or WASM memory. Preview RGB rows are spooled to OPFS; one preview
 plane is read back while its JPEG is encoded, then released before the second
@@ -22,9 +39,9 @@ without receiving complete output buffers through `postMessage`.
 
 When OPFS synchronous access handles are unavailable, the worker uses writable
 OPFS streams. IndexedDB tile/file blobs remain the compatibility fallback to
-add; currently a job fails before expensive decoding if OPFS is unavailable or
-if the estimated quota cannot hold the source scratch file, outputs, and
-preview staging files.
+add. Storage/quota checks currently occur after preparation and before solving,
+not before decoding; moving that check earlier remains outstanding. Quota
+estimation is conservative and does not reserve disk space.
 
 Source decoding retains the existing interpretation rules: an explicit gamut
 and transfer override wins, a usable ICC profile is used directly when present,
@@ -34,11 +51,12 @@ gain-map samples remain 10/12-bit capable without an 8-bit display conversion;
 the decoder-owned raster is the unavoidable codec working-set floor until
 region decode is available in the browser bridge.
 
-Gaussian blur is fixed at zero, so tiles do not require a halo. Each row batch
-is solved from the Rust-owned prepared raster with the exact CPU reference or
-validated WebGPU path and immediately written to the output writers. CPU
-batches do not cross JavaScript/WASM for solving; WebGPU receives only the
-active batch. Statistics are accumulated as scalar counters only.
+Gaussian blur is fixed at zero, so tiles do not require a halo. Each source
+range crosses into WASM for the exact CPU reference or validated WebGPU solve,
+and results are immediately written to the output writers. Statistics are
+accumulated as scalar counters only. Both paths retain their accurate ACES 2.0
+transforms and existing validation tolerances. Larger batches and read overlap
+do not alter the color math or output dimensions.
 
 OpenEXR output is scanline-streamed as fp16 ACEScg/AP1 channels with the
 existing metadata. The default Exposure EXR stores direct scalar exposure
@@ -49,16 +67,25 @@ short-lived preview worker so the decomposition worker's large WASM
 decoder/prepared raster allocation is not live alongside the JPEG encoder's
 full-resolution input and output buffers.
 
-GPU resources are reused for one batch at a time, explicitly destroyed after
-readback, and completed before the next tile is submitted. Mobile devices use
-smaller row batches to keep transient unified-memory allocations bounded.
-Device loss or GPU
-validation failure restarts the complete tiled job on the accurate Rust/WASM
-CPU implementation without creating full-image result arrays.
+GPU resources are allocated per batch, explicitly destroyed after successful
+readback, and completed before the next GPU operation is submitted. Persistent
+GPU buffer reuse remains an optimization to implement. GPU validation failure
+selects the accurate Rust/WASM CPU implementation; a GPU solve failure restarts
+the complete job at row zero with CPU solving and CPU previews. A preview GPU
+failure switches subsequent preview transforms to exact CPU. Storage write
+errors are reported as storage failures, without retrying an already partially
+written batch as though it were a GPU failure.
 
-Cancellation, quota errors, decoder failures, and page unload close handles,
-release mapped buffers, revoke object URLs, and delete incomplete per-job
-files. Successful HEIC precision and gain-map decoding remains silent unless a
+The fp16 scanline conversion reuses its four-byte bit-conversion scratch views
+instead of allocating two typed arrays per output channel. Synchronous OPFS
+writes no longer await a synchronous return value. Source spooling and solving
+yield to the worker event loop periodically (50 ms threshold), without forcing
+a timer for every batch. EXR scanline layout and JPEG encoding are unchanged.
+
+Cancellation, quota errors, decoder failures, and page unload should release
+resources and remove incomplete files. Current termination and OPFS cleanup
+are best effort; comprehensive lifecycle testing remains outstanding.
+Successful HEIC precision and gain-map decoding remains silent unless a
 failure changes the operation.
 
 Implementation snapshot (2026-09-07): decomposition now writes scanline EXRs
@@ -66,9 +93,18 @@ and raw full-resolution preview planes directly to OPFS and returns file
 descriptors to the page. The worker no longer allocates full base, exposure,
 or EXR result buffers. Preparation writes the prepared float raster to an OPFS
 scratch file in small batches, then its worker is terminated. The solve worker
-reads one bounded source range at a time, so the decoder/preparation heap is
+reads bounded source ranges with one read ahead, so the decoder/preparation heap is
 not resident during "Decompose pixels". Each full-resolution JPEG is encoded
 in a separate worker and that worker is terminated after completion to reclaim
 its WASM heap. CPU and GPU paths use only the active bounded source/result
-buffers. HEIC decoder pixel and gain-map buffers are released immediately
+buffers plus one prefetched source batch. HEIC decoder pixel and gain-map buffers are released immediately
 after Rust preparation.
+
+Throughput verification (2026-09-07): automated tests cover single-read
+prefetch, ordering, tail batches, read failures, draining before CPU restart,
+adapter limits, and a full 6000x4000 synthetic traversal. A Node v26.7.0
+microbenchmark converting 600,000 EXR pixels measured 2425.6 ms before versus
+33.0 ms after scratch-view reuse (same checksum). This measures conversion
+only; it is not an end-to-end or iOS speed claim. Real-device runtime and peak
+memory with these larger batches still need measurement. Use optimized release
+WASM for performance checks.

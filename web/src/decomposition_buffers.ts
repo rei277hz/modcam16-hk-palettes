@@ -4,8 +4,15 @@ const AP0_TO_AP1 = [
   [0.008316148, -0.00603245, 0.9977163],
 ] as const;
 
+// These views are reused because this conversion runs for every channel of
+// every output pixel. Allocating a typed-array pair per call dominates the
+// scanline writer for large images.
+const floatBits = new Float32Array(1);
+const uintBits = new Uint32Array(floatBits.buffer);
+
 function floatToHalf(value: number): number {
-  const bits = new Uint32Array(new Float32Array([value]).buffer)[0];
+  floatBits[0] = value;
+  const bits = uintBits[0];
   const sign = (bits >>> 16) & 0x8000;
   let exponent = ((bits >>> 23) & 0xff) - 127 + 15;
   let mantissa = bits & 0x7fffff;
@@ -19,11 +26,12 @@ function floatToHalf(value: number): number {
 }
 
 export function batchPixelLimit(width: number, gpu: boolean, probe?: { max_batch_pixels?: number }): number {
-  const nav = globalThis as any;
-  const mobile = /iPhone|iPad|iPod|Android/i.test(String(nav.navigator?.userAgent || ""));
-  const memory = Number(nav.navigator?.deviceMemory || 0);
-  const cap = mobile || (memory > 0 && memory <= 4) ? (gpu ? 8192 : 1024) : (gpu ? 32768 : 4096);
-  return Math.max(width, Math.min(cap, Math.floor(probe?.max_batch_pixels || cap)));
+  if (!Number.isSafeInteger(width) || width <= 0) throw new Error("Invalid source width.");
+  // CPU calls are synchronous, so keep their budget smaller for responsiveness.
+  const target = gpu ? 524_288 : 32_768;
+  const adapterLimit = gpu ? probe?.max_batch_pixels ?? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY;
+  if (!(adapterLimit >= width)) return 0; // The caller selects CPU when a GPU row cannot fit.
+  return Math.floor(Math.min(Math.max(width, target), adapterLimit) / width) * width;
 }
 
 export function convertExrRow(base: Float32Array, exposure: Float32Array, offset: number, width: number): { baseR: Uint16Array; baseG: Uint16Array; baseB: Uint16Array; exposure: Uint16Array } {
