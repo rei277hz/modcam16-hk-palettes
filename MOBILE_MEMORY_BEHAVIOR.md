@@ -4,6 +4,34 @@ The web application preserves the uploaded image's full pixel dimensions and
 precision. It does not resize the source to avoid memory pressure. Large jobs
 are processed as bounded row-major tiles in the decomposition worker.
 
+JPEG viewing contract (2026-09-07): each of the two JPEG outputs has a
+full-resolution download and a separate display version capped at 2048 pixels
+on its longest edge, preserving aspect ratio and never upscaling. Both the
+inline thumbnail and enlarged overlay use only the display version. A
+"Download full-size JPEG" button beside each preview downloads the original
+dimensions without assigning it to an image element. This change applies only
+to JPEG viewing; all three EXRs and both full-resolution JPEGs remain intact.
+
+Generate display pixels from the solved, linear ACES2065-1/AP0 batches before
+the nonlinear output transform. The Rust streaming area resampler accumulates
+base AP0 RGB and the exposure preview's linear neutral canvas (`Refl * s`,
+where `s = 2^(20 * normalizedEV - 10)`). It retains only two row accumulators
+per image and emits completed reduced AP0 rows; it never averages normalized
+EV, tone-mapped P3 pixels, or JPEG pixels. HDR and negative AP0 values remain
+unclipped during resampling. Apply the same exact ACES 2.0 SDR 100-nit P3-D65
+transform and sRGB encoding as the full-size previews to those accumulated
+rows, using the validated GPU path or accurate CPU fallback, then spool the
+capped RGB8 planes to OPFS. Completed AP0 rows are returned in a temporary
+buffer bounded by the current solve batch; no full-size AP0 preview raster is
+retained. The existing source read-ahead bound is unchanged.
+
+Encode with the same Rust JPEG encoder and embedded Display P3 ICC profile.
+No full-resolution canvas, ImageBitmap, or browser JPEG decode is used to
+build the display version. Finish display encoding workers before starting
+the full-resolution encoding workers, and release/revoke display and download
+resources on replacement or cancellation. Quota estimates include the extra
+capped RGB staging files and JPEGs.
+
 Preparation may retain decoder-owned and Rust-owned full source rasters. It
 spools prepared AP0 RGB f32 pixels to OPFS, then the preparation worker is
 terminated. A fresh solve worker keeps one working batch and exactly one

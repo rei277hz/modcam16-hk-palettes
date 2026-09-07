@@ -217,10 +217,11 @@ JPEGs with sRGB encoded P3-D65 primaries:
 * The base preview converts the reconstructed linear ACES2065-1 base pixels
   through the exact ACES 2.0 `SDR-100nit-P3-D65_2.0` forward transform and
   then applies the sRGB encoding function.
-* The exposure preview starts with a neutral canvas containing
-  `f(Refl, Refl, Refl)`, multiplies each pixel by
-  `s = 2^(exposure * 20 - 10)`, then applies that same ACES 2.0 P3-D65
-  forward transform and sRGB encoding.
+* The exposure preview uses a scene-linear ACES2065-1 neutral canvas containing
+  `(Refl * s, Refl * s, Refl * s)`, where `s = 2^(exposure * 20 - 10)`, then
+  applies that same ACES 2.0 P3-D65 forward transform and sRGB encoding. The
+  selected decomposition profile determines the solved exposure; both JPEG
+  versions use the fixed P3-D65 preview transform on the resulting AP0 canvas.
 
 The preview forward transform is the OCIO built-in transform named
 `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0` from
@@ -231,7 +232,22 @@ tables. A simple tone curve or other approximation is not acceptable. GPU
 arithmetic uses portable `f32`; the exact CPU ACES implementation remains the
 reference and a failed numerical validation selects the CPU preview path.
 
-The page shows both preview JPEGs inline as compact viewport-bounded thumbnails;
+Both JPEG outputs retain their full source dimensions for explicit download.
+Separate display JPEGs, capped at 2048 pixels on the longest edge without
+upscaling, are used for every in-app image element, including the enlarged
+overlay. The three EXR outputs are unchanged. A full-size JPEG download button
+beside each preview shows the original dimensions and file size.
+
+Display JPEGs are area-resampled in linear ACES2065-1/AP0, before the output
+transform: average the solved base RGB and the exposure preview's linear
+neutral canvas (`Refl * 2^(20 * normalizedEV - 10)`). Preserve HDR and negative
+AP0 values during averaging. Do not average normalized EV or already rendered
+P3 pixels. Completed reduced rows go through the same exact ACES 2.0 SDR
+100-nit P3-D65 transform, sRGB encoding, and ICC-tagged JPEG encoder as the
+full-size outputs. Resampling retains bounded row state across solve batches
+and spools rendered display rows to OPFS.
+
+The page shows both display JPEGs inline as compact viewport-bounded thumbnails;
 clicking a thumbnail opens a full-screen image-only overlay titled “Base preview
 (Display P3)” or “Exposure preview (Display P3)”. Clicking outside the image
 closes the overlay; the image can be long-pressed or context-clicked to save.

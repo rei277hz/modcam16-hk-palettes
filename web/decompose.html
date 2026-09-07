@@ -44,7 +44,10 @@
       </section>
 
       <section class="results-row" aria-label="Previews and downloads">
-        <div class="previews"><figure><button id="base-preview-trigger" class="preview-trigger" type="button" disabled aria-label="Open larger base preview"><img id="base-preview-image" alt="Base preview JPEG" hidden /></button><figcaption>Base preview · click to enlarge</figcaption></figure><figure><button id="exposure-preview-trigger" class="preview-trigger" type="button" disabled aria-label="Open larger exposure preview"><img id="exposure-preview-image" alt="Exposure preview JPEG" hidden /></button><figcaption>Exposure preview · click to enlarge</figcaption></figure></div>
+        <div class="previews">
+          <figure><button id="base-preview-trigger" class="preview-trigger" type="button" disabled aria-label="Open larger base preview"><img id="base-preview-image" class="preview-image" alt="Base preview JPEG" hidden /></button><figcaption>Base preview</figcaption><button id="download-base-preview" class="button preview-download" type="button" disabled aria-label="Download full-size base JPEG"><span>Download full-size JPEG</span><small id="base-preview-size">Waiting</small></button></figure>
+          <figure><button id="exposure-preview-trigger" class="preview-trigger" type="button" disabled aria-label="Open larger exposure preview"><img id="exposure-preview-image" class="preview-image" alt="Exposure preview JPEG" hidden /></button><figcaption>Exposure preview</figcaption><button id="download-exposure-preview" class="button preview-download" type="button" disabled aria-label="Download full-size exposure JPEG"><span>Download full-size JPEG</span><small id="exposure-preview-size">Waiting</small></button></figure>
+        </div>
         <div class="downloads"><button id="download-base" class="download-button" type="button" disabled><span>Base EXR</span><small>ACEScg/AP1 fp16</small><small id="base-size">Waiting</small></button><button id="download-exposure-rgb" class="download-button" type="button" disabled><span>Exposure EXR</span><small>ACEScg/AP1 fp16</small><small id="exposure-rgb-size">Waiting</small></button><button id="download-exposure" class="download-button" type="button" disabled><span>Exposure EXR (normalized EV)</span><small>Single channel fp16</small><small id="exposure-size">Waiting</small></button></div>
       </section>
 

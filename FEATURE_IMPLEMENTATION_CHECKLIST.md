@@ -60,6 +60,14 @@ Branch: `feat/web-image-decomposition-p3-preview`
       exposure RGB EXR; its three channels must each contain `s` without log or
       normalization.
 - [x] Show both preview JPEGs inline next to their download buttons.
+- [x] Separate full-size JPEG downloads from capped 2048-pixel display files;
+      use only the capped files for thumbnails and overlays. Preserve every
+      EXR and full-size JPEG at source dimensions.
+- [x] Area-resample solved AP0 and linear exposure canvas across batches before
+      the exact ACES output transform. Test color order, fractional edges,
+      batch independence, ICC tags, download sizes, and mobile image bounds.
+      Native resampling tests and the browser smoke test passed; actual iOS
+      memory/runtime verification remains in the mobile operational checklist.
 - [x] Use a single no-card, no-page-scroll viewport layout with upload first,
       interpretation/options, progress, previews, and EXR controls.
 - [x] Make previews clickable and open a full-screen image-only overlay; users

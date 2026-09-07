@@ -41,12 +41,12 @@ type Report = {
   warnings: string[];
 };
 type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: number; counters?: Record<string, number | undefined> };
-type OutputFile = { name: string; size: number; kind: string };
+type OutputFile = { name: string; size: number; kind: string; width?: number; height?: number };
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
   | { kind: "source-ready"; id: number; width: number; height: number; source: string; request: Request; warnings: string[] }
-  | { kind: "preview-encode"; id: number; width: number; height: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
+  | { kind: "preview-encode"; id: number; width: number; height: number; displayWidth: number; displayHeight: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "result"; id: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "error"; id: number; message: string }
   | { kind: "cancelled"; id: number };
@@ -92,6 +92,10 @@ const previewOverlayLabel = $("#preview-overlay-label");
 const closePreviewButton = $("#close-preview") as HTMLButtonElement;
 const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
 const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
+const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
+const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
+const basePreviewSize = $("#base-preview-size");
+const exposurePreviewSize = $("#exposure-preview-size");
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
 const exposureRgbSize = $("#exposure-rgb-size");
@@ -109,6 +113,9 @@ let exposureUrl: string | undefined;
 let exposureRgbUrl: string | undefined;
 let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
+let baseFullPreviewUrl: string | undefined;
+let exposureFullPreviewUrl: string | undefined;
+let previewEncoding: AbortController | undefined;
 
 function createWorker(): Worker {
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
@@ -146,21 +153,25 @@ function revokeUrls(): void {
   if (exposureRgbUrl) URL.revokeObjectURL(exposureRgbUrl);
   if (basePreviewUrl) URL.revokeObjectURL(basePreviewUrl);
   if (exposurePreviewUrl) URL.revokeObjectURL(exposurePreviewUrl);
+  if (baseFullPreviewUrl) URL.revokeObjectURL(baseFullPreviewUrl);
+  if (exposureFullPreviewUrl) URL.revokeObjectURL(exposureFullPreviewUrl);
   baseUrl = undefined;
   exposureUrl = undefined;
   exposureRgbUrl = undefined;
   basePreviewUrl = undefined;
   exposurePreviewUrl = undefined;
+  baseFullPreviewUrl = undefined;
+  exposureFullPreviewUrl = undefined;
 }
 
 function clearPreview(image: HTMLImageElement): void {
-  image.src = "";
+  image.removeAttribute("src");
   image.hidden = true;
 }
 
 function closePreview(): void {
   previewOverlay.hidden = true;
-  previewOverlayImage.src = "";
+  previewOverlayImage.removeAttribute("src");
   document.body.classList.remove("preview-open");
 }
 
@@ -229,15 +240,19 @@ function updateCalculateState(): void {
 }
 
 function resetResults(): void {
+  closePreview();
+  clearPreview(basePreviewImage);
+  clearPreview(exposurePreviewImage);
   revokeUrls();
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
   downloadExposureRgb.disabled = true;
   basePreviewTrigger.disabled = true;
   exposurePreviewTrigger.disabled = true;
-  closePreview();
-  clearPreview(basePreviewImage);
-  clearPreview(exposurePreviewImage);
+  downloadBasePreview.disabled = true;
+  downloadExposurePreview.disabled = true;
+  basePreviewSize.textContent = "Waiting";
+  exposurePreviewSize.textContent = "Waiting";
   baseSize.textContent = "Waiting for calculation";
   exposureSize.textContent = "Waiting for calculation";
   emptyReport.hidden = false;
@@ -272,14 +287,18 @@ function renderSummary(summary: SourceSummary): void {
 }
 
 let previewEncoderId = 0;
-function encodePreviewFile(input: string, output: string, width: number, height: number): Promise<number> {
+type EncodedPreview = { size: number; width: number; height: number };
+function encodePreviewFile(input: string, output: string, width: number, height: number, signal: AbortSignal): Promise<EncodedPreview> {
+  signal.throwIfAborted();
   const encoder = new Worker(new URL("./preview_encoder_worker.ts", import.meta.url), { type: "module" });
   const id = ++previewEncoderId;
-  return new Promise<number>((resolve, reject) => {
-    const finish = () => encoder.terminate();
-    encoder.onmessage = (event: MessageEvent<{ kind: string; id: number; size?: number; message?: string }>) => {
+  return new Promise<EncodedPreview>((resolve, reject) => {
+    const finish = () => { encoder.terminate(); signal.removeEventListener("abort", abort); };
+    const abort = () => { finish(); reject(new DOMException("Preview encoding cancelled.", "AbortError")); };
+    signal.addEventListener("abort", abort, { once: true });
+    encoder.onmessage = (event: MessageEvent<{ kind: string; id: number; size: number; width: number; height: number; message?: string }>) => {
       if (event.data.id !== id) return;
-      if (event.data.kind === "complete") { finish(); resolve(event.data.size ?? 0); }
+      if (event.data.kind === "complete") { finish(); resolve({ size: event.data.size, width: event.data.width, height: event.data.height }); }
       else if (event.data.kind === "error") { finish(); reject(new Error(event.data.message ?? "Preview JPEG encoding failed.")); }
     };
     encoder.onerror = (event) => { finish(); reject(new Error(event.message || "Preview JPEG worker failed.")); };
@@ -338,41 +357,50 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     return;
   }
   if (message.kind === "preview-encode") {
-    progressStage.textContent = "Encode base preview JPEG";
-    progressBar.value = 95;
-    progressPercent.value = "95";
-    progressPercent.textContent = "95%";
-    progressCounters.textContent = "Full-resolution preview";
-    // Release the worker that owns the decoder and prepared raster before
-    // allocating the full-resolution JPEG encoder buffers.
+    // Each JPEG encoder gets its own lifetime. Never display full-size JPEGs
+    // in the page: only the two capped files may be decoded by image elements.
     worker.terminate();
+    const encoding = new AbortController();
+    previewEncoding = encoding;
     try {
-      const baseName = `decomposition-${message.id}-base-preview.jpg`;
-      const exposureName = `decomposition-${message.id}-exposure-preview.jpg`;
-      const baseSize = await encodePreviewFile(`decomposition-${message.id}-base-preview.rgb`, baseName, message.width, message.height);
-      if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
-      progressStage.textContent = "Encode exposure preview JPEG";
-      progressBar.value = 98;
-      progressPercent.value = "98";
-      progressPercent.textContent = "98%";
-      const exposureSize = await encodePreviewFile(`decomposition-${message.id}-exposure-preview.rgb`, exposureName, message.width, message.height);
-      if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
+      const outputs = [...message.outputs];
+      for (const [index, spec] of [
+        { component: "base", display: true }, { component: "exposure", display: true },
+        { component: "base", display: false }, { component: "exposure", display: false },
+      ].entries()) {
+        const { component, display } = spec;
+        const suffix = display ? "display" : "preview";
+        const name = `decomposition-${message.id}-${component}-${suffix}.jpg`;
+        progressStage.textContent = `Encode ${component} ${display ? "display" : "full-size"} JPEG`;
+        progressBar.value = 94 + index * 1.5;
+        progressPercent.value = String(progressBar.value);
+        progressPercent.textContent = `${Math.round(progressBar.value)}%`;
+        progressCounters.textContent = display ? "2048-pixel display preview" : "Full-resolution JPEG";
+        const result = await encodePreviewFile(`decomposition-${message.id}-${component}-${suffix}.rgb`, name,
+          display ? message.displayWidth : message.width, display ? message.displayHeight : message.height, encoding.signal);
+        if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
+        outputs.push({ name, ...result, kind: `${component}-${suffix}-jpeg` });
+      }
       const root = await (navigator.storage as any).getDirectory();
       await root.removeEntry(`decomposition-${message.id}-base-preview.rgb`).catch(() => undefined);
       await root.removeEntry(`decomposition-${message.id}-exposure-preview.rgb`).catch(() => undefined);
+      await root.removeEntry(`decomposition-${message.id}-base-display.rgb`).catch(() => undefined);
+      await root.removeEntry(`decomposition-${message.id}-exposure-display.rgb`).catch(() => undefined);
       await root.removeEntry(`decomposition-${message.id}-source.f32`).catch(() => undefined);
-      const outputs = [...message.outputs,
-        { name: baseName, size: baseSize, kind: "base-preview-jpeg" },
-        { name: exposureName, size: exposureSize, kind: "exposure-preview-jpeg" }];
       await onWorkerMessage({ kind: "result", id: message.id, report: message.report, outputs, storage: "opfs" });
     } catch (error) {
       await cleanupOpfsJob(message.id);
-      activeJob = undefined;
-      setBusy(false);
-      showStatus(error instanceof Error ? error.message : String(error), true);
-      progressStage.textContent = "Error";
+      if (activeJob === message.id) {
+        activeJob = undefined;
+        setBusy(false);
+        showStatus(error instanceof Error ? error.message : String(error), true);
+        progressStage.textContent = "Error";
+      }
     } finally {
-      worker = createWorker();
+      if (previewEncoding === encoding) {
+        previewEncoding = undefined;
+        worker = createWorker();
+      }
     }
     return;
   }
@@ -405,8 +433,10 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     baseUrl = await openUrl("base-exr", "image/x-exr");
     exposureUrl = await openUrl("exposure-normalized-ev", "image/x-exr");
     exposureRgbUrl = await openUrl("exposure-exr", "image/x-exr");
-    basePreviewUrl = await openUrl("base-preview-jpeg", "image/jpeg");
-    exposurePreviewUrl = await openUrl("exposure-preview-jpeg", "image/jpeg");
+    basePreviewUrl = await openUrl("base-display-jpeg", "image/jpeg");
+    exposurePreviewUrl = await openUrl("exposure-display-jpeg", "image/jpeg");
+    baseFullPreviewUrl = await openUrl("base-preview-jpeg", "image/jpeg");
+    exposureFullPreviewUrl = await openUrl("exposure-preview-jpeg", "image/jpeg");
   } catch (error) {
     setBusy(false);
     showStatus(error instanceof Error ? error.message : String(error), true);
@@ -420,10 +450,22 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   downloadExposureRgb.disabled = false;
   basePreviewTrigger.disabled = false;
   exposurePreviewTrigger.disabled = false;
+  downloadBasePreview.disabled = !baseFullPreviewUrl;
+  downloadExposurePreview.disabled = !exposureFullPreviewUrl;
+  const jpegLabel = (kind: string): string => {
+    const file = files.get(kind);
+    return file ? `${file.width} × ${file.height} · ${formatBytes(file.size)}` : "Unavailable";
+  };
+  basePreviewSize.textContent = jpegLabel("base-preview-jpeg");
+  exposurePreviewSize.textContent = jpegLabel("exposure-preview-jpeg");
   baseSize.textContent = formatBytes(files.get("base-exr")?.size ?? 0);
   exposureSize.textContent = formatBytes(files.get("exposure-normalized-ev")?.size ?? 0);
   exposureRgbSize.textContent = formatBytes(files.get("exposure-exr")?.size ?? 0);
   setBusy(false);
+  progressBar.value = 100;
+  progressPercent.value = "100";
+  progressPercent.textContent = "100%";
+  progressStage.textContent = "Complete";
   showStatus("Calculation complete. Outputs are ready.");
 }
 
@@ -550,6 +592,8 @@ function cancel(): void {
   // Rust/WASM calls are synchronous inside a worker. Terminate the current
   // worker so cancellation also interrupts an in-flight large image job.
   worker.terminate();
+  previewEncoding?.abort();
+  previewEncoding = undefined;
   void cleanupOpfsJob(cancelledId);
   worker = createWorker();
   activeJob = undefined;
@@ -573,6 +617,8 @@ calculateButton.addEventListener("click", () => { if (activeJob !== undefined) c
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
 downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-normalized-ev", "exr"));
 downloadExposureRgb.addEventListener("click", () => download(exposureRgbUrl, "exposure-acescg-fp16", "exr"));
+downloadBasePreview.addEventListener("click", () => download(baseFullPreviewUrl, "base-preview-display-p3", "jpg"));
+downloadExposurePreview.addEventListener("click", () => download(exposureFullPreviewUrl, "exposure-preview-display-p3", "jpg"));
 basePreviewTrigger.addEventListener("click", () => openPreview("base"));
 exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
 closePreviewButton.addEventListener("click", closePreview);
@@ -604,7 +650,7 @@ overrideSource.addEventListener("click", () => {
   gamutSelect.focus();
   updateCalculateState();
 });
-window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); });
+window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });
 const browserNavigator = navigator as Navigator & { gpu?: unknown };
 const webGpuAvailable = Boolean(browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext));
 webGpuFootnote.textContent = webGpuAvailable

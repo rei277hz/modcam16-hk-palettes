@@ -25,6 +25,7 @@ use wasm_bindgen::prelude::*;
 use ultrahdr_core::metadata::apple::{from_apple_headroom, parse_exif_for_apple_hdr};
 
 mod gpu;
+mod preview_display;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod gpu_host_tests;
@@ -1519,6 +1520,22 @@ pub fn encode_preview_pixels(pixels: Vec<u8>, width: u32, height: u32) -> Result
         ));
     }
     encode_preview_jpeg(width as usize, height as usize, &pixels).map_err(|e| JsValue::from_str(&e))
+}
+
+#[wasm_bindgen]
+pub fn cpu_preview_ap0(pixels: &[f32]) -> Result<Vec<u8>, JsValue> {
+    if pixels.len() % 3 != 0 {
+        return Err(JsValue::from_str("Invalid AP0 preview buffer."));
+    }
+    Ok(preview_bytes(
+        pixels.chunks_exact(3).map(|p| preview_rgb_for_ap0([p[0], p[1], p[2]])),
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn gpu_preview_ap0(pixels: Vec<f32>) -> Result<Vec<u8>, JsValue> {
+    gpu::preview_ap0(pixels).await.map_err(|e| JsValue::from_str(&e))
 }
 
 #[wasm_bindgen]

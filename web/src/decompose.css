@@ -61,11 +61,14 @@ progress::-moz-progress-bar { background: #89e0c4; }
 .progress-counters { min-height: 14px; margin-top: 4px; color: #71808b; font-size: 10px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results-row { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .9fr); align-items: start; gap: 22px; }
 .previews { min-width: 0; min-height: 0; width: min(100%, 62vw); height: clamp(100px, 18vh, 180px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-self: start; }
-.previews figure { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; margin: 0; }
+.previews figure { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; margin: 0; }
 .preview-trigger { min-width: 0; min-height: 0; width: 100%; height: 100%; border: 1px solid #33414c; background: #080b0e; padding: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .preview-trigger:hover:not(:disabled) { border-color: #89e0c4; }
 .preview-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
 .previews figcaption { padding-top: 6px; color: #7f8e97; font-size: 10px; }
+.preview-download { min-width: 0; min-height: 36px; padding: 3px 5px; margin-top: 4px; font-size: 10px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
+.preview-download span, .preview-download small { display: block; }
+.preview-download small { color: #aebbc2; font-size: 9px; }
 .downloads { align-content: start; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
 .download-button { min-height: 58px; border: 1px solid #35434d; background: #151d25; padding: 10px; text-align: left; }
 .download-button span, .download-button small { display: block; }

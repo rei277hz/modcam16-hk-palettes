@@ -519,6 +519,14 @@ mod webgpu {
         Ok(pixels)
     }
 
+    pub async fn preview_ap0(rgb: Vec<f32>) -> Result<Vec<u8>, String> {
+        if rgb.is_empty() || rgb.len() % 3 != 0 {
+            return Err("Invalid AP0 preview buffer.".into());
+        }
+        let input = rgb.chunks_exact(3).map(|p| [p[0], p[1], p[2], 0.0]).collect();
+        preview_mode(input, 1.0, 1).await
+    }
+
     pub async fn preview(
         base: Vec<f32>,
         exposure: Vec<f32>,
@@ -546,7 +554,7 @@ mod webgpu {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use webgpu::{preview, probe, solve};
+pub use webgpu::{preview, preview_ap0, probe, solve};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn probe() -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue> {

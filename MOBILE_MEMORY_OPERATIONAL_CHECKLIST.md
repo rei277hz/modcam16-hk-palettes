@@ -53,6 +53,20 @@
 
 ## Streaming outputs
 
+- [x] Add separate JPEG display artifacts with maximum edge 2048, preserved
+      aspect ratio, and no upscaling. Retain both full-resolution JPEGs and
+      every EXR at source dimensions.
+- [x] Area-resample solved linear AP0 base and the linear exposure canvas in
+      Rust before ACES, retaining only row state across solve batches. Apply
+      the same exact GPU/CPU ACES transform to accumulated AP0 rows and spool
+      capped RGB8 planes; use the Display P3 encoder for both JPEG versions.
+- [x] Use only display artifacts in thumbnail and overlay image elements;
+      add explicit full-size JPEG download buttons with dimensions/file sizes.
+- [x] Test resampling across batch boundaries, fractional dimensions, small
+      images, ICC retention, full-size downloads, cancellation, and image-element
+      resolution limits on mobile/desktop layouts. Assert HDR/negative AP0
+      preservation and averaging of linear exposure, not normalized EV.
+
 - [x] Add stateful scanline OpenEXR writers for Base, Exposure RGB, and
       normalized EV Exposure outputs.
 - [x] Preserve ACEScg/AP1 fp16 channels, chromaticities, and metadata.
@@ -94,7 +108,7 @@
 - [x] Test short final batches, read failure propagation, early return with
       a pending read, restart ordering, GPU adapter limits, and EXR row
       conversion consistency across batch boundaries.
-- [x] Run Rust workspace tests (53 core and 6 decomposition tests), TypeScript
+- [x] Run Rust workspace tests (53 core and 12 decomposition tests), TypeScript
       checking, optimized release WASM generation, and the Vite production build.
 - [ ] Measure end-to-end 6000x4000 solving/output runtime and peak memory on
       mobile Safari with the increased budgets; the synthetic test exercises
@@ -120,3 +134,15 @@
       same checksum; this is not a measurement of total job speed. All outputs
       remain full-resolution. Updated stale lifecycle and allocation claims
       above to distinguish implemented behavior from remaining work.
+- 2026-09-07 JPEG viewing update: added independent 2048-edge display JPEGs
+      resampled from solved linear AP0, with the same exact ACES 2.0 P3-D65
+      output transform and ICC profile as the full-size downloads. Rust tests
+      cover area weights, batch boundaries, HDR/negative values, and exposure
+      scaling before averaging. Both actual WGSL tests passed on Mesa's
+      software Vulkan adapter. TypeScript, all eight batching tests, and the
+      Vite production build passed. `web/tests/preview_browser.mjs` passed a
+      real small-image job, cancellation/restart, desktop/mobile layouts,
+      2048x1365 thumbnail/overlay decoding, and unchanged 6000x4000 download
+      bytes. Large JPEG artifacts in that browser test are seeded to isolate
+      rendering/download behavior; full 24-megapixel jobs and iOS Safari
+      memory/runtime still require device testing.

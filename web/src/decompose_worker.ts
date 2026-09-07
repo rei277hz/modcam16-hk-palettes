@@ -1,4 +1,4 @@
-import init, { build_report, cpu_preview_pixels, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import init, { DisplayPreview, build_report, cpu_preview_ap0, cpu_preview_pixels, gpu_preview_ap0, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import { batchPixelLimit, convertExrRow } from "./decomposition_buffers";
 import { sourceBatches } from "./source_batches";
 import libheif from "libheif-js/wasm-bundle";
@@ -236,7 +236,7 @@ async function ensureScratchQuota(width: number, height: number): Promise<void> 
   const storage = (navigator as any).storage;
   if (!storage?.getDirectory) throw new Error("This browser cannot provide local scratch storage for a full-resolution job.");
   const estimate = storage.estimate ? await storage.estimate() : undefined;
-  const required = width * height * 28 + 32 * 1024 * 1024;
+  const required = width * height * 28 + Math.min(width * height, 2048 * 2048) * 12 + 32 * 1024 * 1024;
   if (estimate?.quota && estimate.usage !== undefined && estimate.quota - estimate.usage < required) {
     throw new Error(`Insufficient local storage for this full-resolution job (need about ${formatBytes(required)} free).`);
   }
@@ -380,12 +380,13 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
     if (profile === 4) {
       const cpuPreview = cpu_preview_pixels(cpuBase, cpuExposure, request.refl);
       const gpuPreview = await gpu_preview_pixels(cpuBase, cpuExposure, request.refl);
+      const gpuDisplay = await gpu_preview_ap0(cpuBase);
       const cpuBasePreview = cpuPreview.base instanceof Uint8Array ? cpuPreview.base : new Uint8Array(cpuPreview.base);
       const gpuBasePreview = gpuPreview.base instanceof Uint8Array ? gpuPreview.base : new Uint8Array(gpuPreview.base);
       const cpuExposurePreview = cpuPreview.exposure instanceof Uint8Array ? cpuPreview.exposure : new Uint8Array(cpuPreview.exposure);
       const gpuExposurePreview = gpuPreview.exposure instanceof Uint8Array ? gpuPreview.exposure : new Uint8Array(gpuPreview.exposure);
       for (let i = 0; i < cpuBasePreview.length; i += 1) {
-        maxPreviewError = Math.max(maxPreviewError, Math.abs(cpuBasePreview[i] - gpuBasePreview[i]), Math.abs(cpuExposurePreview[i] - gpuExposurePreview[i]));
+        maxPreviewError = Math.max(maxPreviewError, Math.abs(cpuBasePreview[i] - gpuBasePreview[i]), Math.abs(cpuExposurePreview[i] - gpuExposurePreview[i]), Math.abs(cpuBasePreview[i] - gpuDisplay[i]));
       }
       if (maxPreviewError > 1) throw new Error(`WebGPU ACES 2.0 P3-D65 preview validation exceeded the exact CPU reference by ${maxPreviewError} encoded levels.`);
     }
@@ -559,8 +560,24 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
   let { writers } = output;
   let basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
   let exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
+  let baseDisplayRaw = await OpfsSink.create(`decomposition-${id}-base-display.rgb`);
+  let exposureDisplayRaw = await OpfsSink.create(`decomposition-${id}-exposure-display.rgb`);
+  let baseDisplay = new DisplayPreview(width, height);
+  let exposureDisplay = new DisplayPreview(width, height);
+  const displayWidth = baseDisplay.width, displayHeight = baseDisplay.height;
   const previewStartedAt = performance.now();
   let previewUseGpu = useGpu;
+  const transformDisplay = async (ap0: Float32Array): Promise<Uint8Array> => {
+    if (!ap0.length) return new Uint8Array();
+    if (previewUseGpu) {
+      try { return await gpu_preview_ap0(ap0); }
+      catch (error) {
+        previewUseGpu = false;
+        warnings.push(`WebGPU display preview transform failed; processing continued with exact CPU ACES 2.0: ${formatError(error)}`);
+      }
+    }
+    return cpu_preview_ap0(ap0);
+  };
   let stats = emptyStats();
   stats.compute_backend = backend;
   stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
@@ -598,6 +615,11 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
         writers = output.writers;
         basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
         exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
+        baseDisplayRaw = await OpfsSink.create(`decomposition-${id}-base-display.rgb`);
+        exposureDisplayRaw = await OpfsSink.create(`decomposition-${id}-exposure-display.rgb`);
+        baseDisplay.free(); exposureDisplay.free();
+        baseDisplay = new DisplayPreview(width, height);
+        exposureDisplay = new DisplayPreview(width, height);
         stats = emptyStats(); stats.compute_backend = backend; stats.gpu_adapter = gpuValidation?.adapter ?? null; stats.gpu_validation = "GPU validation passed; processing fell back to original f64 CPU modCAM16-HK after a device error"; stats.batch_size = batchSize;
         batches = sourceBatches(sourceFile, totalPixels, batchSize);
         postProgress(id, "Restarting on wasm-cpu", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
@@ -618,6 +640,10 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
       await basePreviewRaw.write(preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base));
       await exposurePreviewRaw.write(preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure));
       preview = undefined;
+      // Average the solved scene-linear AP0 and linear exposure canvas first.
+      // Only completed display rows pass through the existing ACES transform.
+      await baseDisplayRaw.write(await transformDisplay(baseDisplay.append_rgb(chunkBase)));
+      await exposureDisplayRaw.write(await transformDisplay(exposureDisplay.append_exposure(chunkExposure, message.request.refl)));
       for (let row = 0; row < (stop - start) / width; row++) {
         const y = Math.floor(start / width) + row;
         const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
@@ -633,18 +659,26 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
         lastYield = performance.now();
       }
     }
+    try {
+      baseDisplay.finish();
+      exposureDisplay.finish();
+    } catch (error) {
+      throw new Error(`Display preview resampling failed: ${formatError(error)}`);
+    }
   } finally {
     await batches.return();
+    baseDisplay.free(); exposureDisplay.free();
   }
   stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
   stats.preview_transform_ms = performance.now() - previewStartedAt;
   postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
   await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
   await basePreviewRaw.close(); await exposurePreviewRaw.close();
+  await baseDisplayRaw.close(); await exposureDisplayRaw.close();
   const report = build_report(width, height, message.request, stats, warnings);
   const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
   postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
-  scope.postMessage({ kind: "preview-encode", id, width, height, report, outputs, storage: "opfs" });
+  scope.postMessage({ kind: "preview-encode", id, width, height, displayWidth, displayHeight, report, outputs, storage: "opfs" });
 }
 
 async function handle(message: WorkerMessage): Promise<void> {

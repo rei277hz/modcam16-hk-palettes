@@ -18,15 +18,21 @@ async function encode(message: EncodeMessage): Promise<void> {
   await ensureWasm();
   const root = await (navigator.storage as any).getDirectory();
   const inputHandle = await root.getFileHandle(message.input);
-  const input = new Uint8Array(await (await inputHandle.getFile()).arrayBuffer());
-  const encoded = encode_preview_pixels(input, message.width, message.height);
-  const bytes = encoded instanceof Uint8Array ? encoded : new Uint8Array(encoded);
+  const file = await inputHandle.getFile();
+  if (file.size !== message.width * message.height * 3) throw new Error("Preview scratch file has an invalid size.");
+  const { width, height } = message;
+  const input = new Uint8Array(await file.arrayBuffer());
+  const bytes = encode_preview_pixels(input, width, height);
   const outputHandle = await root.getFileHandle(message.output, { create: true });
   if (outputHandle.createSyncAccessHandle) {
     const access = await outputHandle.createSyncAccessHandle();
     try {
-      const result = access.write(bytes, { at: 0 });
-      if (result && typeof result.then === "function") await result;
+      let written = 0;
+      while (written < bytes.byteLength) {
+        const count = access.write(bytes.subarray(written), { at: written });
+        if (!Number.isInteger(count) || count <= 0) throw new Error("Preview JPEG write did not complete.");
+        written += count;
+      }
       access.truncate(bytes.byteLength);
       access.flush();
     } finally {
@@ -34,14 +40,19 @@ async function encode(message: EncodeMessage): Promise<void> {
     }
   } else if (outputHandle.createWritable) {
     const writable = await outputHandle.createWritable({ keepExistingData: false });
-    await writable.write(bytes);
-    await writable.close();
+    try {
+      await writable.write(bytes);
+      await writable.close();
+    } catch (error) {
+      await writable.abort().catch(() => undefined);
+      throw error;
+    }
   } else {
     throw new Error("This browser cannot write the preview JPEG to local scratch storage.");
   }
   // Release references before notifying the decomposition worker. The worker
   // is terminated immediately after each preview, reclaiming its WASM heap.
-  postMessage({ kind: "complete", id: message.id, size: bytes.byteLength });
+  postMessage({ kind: "complete", id: message.id, size: bytes.byteLength, width, height });
 }
 
 self.onmessage = (event: MessageEvent<EncodeMessage>) => {
