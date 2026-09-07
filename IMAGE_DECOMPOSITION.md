@@ -259,8 +259,9 @@ compute backend, preview transform name/version, output sizes, warnings, and
 all projection, clipping, non-finite, and tolerance diagnostics. Object URLs
 are revoked when a new job starts or a file is replaced.
 
-The web layout is a single viewport workspace without visible title treatment,
-vertical page scrolling, or card containers. Upload is the first control at the
+The web layout is a single viewport workspace without visible title treatment
+or card containers. Vertical page scrolling is enabled only while the mobile
+analytic report is expanded. Upload is the first control at the
 top, followed by source interpretation and decomposition options, progress,
 then the two preview images and EXR download controls. Preview images are
 buttons: selecting one opens a full-screen overlay with its larger image.
@@ -280,6 +281,19 @@ On short mobile screens, the source-information area scrolls within its row
 to reserve space for previews and downloads without overlapping the footnotes.
 The Decompose action changes to Cancel during processing, keeping the same
 width and font weight so the action and adjacent progress bar do not shift.
+Primary controls, progress, focus indicators, and interactive accents use
+firefighter-uniform safety orange (`#ff8200`) against the dark workspace.
+
+The analytic report uses two vertical definition lists, each pairing a label
+with its value in the same style as file metadata. Values, the report summary,
+and warnings wrap within their available width. Desktop shows the report in
+a bounded, internally scrollable area. On mobile, the report starts folded;
+Show report expands it and enables vertical page scrolling. Hide report
+restores the single-viewport layout and returns the page to the top. A new
+file or calculation folds the report again, and crossing the mobile breakpoint
+resets the disclosure state. File metadata, including long filenames, continues
+to wrap. Opening a preview overlay keeps background scrolling locked even
+while the mobile report is expanded.
 
 The EXR download buttons share one row on desktop and mobile. Base EXR is
 on the left with 1.5 times the width of each exposure button to its right;

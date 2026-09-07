@@ -102,6 +102,15 @@ Branch: `feat/web-image-decomposition-p3-preview`
       detail text, and 11px secondary text, including on mobile.
 - [x] Reserve result space on short mobile screens; scroll source information
       within its row when needed to prevent overlap with the footnotes.
+- [x] Replace green accents with firefighter-uniform safety orange on primary
+      controls, progress, hover, and focus states.
+- [x] Arrange analytic metrics as two vertical label/value lists and wrap
+      report summaries, warnings, and long values like file metadata.
+- [x] Show a folded analytic report on mobile. Expanding enables page scrolling;
+      folding, replacing the image, or starting a calculation restores the
+      viewport lock. Keep desktop report scrolling inside its own area.
+- [x] Verify report disclosure, scroll restoration, two-column wrapping, and
+      preview overlay locking on mobile and desktop after an actual result.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.

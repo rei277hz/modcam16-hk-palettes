@@ -80,7 +80,11 @@ const emptyReport = $("#empty-report");
 const reportContent = $("#report-content");
 const reportSummary = $("#report-summary");
 const reportWarnings = $("#report-warnings");
-const reportMetrics = $("#report-metrics");
+const reportMetricsLeft = $("#report-metrics-left");
+const reportMetricsRight = $("#report-metrics-right");
+const reportToggle = $("#report-toggle") as HTMLButtonElement;
+const reportRow = $(".report-row");
+const reportMobileViewport = window.matchMedia("(max-width: 800px)");
 const downloadBase = $("#download-base") as HTMLButtonElement;
 const downloadExposure = $("#download-exposure") as HTMLButtonElement;
 const downloadExposureRgb = $("#download-exposure-rgb") as HTMLButtonElement;
@@ -246,6 +250,7 @@ function updateCalculateState(): void {
 
 function resetResults(): void {
   closePreview();
+  setReportExpanded(false);
   clearPreview(basePreviewImage);
   clearPreview(exposurePreviewImage);
   revokeUrls();
@@ -261,6 +266,17 @@ function resetResults(): void {
   }
   emptyReport.hidden = false;
   reportContent.hidden = true;
+  reportToggle.disabled = true;
+}
+
+function setReportExpanded(expanded: boolean): void {
+  reportRow.classList.toggle("report-expanded", expanded);
+  reportToggle.setAttribute("aria-expanded", String(expanded));
+  reportToggle.textContent = expanded ? "Hide report" : "Show report";
+  const mobile = reportMobileViewport.matches;
+  document.documentElement.classList.toggle("report-open", mobile && expanded);
+  document.body.classList.toggle("report-open", mobile && expanded);
+  if (mobile && !expanded) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
 }
 
 function renderSummary(summary: SourceSummary): void {
@@ -506,12 +522,17 @@ function renderReport(report: Report): void {
   ];
   if (report.gpu_adapter) metrics.push(["GPU adapter", report.gpu_adapter]);
   if (report.gpu_validation) metrics.push(["GPU validation", report.gpu_validation]);
-  reportMetrics.innerHTML = metrics.map(([label, value]) => `<div><dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd></div>`).join("");
+  const midpoint = Math.ceil(metrics.length / 2);
+  const renderMetrics = (items: Array<[string, string]>): string => items.map(([label, value]) => `<div><dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd></div>`).join("");
+  reportMetricsLeft.innerHTML = renderMetrics(metrics.slice(0, midpoint));
+  reportMetricsRight.innerHTML = renderMetrics(metrics.slice(midpoint));
   const warnings = report.warnings ?? [];
   reportWarnings.hidden = warnings.length === 0;
   reportWarnings.textContent = warnings.length ? warnings.join(" ") : "";
   emptyReport.hidden = true;
   reportContent.hidden = false;
+  reportToggle.disabled = false;
+  setReportExpanded(false);
 }
 
 async function inspectFile(file: File, format: string): Promise<void> {
@@ -655,6 +676,8 @@ overrideSource.addEventListener("click", () => {
   gamutSelect.focus();
   updateCalculateState();
 });
+reportToggle.addEventListener("click", () => setReportExpanded(!reportRow.classList.contains("report-expanded")));
+reportMobileViewport.addEventListener("change", () => setReportExpanded(false));
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });
 updateReconstructionProfile();
 setBusy(false);
