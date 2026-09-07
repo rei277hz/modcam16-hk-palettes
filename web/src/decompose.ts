@@ -70,7 +70,7 @@ const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
 const optionsError = $("#options-error");
 const calculateButton = $("#calculate-button") as HTMLButtonElement;
-const webGpuFootnote = $("#webgpu-footnote");
+const reconstructionProfile = $("#reconstruction-profile");
 const progressStage = $("#progress-stage");
 const progressPercent = $("#progress-percent") as HTMLOutputElement;
 const progressBar = $("#progress-bar") as HTMLProgressElement;
@@ -233,6 +233,11 @@ function validOptions(): boolean {
 function normalizeReflDisplay(): void {
   const value = Number(reflInput.value);
   if (Number.isFinite(value)) reflInput.value = value.toFixed(3);
+}
+
+function updateReconstructionProfile(): void {
+  const selected = profileSelect.selectedOptions[0]?.textContent?.trim();
+  if (selected) reconstructionProfile.textContent = selected;
 }
 
 function updateCalculateState(): void {
@@ -633,6 +638,7 @@ for (const control of [gamutSelect, transferSelect, profileSelect, reflInput]) {
   control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
   control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
 }
+profileSelect.addEventListener("change", updateReconstructionProfile);
 gamutSelect.addEventListener("change", () => {
   if (gamutSelect.value === "Rec.709 / sRGB" || gamutSelect.value === "Display P3 / P3-D65") {
     transferSelect.value = "sRGB";
@@ -650,9 +656,5 @@ overrideSource.addEventListener("click", () => {
   updateCalculateState();
 });
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });
-const browserNavigator = navigator as Navigator & { gpu?: unknown };
-const webGpuAvailable = Boolean(browserNavigator.gpu && (typeof isSecureContext === "undefined" || isSecureContext));
-webGpuFootnote.textContent = webGpuAvailable
-  ? "* (WebGPU available) We use WebGPU to accelerate decomposition and preview generation."
-  : "* (WebGPU unavailable) We use a CPU-based WASM implementation, so decomposition and preview generation may take longer.";
+updateReconstructionProfile();
 setBusy(false);

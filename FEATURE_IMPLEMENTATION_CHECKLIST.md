@@ -88,8 +88,13 @@ Branch: `feat/web-image-decomposition-p3-preview`
       display the value with three decimal places.
 - [x] Keep the mobile progress bar and Decompose/Cancel action on one row with
       the action right-aligned.
-- [x] Report WebGPU availability in a bottom-of-page footnote, explaining GPU
-      acceleration or the longer-running CPU-based WASM implementation.
+- [x] Remove the WebGPU availability footnote. Explain normalized exposure as
+      `v = (EV + 10) / 20`, its -10 to +10 stop range relative to Base EXR,
+      and reconstruction using `Base EXR * 2^(20 * v - 10)` in the output
+      footnote, retaining the Substance 3D Painter use case.
+- [x] Add a preceding reconstruction footnote: multiply Base EXR and Exposure
+      EXR in linear AP1 (ACEScg), then pass through the exact selected ACES
+      profile transform; keep its displayed name synchronized with the menu.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.
@@ -145,8 +150,8 @@ Branch: `feat/web-image-decomposition-p3-preview`
       without forced letterbox bars; clicking outside the image closes them.
 - [x] Provide three EXR downloads: Base EXR and default Exposure EXR as
       ACEScg/AP1 RGB fp16, plus Exposure EXR (normalized EV) as single-channel
-      fp16. The normalized form is remapped/clipped to [0,1] for Substance 3D
-      Painter material-picking workflows.
+      fp16. The normalized form maps -10 to +10 stops to [0,1] for Substance
+      3D Painter material-picking workflows.
 
 ## Real-file validation
 

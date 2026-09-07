@@ -265,9 +265,14 @@ top, followed by source interpretation and decomposition options, progress,
 then the two preview images and EXR download controls. Preview images are
 buttons: selecting one opens a full-screen overlay with its larger image.
 The default Exposure EXR stores direct scalar exposure replicated across ACEScg
-RGB. The normalized EV Exposure EXR stores `log2(s)` remapped and clipped to
-`[0,1]`, which is useful for painting in Substance 3D Painter because its
-material picker is limited to that range.
+RGB. The first output footnote explains reconstruction: multiply Base EXR and
+Exposure EXR in linear AP1 (ACEScg), then pass the result through the exact
+selected ACES profile transform. The profile name is updated to match the
+ACES profile control. The second footnote explains normalized exposure as
+`v = (EV + 10) / 20` in `[0,1]`, covering -10 to +10 stops relative to Base EXR
+colors, and reconstruction as `Base EXR * 2^(20 * v - 10)`. It retains the
+Substance 3D Painter use case because its material picker is limited to
+`[0,1]`. The page has no WebGPU availability footnote.
 
 The EXR download buttons share one row on desktop and mobile. Base EXR is
 on the left with 1.5 times the width of each exposure button to its right;

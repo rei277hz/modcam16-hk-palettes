@@ -87,7 +87,7 @@ progress::-moz-progress-bar { background: #89e0c4; }
 .metrics dd { max-width: 180px; margin: 1px 0 0; color: #c3cdd1; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-footer { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-top: 3px; }
 .footnotes { min-width: 0; display: grid; gap: 3px; }
-.webgpu-footnote { min-width: 0; color: #71808b; font-size: 9px; line-height: 1.35; }
+.output-footnote { min-width: 0; color: #71808b; font-size: 9px; line-height: 1.35; }
 .picker-link { flex: 0 0 auto; color: #71808b; font-size: 10px; text-decoration: none; }
 .picker-link:hover { color: #89e0c4; }
 .preview-overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; }
@@ -115,7 +115,7 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .download-button small { margin-top: 2px; }
   .report-row { display: none; }
   .picker-link { display: none; }
-  .webgpu-footnote { font-size: 8px; }
+  .output-footnote { font-size: 8px; }
 }
 @media (max-width: 520px) {
   .control-row { grid-template-columns: 1fr; }
