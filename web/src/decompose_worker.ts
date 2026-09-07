@@ -29,15 +29,6 @@ type SolveMessage = {
   request: DecompositionRequest;
   warnings: string[];
 };
-type SourceReadyMessage = {
-  kind: "source-ready";
-  id: number;
-  width: number;
-  height: number;
-  source: string;
-  request: DecompositionRequest;
-  warnings: string[];
-};
 type WorkerMessage = JobMessage | SolveMessage | CancelMessage;
 
 type Progress = {

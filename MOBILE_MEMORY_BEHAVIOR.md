@@ -14,15 +14,17 @@ in JavaScript or WASM memory. Preview RGB rows are spooled to OPFS; one preview
 plane is read back while its JPEG is encoded, then released before the second
 preview is encoded.
 
-The worker uses the Origin Private File System (OPFS) for per-job output files.
-It writes the three full-resolution fp16 EXRs incrementally. The main thread opens
-the completed OPFS files for previews and downloads without receiving complete
-output buffers through `postMessage`.
+The worker uses the Origin Private File System (OPFS) for per-job scratch and
+output files. It first writes the prepared full-resolution float raster to a
+scratch file, then writes the three full-resolution fp16 EXRs incrementally.
+The main thread opens the completed OPFS files for previews and downloads
+without receiving complete output buffers through `postMessage`.
 
 When OPFS synchronous access handles are unavailable, the worker uses writable
 OPFS streams. IndexedDB tile/file blobs remain the compatibility fallback to
 add; currently a job fails before expensive decoding if OPFS is unavailable or
-if the estimated quota cannot hold the outputs.
+if the estimated quota cannot hold the source scratch file, outputs, and
+preview staging files.
 
 Source decoding retains the existing interpretation rules: an explicit gamut
 and transfer override wins, a usable ICC profile is used directly when present,

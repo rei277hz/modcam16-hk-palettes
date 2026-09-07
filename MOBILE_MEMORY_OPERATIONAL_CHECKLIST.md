@@ -7,6 +7,8 @@
       streams when synchronous handles are unavailable.
 - [ ] Implement an IndexedDB fallback for browsers without usable OPFS.
 - [x] Estimate quota before decoding and reserve space for all outputs.
+- [x] Include the full-resolution prepared source scratch file in the quota
+      estimate and remove it after preview staging completes.
 - [ ] Refuse a job cleanly when no local storage or sufficient quota exists.
 - [ ] Delete incomplete files on cancellation, failure, replacement, and unload.
 - [x] Return output file names and sizes instead of complete byte arrays.
