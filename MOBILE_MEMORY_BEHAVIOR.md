@@ -4,8 +4,11 @@ The web application preserves the uploaded image's full pixel dimensions and
 precision. It does not resize the source to avoid memory pressure. Large jobs
 are processed as bounded row-major tiles in the decomposition worker.
 
-The worker keeps one prepared source raster, one validated WebGPU batch (or the
-equivalent CPU row batch), small readback buffers, and bounded EXR encoder state.
+The worker keeps one decoder-owned source raster, one Rust-owned prepared raster,
+one small validated WebGPU batch (or the equivalent CPU row batch), small
+readback buffers, and bounded EXR encoder state. On mobile, CPU batches are
+limited to 1,024 pixels (or one image row when the row is wider), and WebGPU
+batches to 8,192 pixels (or one row when wider).
 Full-resolution base/exposure arrays and EXR byte arrays are never accumulated
 in JavaScript or WASM memory. Preview RGB rows are spooled to OPFS; one preview
 plane is read back while its JPEG is encoded, then released before the second
@@ -30,9 +33,10 @@ the decoder-owned raster is the unavoidable codec working-set floor until
 region decode is available in the browser bridge.
 
 Gaussian blur is fixed at zero, so tiles do not require a halo. Each row batch
-is copied from the prepared raster and solved with the exact CPU
-reference or validated WebGPU path, and immediately written to the output
-writers. Statistics are accumulated as scalar counters only.
+is solved from the Rust-owned prepared raster with the exact CPU reference or
+validated WebGPU path and immediately written to the output writers. CPU
+batches do not cross JavaScript/WASM for solving; WebGPU receives only the
+active batch. Statistics are accumulated as scalar counters only.
 
 OpenEXR output is scanline-streamed as fp16 ACEScg/AP1 channels with the
 existing metadata. The default Exposure EXR stores direct scalar exposure
@@ -43,8 +47,10 @@ short-lived preview worker so the decomposition worker's large WASM
 decoder/prepared raster allocation is not live alongside the JPEG encoder's
 full-resolution input and output buffers.
 
-GPU resources are reused for one batch at a time, explicitly destroyed when
-replaced, and completed before the next tile is submitted. Device loss or GPU
+GPU resources are reused for one batch at a time, explicitly destroyed after
+readback, and completed before the next tile is submitted. Mobile devices use
+smaller row batches to keep transient unified-memory allocations bounded.
+Device loss or GPU
 validation failure restarts the complete tiled job on the accurate Rust/WASM
 CPU implementation without creating full-image result arrays.
 
@@ -61,3 +67,6 @@ copying the complete prepared raster into a second JS buffer, and ICC
 conversion now runs in place. Full source preparation still uses one
 decoder/prepared raster; each full-resolution JPEG is encoded in a separate
 worker and that worker is terminated after completion to reclaim its WASM heap.
+During decomposition, CPU batches are solved directly from Rust-owned pixels;
+GPU batches use only the active bounded readback/input buffers. HEIC decoder
+pixel and gain-map buffers are released immediately after Rust preparation.

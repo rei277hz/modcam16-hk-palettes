@@ -347,6 +347,14 @@ mod webgpu {
         queue.submit(Some(encoder.finish()));
         let output_bytes = map_readback(&device, &output_readback, output_size).await?;
         let flags_bytes = map_readback(&device, &flags_readback, flags_size).await?;
+        // Explicit destruction is important on iOS/WebKit, where deferred GPU
+        // resource reclamation can otherwise overlap many row batches.
+        input_buffer.destroy();
+        output_buffer.destroy();
+        flags_buffer.destroy();
+        params_buffer.destroy();
+        output_readback.destroy();
+        flags_readback.destroy();
         let packed = bytes_as_f32(&output_bytes);
         let flags = bytes_as_u32(&flags_bytes);
         let mut base = Vec::with_capacity(count * 3);
@@ -494,7 +502,13 @@ mod webgpu {
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &output_readback, 0, output_size);
         queue.submit(Some(encoder.finish()));
-        let packed = bytes_as_f32(&map_readback(&device, &output_readback, output_size).await?);
+        let output_bytes = map_readback(&device, &output_readback, output_size).await?;
+        input_buffer.destroy();
+        output_buffer.destroy();
+        flags_buffer.destroy();
+        params_buffer.destroy();
+        output_readback.destroy();
+        let packed = bytes_as_f32(&output_bytes);
         let mut pixels = Vec::with_capacity(count * 3);
         for index in 0..count {
             let offset = index * 4;

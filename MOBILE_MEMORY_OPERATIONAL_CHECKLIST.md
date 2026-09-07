@@ -16,7 +16,10 @@
 - [ ] Select a default 512×512 tile, bounded by device and GPU limits.
 - [ ] Keep source resolution, dimensions, and meaningful 10/12-bit precision.
 - [x] Keep the prepared raster owned by Rust and expose only one row batch at
-      a time to JavaScript/WebGPU; no full prepared `Float32Array` is copied.
+      a time to JavaScript/WebGPU; CPU solves read directly from Rust and no
+      full prepared `Float32Array` is copied.
+- [x] Cap mobile CPU batches at 1,024 pixels and WebGPU batches at 8,192
+      pixels, while retaining complete source and output dimensions.
 - [ ] Copy only the active source tile from decoder-owned HEIF buffers.
 - [ ] Process Apple gain-map interpolation per tile and release native images
       when source traversal finishes.
@@ -27,7 +30,7 @@
 ## GPU and CPU execution
 
 - [x] Reuse one GPU input/output/flags/readback allocation sized to one batch.
-- [ ] Destroy replaced GPU resources and await completion before reuse.
+- [x] Destroy GPU batch resources after readback and use smaller mobile batches.
 - [ ] Handle `device.lost` and uncaptured errors.
 - [ ] Preserve WebGPU tolerance validation against the accurate implementation.
 - [ ] Restart the whole job on the tiled CPU path after a GPU failure.

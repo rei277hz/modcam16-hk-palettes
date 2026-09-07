@@ -1197,6 +1197,17 @@ impl PreparedImage {
             .ok_or_else(|| JsValue::from_str("Prepared pixel batch is outside the image."))?;
         Ok(flat_pixels(&self.rgb[start..end]))
     }
+
+    /// Solve directly from the Rust-owned prepared raster. This avoids copying
+    /// every batch through JavaScript and back into WASM memory.
+    pub fn solve_pixels(&self, start: u32, count: u32, request: JsValue) -> Result<JsValue, JsValue> {
+        let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+        let start = start as usize;
+        let end = start.checked_add(count as usize)
+            .filter(|end| *end <= self.rgb.len())
+            .ok_or_else(|| JsValue::from_str("Prepared pixel batch is outside the image."))?;
+        solve_result_payload(&self.rgb[start..end], &req).map_err(|e| JsValue::from_str(&e))
+    }
 }
 
 fn prepared_payload_rgb(
@@ -1227,32 +1238,24 @@ fn flat_to_rgb(data: Vec<f32>) -> Result<Vec<[f32; 3]>, String> {
     Ok(unsafe { Vec::from_raw_parts(pointer, len, capacity) })
 }
 
+fn solve_result_payload(rgb: &[[f32; 3]], req: &Request) -> Result<JsValue, String> {
+    let (base, exposure, stats) = solve_prepared(rgb, req);
+    let object = Object::new();
+    Reflect::set(&object, &JsValue::from_str("base"), &Float32Array::from(flat_pixels(&base).as_slice()).into())
+        .map_err(|e| format!("base: {e:?}"))?;
+    Reflect::set(&object, &JsValue::from_str("exposure"), &Float32Array::from(exposure.as_slice()).into())
+        .map_err(|e| format!("exposure: {e:?}"))?;
+    Reflect::set(&object, &JsValue::from_str("stats"), &serde_wasm_bindgen::to_value(&stats).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("stats: {e:?}"))?;
+    Ok(object.into())
+}
+
 fn solve_chunk_payload(data: Vec<f32>, req: &Request) -> Result<JsValue, String> {
     if data.len() % 3 != 0 {
         return Err("Prepared pixel chunk must contain RGB triples.".into());
     }
     let rgb = flat_to_rgb(data)?;
-    let (base, exposure, stats) = solve_prepared(&rgb, req);
-    let object = Object::new();
-    Reflect::set(
-        &object,
-        &JsValue::from_str("base"),
-        &Float32Array::from(flat_pixels(&base).as_slice()).into(),
-    )
-    .map_err(|e| format!("base: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("exposure"),
-        &Float32Array::from(exposure.as_slice()).into(),
-    )
-    .map_err(|e| format!("exposure: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("stats"),
-        &serde_wasm_bindgen::to_value(&stats).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("stats: {e:?}"))?;
-    Ok(object.into())
+    solve_result_payload(&rgb, req)
 }
 
 #[wasm_bindgen]
