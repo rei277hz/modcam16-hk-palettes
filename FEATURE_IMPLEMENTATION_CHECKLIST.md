@@ -88,6 +88,8 @@ Branch: `feat/web-image-decomposition-p3-preview`
       display the value with three decimal places.
 - [x] Keep the mobile progress bar and Decompose/Cancel action on one row with
       the action right-aligned.
+- [x] Keep the Decompose/Cancel button width and font weight constant across
+      idle and processing states on desktop and mobile.
 - [x] Remove the WebGPU availability footnote. Explain normalized exposure as
       `v = (EV + 10) / 20` in the normalized 0–1 range, covering −10 to +10
       stops relative to the Base EXR colors.

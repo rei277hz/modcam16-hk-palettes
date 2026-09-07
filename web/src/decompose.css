@@ -50,6 +50,7 @@ select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid 
 .validation-message { margin: 5px 0 0; color: #efaaaa; font-size: 12px; }
 .processing-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(120px, .5fr); align-items: center; gap: 18px; padding-bottom: 11px; border-bottom: 1px solid #2b3540; }
 .process-controls { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+#calculate-button { width: 9em; flex: 0 0 auto; font-weight: 700; }
 .process-controls h2 { margin: 0 5px 0 0; color: #dce6e8; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 .progress-block { min-width: 0; }
 .progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 12px; }

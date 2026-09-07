@@ -278,6 +278,8 @@ and mobile. Other text follows the `index.html` scale: 14px field labels,
 sizes, with wrapping and flexible preview space to fit the viewport.
 On short mobile screens, the source-information area scrolls within its row
 to reserve space for previews and downloads without overlapping the footnotes.
+The Decompose action changes to Cancel during processing, keeping the same
+width and font weight so the action and adjacent progress bar do not shift.
 
 The EXR download buttons share one row on desktop and mobile. Base EXR is
 on the left with 1.5 times the width of each exposure button to its right;
