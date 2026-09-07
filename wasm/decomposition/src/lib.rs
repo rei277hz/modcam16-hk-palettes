@@ -990,7 +990,7 @@ fn report_from_stats(
         gpu_validation: stats.gpu_validation.clone(),
         batch_size: stats.batch_size,
         preview_transform: "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0".into(),
-        preview_encoding: "Display P3-D65 primaries / sRGB encoding / JPEG".into(),
+        preview_encoding: "P3-D65 JPEG, sRGB encoding".into(),
         preview_backend: if stats.preview_backend.is_empty() { "wasm-cpu".into() } else { stats.preview_backend.clone() },
         preview_transform_ms: stats.preview_transform_ms,
         warnings,

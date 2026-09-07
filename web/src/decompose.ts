@@ -272,7 +272,7 @@ function resetResults(): void {
 function setReportExpanded(expanded: boolean): void {
   reportRow.classList.toggle("report-expanded", expanded);
   reportToggle.setAttribute("aria-expanded", String(expanded));
-  reportToggle.textContent = expanded ? "Hide report" : "Show report";
+  reportToggle.setAttribute("aria-label", expanded ? "Collapse analytic report" : "Expand analytic report");
   const mobile = reportMobileViewport.matches;
   document.documentElement.classList.toggle("report-open", mobile && expanded);
   document.body.classList.toggle("report-open", mobile && expanded);
@@ -491,9 +491,18 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
 
 function renderReport(report: Report): void {
   const profile = profileSelect.selectedOptions[0]?.textContent ?? String(report.profile);
-  reportSummary.textContent = `${formatCount(report.width)} × ${formatCount(report.height)} pixels · ${profile} · Refl ${report.refl.toFixed(5)}`;
+  reportSummary.textContent = `${formatCount(report.width)} × ${formatCount(report.height)} pixels · ${profile} · Refl ${report.refl.toFixed(3)}`;
+  const normalizePrimaries = (value: string): string => {
+    if (/display\s+p3|p3-d65/i.test(value)) return "P3-D65";
+    if (/rec\.?\s*\.??709|sRGB/i.test(value)) return "Rec.709";
+    return value.replace(/\s+primaries?$/i, "").trim();
+  };
+  const normalizeTransfer = (value: string): string => {
+    if (/sRGB/i.test(value)) return "sRGB";
+    return value.replace(/\s+encoding$/i, "").trim();
+  };
   const confirmedSource = gamutSelect.value && transferSelect.value
-    ? `${gamutSelect.value} / ${transferSelect.value}`
+    ? `${normalizePrimaries(gamutSelect.value)} / ${normalizeTransfer(transferSelect.value)}`
     : automaticIccAvailable
       ? "Embedded ICC profile"
       : "Manual selection required";
@@ -514,11 +523,11 @@ function renderReport(report: Report): void {
     ["Preview transform", report.preview_transform],
     ["Preview encoding", report.preview_encoding],
     ["Preview backend", `${report.preview_backend} (${report.preview_transform_ms.toFixed(1)} ms)`],
-    ["Base output", "Linear ACEScg/AP1 RGB, fp16"],
-    ["Exposure output", "Direct scalar s replicated to linear ACEScg RGB, fp16"],
-    ["Exposure normalized output", "Single-channel fp16 EV value remapped to [0, 1]"],
-    ["Base preview", "Display P3 JPEG, sRGB transfer"],
-    ["Exposure preview", "Display P3 JPEG, sRGB transfer"],
+    ["Base output", "Linear ACEScg RGB, fp16"],
+    ["Exposure output", "Scalar exposure replicated across linear ACEScg RGB, fp16"],
+    ["Exposure normalized output", "Normalized EV, scalar fp16"],
+    ["Base preview", "P3-D65 JPEG, sRGB encoding"],
+    ["Exposure preview", "P3-D65 JPEG, sRGB encoding"],
   ];
   if (report.gpu_adapter) metrics.push(["GPU adapter", report.gpu_adapter]);
   if (report.gpu_validation) metrics.push(["GPU validation", report.gpu_validation]);
@@ -532,7 +541,7 @@ function renderReport(report: Report): void {
   emptyReport.hidden = true;
   reportContent.hidden = false;
   reportToggle.disabled = false;
-  setReportExpanded(false);
+  setReportExpanded(!reportMobileViewport.matches);
 }
 
 async function inspectFile(file: File, format: string): Promise<void> {

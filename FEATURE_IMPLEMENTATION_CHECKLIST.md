@@ -56,6 +56,10 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Return base ACEScg fp16 EXR, normalized exposure fp16 EXR, direct-scalar
       exposure RGB ACEScg fp16 EXR, base preview JPEG, and exposure preview
       JPEG from the worker.
+- [x] Encode all three EXR outputs with lossless OpenEXR ZIP16 scanline
+      compression; downloads remain `.exr` files, not ZIP archives. Serialize
+      the required OpenEXR magic bytes, write fp16 samples little-endian, and
+      use the ZIP16 raw-block fallback when deflate does not reduce a block.
 - [x] Add a download control and analytic-report metadata for the direct-scalar
       exposure RGB EXR; its three channels must each contain `s` without log or
       normalization.
@@ -102,13 +106,14 @@ Branch: `feat/web-image-decomposition-p3-preview`
       detail text, and 11px secondary text, including on mobile.
 - [x] Reserve result space on short mobile screens; scroll source information
       within its row when needed to prevent overlap with the footnotes.
-- [x] Replace green accents with firefighter-uniform safety orange on primary
-      controls, progress, hover, and focus states.
+- [x] Use a neutral slate accent on primary controls, progress, hover, and focus
+      states without biasing the color-science workspace toward a hue.
 - [x] Arrange analytic metrics as two vertical label/value lists and wrap
       report summaries, warnings, and long values like file metadata.
-- [x] Show a folded analytic report on mobile. Expanding enables page scrolling;
-      folding, replacing the image, or starting a calculation restores the
-      viewport lock. Keep desktop report scrolling inside its own area.
+- [x] Show a folded analytic report on mobile. A triangle beside the heading
+      expands it and enables page scrolling; folding, replacing the image, or
+      starting a calculation restores the viewport lock. Keep desktop report
+      scrolling inside its own area.
 - [x] Verify report disclosure, scroll restoration, two-column wrapping, and
       preview overlay locking on mobile and desktop after an actual result.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
@@ -165,9 +170,15 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Keep preview thumbnails within their frames and show enlarged previews
       without forced letterbox bars; clicking outside the image closes them.
 - [x] Provide three EXR downloads: Base EXR and default Exposure EXR as
-      ACEScg/AP1 RGB fp16, plus Exposure EXR (normalized EV) as single-channel
-      fp16. The normalized form maps -10 to +10 stops to [0,1] for Substance
+      linear ACEScg RGB fp16, plus Exposure EXR (normalized EV) as scalar fp16.
+      The normalized form maps -10 to +10 stops to [0,1] for Substance
       3D Painter material-picking workflows.
+- [x] Use canonical report terminology: `P3-D65` for preview primaries,
+      `sRGB encoding` for the JPEG transfer, and `Linear ACEScg RGB` for RGB
+      EXR data.
+- [x] Add a browser-side ZIP16 regression test covering EXR magic, scanline
+      offsets, compressed and raw fallback blocks, and fp16 little-endian
+      round-trip compatibility.
 
 ## Real-file validation
 
@@ -192,3 +203,6 @@ exceedances while continuing to completion, as required.
 - 2026-09-07: Refined the compact preview/download UI, removed non-actionable
       HEIC success notices, and clamped native samples at the ICC device
       boundary to avoid normalized-domain failures from decoder edge rounding.
+- 2026-09-07: Replaced archive packaging with lossless OpenEXR ZIP16 scanline
+      compression, removed hue-biased accent styling, and replaced the report
+      text toggle with a caret disclosure using canonical color terminology.

@@ -1,6 +1,7 @@
 import init, { DisplayPreview, build_report, cpu_preview_ap0, cpu_preview_pixels, gpu_preview_ap0, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import { batchPixelLimit, convertExrRow } from "./decomposition_buffers";
 import { sourceBatches } from "./source_batches";
+import { ScanlineExrWriter } from "./exr_zip";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -101,7 +102,8 @@ class OpfsSink implements FileSink {
         written += result;
       }
     } else {
-      if (offset !== this.size) throw new Error("The OPFS streaming writer cannot seek.");
+      if (offset !== this.size && typeof this.access.seek !== "function") throw new Error("The OPFS streaming writer cannot seek.");
+      if (offset !== this.size) await this.access.seek(offset);
       await this.access.write(data);
     }
     this.size = Math.max(this.size, offset + data.byteLength);
@@ -120,62 +122,6 @@ class OpfsSink implements FileSink {
 const openSinks = new Set<OpfsSink>();
 async function closeSinks(): Promise<void> {
   for (const sink of openSinks) await sink.close().catch(() => undefined);
-}
-
-function u32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, value >>> 0, true); return b; }
-function i32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setInt32(0, value | 0, true); return b; }
-function f32(value: number): Uint8Array { const b = new Uint8Array(4); new DataView(b.buffer).setFloat32(0, value, true); return b; }
-function u64(value: number): Uint8Array { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(value), true); return b; }
-function ascii(value: string): Uint8Array { return new TextEncoder().encode(`${value}\0`); }
-function concatBytes(...parts: Uint8Array[]): Uint8Array { const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0)); let offset = 0; for (const part of parts) { out.set(part, offset); offset += part.byteLength; } return out; }
-
-class ScanlineExrWriter {
-  private readonly channels: string[];
-  private readonly offsets: number[];
-  private cursor = 0;
-  private rowsWritten = 0;
-  private constructor(private readonly sink: FileSink, readonly height: number, channels: string[]) {
-    this.channels = channels;
-    this.offsets = new Array(height).fill(0);
-  }
-  private async initialize(width: number, height: number, channels: string[], component: string): Promise<void> {
-    const channelEntries = channels.map((name) => concatBytes(ascii(name), i32(1), new Uint8Array([0, 0, 0, 0]), i32(1), i32(1)));
-    const chlist = concatBytes(...channelEntries, new Uint8Array([0]));
-    const chromaticities = new Uint8Array(32); const cv = new DataView(chromaticities.buffer);
-    [[0.713, 0.293], [0.165, 0.830], [0.128, 0.044], [0.32168, 0.33767]].forEach((v, i) => { cv.setFloat32(i * 8, v[0], true); cv.setFloat32(i * 8 + 4, v[1], true); });
-    const attr = (name: string, type: string, value: Uint8Array) => concatBytes(ascii(name), ascii(type), u32(value.byteLength), value);
-    const header = concatBytes(
-      u32(0x762f3101), u32(2),
-      attr("channels", "chlist", chlist), attr("compression", "compression", new Uint8Array([0])),
-      attr("dataWindow", "box2i", concatBytes(i32(0), i32(0), i32(width - 1), i32(height - 1))),
-      attr("displayWindow", "box2i", concatBytes(i32(0), i32(0), i32(width - 1), i32(height - 1))),
-      attr("lineOrder", "lineOrder", new Uint8Array([0])), attr("pixelAspectRatio", "float", f32(1)),
-      attr("screenWindowCenter", "v2f", concatBytes(f32(0), f32(0))), attr("screenWindowWidth", "float", f32(1)),
-      attr("chromaticities", "chromaticities", chromaticities), attr("ocioColorSpace", "string", ascii("ACEScg")),
-      attr("decompositionComponent", "string", ascii(component)), new Uint8Array([0]),
-    );
-    await this.sink.write(header); this.cursor += header.byteLength;
-    const rowBytes = width * channels.length * 2;
-    const firstChunk = this.cursor + height * 8;
-    this.offsets.splice(0, this.offsets.length, ...new Array(height).fill(0).map((_, y) => firstChunk + y * (8 + rowBytes)));
-    await this.sink.write(concatBytes(...this.offsets.map((offset) => u64(offset)))); this.cursor += height * 8;
-  }
-  get size(): number { return this.sink.size; }
-  static async create(sink: FileSink, width: number, height: number, channels: string[], component: string): Promise<ScanlineExrWriter> {
-    const writer = new ScanlineExrWriter(sink, height, channels);
-    await writer.initialize(width, height, channels, component);
-    return writer;
-  }
-  async writeRow(y: number, values: Record<string, Uint16Array>): Promise<void> {
-    if (y !== this.rowsWritten) throw new Error(`EXR rows must be written in order (expected ${this.rowsWritten}, received ${y}).`);
-    const rowParts = this.channels.map((channel) => new Uint8Array(values[channel].buffer, values[channel].byteOffset, values[channel].byteLength));
-    const chunk = concatBytes(i32(y), u32(rowParts.reduce((n, p) => n + p.byteLength, 0)), ...rowParts);
-    this.offsets[y] = this.cursor; await this.sink.write(chunk); this.cursor += chunk.byteLength; this.rowsWritten += 1;
-  }
-  async close(): Promise<void> {
-    if (this.rowsWritten !== this.height) throw new Error(`EXR writer closed after ${this.rowsWritten} of ${this.height} rows.`);
-    await this.sink.close();
-  }
 }
 
 async function createOutputWriters(id: number, width: number, height: number): Promise<{ writers: { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }; outputs: OutputFile[] }> {

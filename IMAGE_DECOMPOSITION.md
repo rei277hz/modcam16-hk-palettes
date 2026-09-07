@@ -154,7 +154,7 @@ ACES 2.0 view transform.
 
 Both output files include provenance metadata, including the detected input
 space, selected profile, OCIO configuration, `Refl`, and the exposure encoding
-rule. The base RGB output advertises `ocioColorSpace=ACEScg`, AP1
+rule. The base RGB output advertises `ocioColorSpace=ACEScg`, ACEScg
 chromaticities, and fp16 channels; the exposure output is a single fp16 channel.
 The headers also record the Gaussian sigma, maximum inverse residual, its
 exceedance count, and the number of negative AP0 pixels clamped by
@@ -164,7 +164,7 @@ Pixels are processed in chunks on all available CPU threads by default; use
 `--workers` to override the worker count.
 
 The CLI report includes the number and percentage of base pixels whose stored
-linear ACEScg/AP1 RGB has at least one channel strictly greater than `1.0`.
+linear ACEScg RGB has at least one channel strictly greater than `1.0`.
 The percentage is based on all image pixels, and each pixel is counted once.
 
 ## Static web UI behavior
@@ -206,13 +206,15 @@ diagnostics, output encoding, and completion as monotonic progress stages with
 pixel and diagnostic counters. The worker yields between solve chunks so a
 large image never remains indefinitely at “preparing pixels”.
 
-The result contains an analytic report and three EXR downloads. The base OpenEXR is
-linear ACEScg/AP1 RGB stored as fp16; the normalized exposure OpenEXR is the
+The result contains an analytic report and three EXR downloads. Each OpenEXR uses
+lossless ZIP16 scanline compression with the required magic bytes, little-endian
+fp16 samples, and the raw-block fallback for data that does not compress. The base OpenEXR is linear ACEScg RGB stored
+as fp16; the normalized exposure OpenEXR is the
 single fp16 `exposure` channel defined above. An additional exposure RGB
 OpenEXR stores the direct, non-log scalar in all three linear ACEScg channels:
 `E = (s, s, s)` where `s = 2^(exposure * 20 - 10)`. It is fp16 and carries the
-same ACEScg/AP1 metadata as the base file. The two inline preview images are
-JPEGs with sRGB encoded P3-D65 primaries:
+same ACEScg metadata as the base file. The two inline preview images are JPEGs
+with P3-D65 primaries and sRGB encoding:
 
 * The base preview converts the reconstructed linear ACES2065-1 base pixels
   through the exact ACES 2.0 `SDR-100nit-P3-D65_2.0` forward transform and
@@ -238,10 +240,10 @@ upscaling, are used for every in-app image element, including the enlarged
 overlay. The three EXR outputs are unchanged. A full-size JPEG download button
 beside each preview shows the original dimensions and file size.
 
-Display JPEGs are area-resampled in linear ACES2065-1/AP0, before the output
+Display JPEGs are area-resampled in linear ACES2065-1 RGB, before the output
 transform: average the solved base RGB and the exposure preview's linear
 neutral canvas (`Refl * 2^(20 * normalizedEV - 10)`). Preserve HDR and negative
-AP0 values during averaging. Do not average normalized EV or already rendered
+ACES2065-1 values during averaging. Do not average normalized EV or already rendered
 P3 pixels. Completed reduced rows go through the same exact ACES 2.0 SDR
 100-nit P3-D65 transform, sRGB encoding, and ICC-tagged JPEG encoder as the
 full-size outputs. Resampling retains bounded row state across solve batches
@@ -281,15 +283,16 @@ On short mobile screens, the source-information area scrolls within its row
 to reserve space for previews and downloads without overlapping the footnotes.
 The Decompose action changes to Cancel during processing, keeping the same
 width and font weight so the action and adjacent progress bar do not shift.
-Primary controls, progress, focus indicators, and interactive accents use
-firefighter-uniform safety orange (`#ff8200`) against the dark workspace.
+Primary controls, progress, focus indicators, and interactive accents use a
+neutral slate accent without a hue bias against the dark workspace.
 
 The analytic report uses two vertical definition lists, each pairing a label
 with its value in the same style as file metadata. Values, the report summary,
 and warnings wrap within their available width. Desktop shows the report in
-a bounded, internally scrollable area. On mobile, the report starts folded;
-Show report expands it and enables vertical page scrolling. Hide report
-restores the single-viewport layout and returns the page to the top. A new
+a bounded, internally scrollable area. The triangle beside its heading toggles
+the report. On mobile, the report starts folded; expanding it enables vertical
+page scrolling, and folding it restores the single-viewport layout and returns
+the page to the top. A new
 file or calculation folds the report again, and crossing the mobile breakpoint
 resets the disclosure state. File metadata, including long filenames, continues
 to wrap. Opening a preview overlay keeps background scrolling locked even
@@ -298,7 +301,8 @@ while the mobile report is expanded.
 The EXR download buttons share one row on desktop and mobile. Base EXR is
 on the left with 1.5 times the width of each exposure button to its right;
 the two exposure buttons have equal widths. Their encoding labels are
-`ACEScg fp16` for RGB outputs and `fp16 scalar` for normalized EV.
+`ACEScg fp16` for RGB outputs and `Scalar fp16` for normalized EV; each is
+written with OpenEXR ZIP16 compression.
 All three buttons reset to disabled with `Waiting` on a new input or job,
 then show their respective file sizes when the outputs are ready.
 
