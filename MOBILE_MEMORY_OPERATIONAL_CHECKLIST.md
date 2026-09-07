@@ -20,6 +20,8 @@
       full prepared `Float32Array` is copied.
 - [x] Cap mobile CPU batches at 1,024 pixels and WebGPU batches at 8,192
       pixels, while retaining complete source and output dimensions.
+- [x] Spool prepared float pixels to OPFS and restart solving in a fresh
+      worker, so decoder/preparation memory is absent during decomposition.
 - [ ] Copy only the active source tile from decoder-owned HEIF buffers.
 - [ ] Process Apple gain-map interpolation per tile and release native images
       when source traversal finishes.
@@ -79,6 +81,7 @@
 - 2026-09-07: Added OPFS-backed scanline EXR writers, quota checks, output-file
       descriptors, and bounded solve/readback batches. Full base, exposure, and
       EXR byte arrays are no longer retained. Rust now owns the prepared raster
-      and exposes row batches only; full-resolution preview planes are spooled
-      to OPFS and encoded in isolated workers. Codec APIs still decode a full
-      source raster before the first batch.
+      and exposes row batches only. Prepared pixels are spooled to OPFS and
+      solving runs in a fresh worker; full-resolution preview planes are
+      encoded in isolated workers. Codec APIs still decode a full source raster
+      before the preparation spool begins.

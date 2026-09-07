@@ -20,7 +20,25 @@ type JobMessage = {
 };
 
 type CancelMessage = { kind: "cancel"; id: number };
-type WorkerMessage = JobMessage | CancelMessage;
+type SolveMessage = {
+  kind: "solve";
+  id: number;
+  width: number;
+  height: number;
+  source: string;
+  request: DecompositionRequest;
+  warnings: string[];
+};
+type SourceReadyMessage = {
+  kind: "source-ready";
+  id: number;
+  width: number;
+  height: number;
+  source: string;
+  request: DecompositionRequest;
+  warnings: string[];
+};
+type WorkerMessage = JobMessage | SolveMessage | CancelMessage;
 
 type Progress = {
   kind: "progress";
@@ -214,6 +232,25 @@ async function cleanupPreviousOutputs(currentId: number): Promise<void> {
 
 async function removeOpfsFile(name: string): Promise<void> {
   try { const root = await (navigator.storage as any).getDirectory(); await root.removeEntry(name); } catch { /* best effort */ }
+}
+
+async function readOpfsRange(name: string, offset: number, length: number): Promise<Float32Array> {
+  const root = await (navigator.storage as any).getDirectory();
+  const handle = await root.getFileHandle(name);
+  const file = await handle.getFile();
+  const bytes = new Uint8Array(await file.slice(offset, offset + length).arrayBuffer());
+  if (bytes.byteLength !== length || bytes.byteLength % 4 !== 0) throw new Error("Prepared source batch could not be read from local scratch storage.");
+  return new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
+}
+
+async function ensureScratchQuota(width: number, height: number): Promise<void> {
+  const storage = (navigator as any).storage;
+  if (!storage?.getDirectory) throw new Error("This browser cannot provide local scratch storage for a full-resolution job.");
+  const estimate = storage.estimate ? await storage.estimate() : undefined;
+  const required = width * height * 28 + 32 * 1024 * 1024;
+  if (estimate?.quota && estimate.usage !== undefined && estimate.quota - estimate.usage < required) {
+    throw new Error(`Insufficient local storage for this full-resolution job (need about ${formatBytes(required)} free).`);
+  }
 }
 
 const scope = self as unknown as {
@@ -502,12 +539,121 @@ async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: numbe
   return { width, height, pixels: native.pixels, icc, gamut: nclx?.gamut, transfer: nclx?.transfer, gain, exif, warnings };
 }
 
-async function handle(message: JobMessage): Promise<void> {
-  const { id, format } = message;
-  let prepared: ReturnType<typeof prepare> | undefined;
+async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
+  const { id, width, height } = message;
+  let gpuValidation: GpuValidation | undefined;
+  let gpuValidationFailure: string | undefined;
+  const warnings = [...message.warnings];
+  postProgress(id, "Initialize WebGPU", 20);
+  const probe = await probeGpu();
+  if (probe?.available) {
+    postProgress(id, "Validate WebGPU against CPU reference", 21);
+    try {
+      gpuValidation = await validateGpu(message.request, probe);
+    } catch (error) {
+      gpuValidationFailure = formatError(error);
+      warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${gpuValidationFailure}`);
+    }
+  } else if (gpuProbeFailure) {
+    warnings.push(`WebGPU was not enabled; the worker will use wasm-cpu: ${gpuProbeFailure}`);
+  }
+  let useGpu = Boolean(gpuValidation);
+  let backend = useGpu ? "webgpu" : "wasm-cpu";
+  let batchSize = batchPixelLimit(width, useGpu, probe);
+  await cleanupPreviousOutputs(id);
+  await ensureScratchQuota(width, height);
+  let output = await createOutputWriters(id, width, height);
+  let { writers } = output;
+  let basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
+  let exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
+  const previewStartedAt = performance.now();
+  let previewUseGpu = useGpu;
+  let stats = emptyStats();
+  stats.compute_backend = backend;
+  stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
+  stats.gpu_validation = gpuValidation
+    ? `CPU reference: original f64 modCAM16-HK and exact ACES 2.0 P3-D65; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops, max preview error ${gpuValidation.maxPreviewError} encoded levels`
+    : gpuValidationFailure ? `failed: ${gpuValidationFailure}` : null;
+  stats.batch_size = batchSize;
+  const totalPixels = width * height;
+  postProgress(id, "Decompose pixels", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
+  let start = 0;
+  while (start < totalPixels) {
+    if (cancelled.has(id)) return;
+    const rowsPerBatch = Math.max(1, Math.floor(batchSize / width));
+    const stop = Math.min(totalPixels, start + rowsPerBatch * width);
+    let sourceChunk = await readOpfsRange(message.source, start * 12, (stop - start) * 12);
+    let solved: any;
+    try {
+      solved = useGpu ? await gpu_solve_chunk(sourceChunk, message.request) : solve_chunk(sourceChunk, message.request);
+    } catch (error) {
+      sourceChunk = new Float32Array(0);
+      if (!useGpu) throw error;
+      warnings.push(`WebGPU stopped during processing and the complete job was restarted on wasm-cpu: ${formatError(error)}`);
+      useGpu = false;
+      backend = "wasm-cpu";
+      batchSize = batchPixelLimit(width, false);
+      await closeSinks(); await cleanupOutputFiles(id, true);
+      output = await createOutputWriters(id, width, height);
+      writers = output.writers;
+      basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
+      exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
+      stats = emptyStats(); stats.compute_backend = backend; stats.gpu_adapter = gpuValidation?.adapter ?? null; stats.gpu_validation = "GPU validation passed; processing fell back to original f64 CPU modCAM16-HK after a device error"; stats.batch_size = batchSize;
+      start = 0;
+      postProgress(id, "Restarting on wasm-cpu", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
+      continue;
+    }
+    sourceChunk = new Float32Array(0);
+    let chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
+    let chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
+    try {
+      const preview = previewUseGpu ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl) : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+      await basePreviewRaw.write(preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base));
+      await exposurePreviewRaw.write(preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure));
+    } catch (error) {
+      if (!previewUseGpu) throw error;
+      previewUseGpu = false;
+      warnings.push(`WebGPU preview transform failed; this job continued with the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
+      const preview = cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+      await basePreviewRaw.write(preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base));
+      await exposurePreviewRaw.write(preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure));
+    }
+    for (let row = 0; row < (stop - start) / width; row++) {
+      const y = Math.floor(start / width) + row;
+      const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
+      await writers.base.writeRow(y, { B: rows.baseB, G: rows.baseG, R: rows.baseR });
+      await writers.exposureRgb.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
+      await writers.exposure.writeRow(y, { exposure: rows.exposure });
+    }
+    addStats(stats, solved.stats as SolveStats);
+    chunkBase = new Float32Array(0); chunkExposure = new Float32Array(0); solved = undefined;
+    postProgress(id, useGpu ? "Decompose pixels (WebGPU)" : "Decompose pixels (wasm-cpu)", 25 + (stop / totalPixels) * 65, { processed: stop, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
+    start = stop;
+    await yieldToUi();
+  }
+  stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
+  stats.preview_transform_ms = performance.now() - previewStartedAt;
+  postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
+  await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
+  await basePreviewRaw.close(); await exposurePreviewRaw.close();
+  const report = build_report(width, height, message.request, stats, warnings);
+  const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
+  postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
+  scope.postMessage({ kind: "preview-encode", id, width, height, report, outputs, storage: "opfs" });
+}
+
+async function handle(message: WorkerMessage): Promise<void> {
+  const { id } = message;
+  let prepared: any;
   try {
     await ensureWasm();
     if (cancelled.has(id)) return;
+    if (message.kind === "solve") {
+      await solvePreparedFromOpfs(message);
+      return;
+    }
+    if (message.kind === "cancel") return;
+    const format = message.format;
     let bytes = new Uint8Array(message.bytes);
     if (message.kind === "inspect") {
       postProgress(id, "Inspect metadata", 8);
@@ -548,152 +694,24 @@ async function handle(message: JobMessage): Promise<void> {
     const height = Number(prepared.height);
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
     warnings = [...warnings, ...preparedWarnings];
-    bytes = new Uint8Array(0);
-    message.bytes = new ArrayBuffer(0);
-    let gpuValidation: GpuValidation | undefined;
-    let gpuValidationFailure: string | undefined;
-    postProgress(id, "Initialize WebGPU", 20);
-    const probe = await probeGpu();
-    if (probe?.available) {
-      postProgress(id, "Validate WebGPU against CPU reference", 21);
-      try {
-        gpuValidation = await validateGpu(message.request, probe);
-      } catch (error) {
-        gpuValidationFailure = formatError(error);
-        warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${gpuValidationFailure}`);
-      }
-    } else if (gpuProbeFailure) {
-      warnings.push(`WebGPU was not enabled; the worker will use wasm-cpu: ${gpuProbeFailure}`);
+    await ensureScratchQuota(width, height);
+    const sourceName = `decomposition-${id}-source.f32`;
+    const sourceSink = await OpfsSink.create(sourceName);
+    const sourceBatch = Math.max(width, Math.min(1024, 1024));
+    for (let start = 0; start < width * height; start += sourceBatch) {
+      const count = Math.min(sourceBatch, width * height - start);
+      const chunk = prepared.read_pixels(start, count);
+      await sourceSink.write(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      postProgress(id, "Prepare source batches", 18 + ((start + count) / (width * height)) * 4, { processed: start + count });
     }
-    let useGpu = Boolean(gpuValidation);
-    let backend = useGpu ? "webgpu" : "wasm-cpu";
-    let batchSize = batchPixelLimit(width, useGpu, probe);
-    if (!useGpu && width > 1024) batchSize = width;
-    await cleanupPreviousOutputs(id);
-    let output = await createOutputWriters(id, width, height);
-    let { writers } = output;
-    let basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
-    let exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
-    const previewStartedAt = performance.now();
-    let previewUseGpu = useGpu;
-    let stats = emptyStats();
-    stats.compute_backend = backend;
-    stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
-    stats.gpu_validation = gpuValidation
-      ? `CPU reference: original f64 modCAM16-HK and exact ACES 2.0 P3-D65; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops, max preview error ${gpuValidation.maxPreviewError} encoded levels`
-      : gpuValidationFailure ? `failed: ${gpuValidationFailure}` : null;
-    stats.batch_size = batchSize;
-    // CPU uses deliberately yielded 4,096-pixel chunks. WebGPU uses the
-    // adapter's largest validated storage batch to amortize readback costs.
-    const totalPixels = width * height;
-    postProgress(id, "Decompose pixels", 25, {
-      processed: 0,
-      projected: 0,
-      clipped: 0,
-      non_finite: 0,
-    });
-    let start = 0;
-    while (start < totalPixels) {
-      if (cancelled.has(id)) return;
-      const rowsPerBatch = Math.max(1, Math.floor(batchSize / width));
-      const stop = Math.min(totalPixels, start + rowsPerBatch * width);
-      let solved: any;
-      try {
-        solved = useGpu
-          ? await gpu_solve_chunk(prepared.read_pixels(start, stop - start), message.request)
-          : prepared.solve_pixels(start, stop - start, message.request);
-      } catch (error) {
-        if (!useGpu) throw error;
-        // A device loss or adapter limit failure invalidates every in-flight
-        // GPU result. Restart the complete image on the authoritative CPU
-        // implementation so outputs never combine two numerical paths.
-        warnings.push(`WebGPU stopped during processing and the complete job was restarted on wasm-cpu: ${formatError(error)}`);
-        useGpu = false;
-        backend = "wasm-cpu";
-        batchSize = Math.max(width, batchPixelLimit(width, false));
-        await writers.base.close().catch(() => undefined); await writers.exposure.close().catch(() => undefined); await writers.exposureRgb.close().catch(() => undefined);
-        await basePreviewRaw.close().catch(() => undefined); await exposurePreviewRaw.close().catch(() => undefined);
-        await cleanupOutputFiles(id);
-        output = await createOutputWriters(id, width, height);
-        writers = output.writers;
-        basePreviewRaw = await OpfsSink.create(`decomposition-${id}-base-preview.rgb`);
-        exposurePreviewRaw = await OpfsSink.create(`decomposition-${id}-exposure-preview.rgb`);
-        stats = emptyStats();
-        stats.compute_backend = backend;
-        stats.gpu_adapter = gpuValidation?.adapter ?? null;
-        stats.gpu_validation = "GPU validation passed; processing fell back to original f64 CPU modCAM16-HK after a device error";
-        stats.batch_size = batchSize;
-        start = 0;
-        postProgress(id, "Restarting on wasm-cpu", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
-        continue;
-      }
-      let chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
-      let chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
-      try {
-        const preview = previewUseGpu
-          ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
-          : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
-        let previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
-        let previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
-        await basePreviewRaw.write(previewBase);
-        await exposurePreviewRaw.write(previewExposure);
-        previewBase = new Uint8Array(0);
-        previewExposure = new Uint8Array(0);
-      } catch (error) {
-        if (previewUseGpu) {
-          previewUseGpu = false;
-          warnings.push(`WebGPU preview transform failed; this job continued with the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
-          const preview = cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
-          let previewBase = preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base);
-          let previewExposure = preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure);
-          await basePreviewRaw.write(previewBase);
-          await exposurePreviewRaw.write(previewExposure);
-          previewBase = new Uint8Array(0);
-          previewExposure = new Uint8Array(0);
-        } else throw error;
-      }
-      for (let row = 0; row < (stop - start) / width; row++) {
-        const y = Math.floor(start / width) + row;
-        const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
-        await writers.base.writeRow(y, { B: rows.baseB, G: rows.baseG, R: rows.baseR });
-        await writers.exposureRgb.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
-        await writers.exposure.writeRow(y, { exposure: rows.exposure });
-      }
-      addStats(stats, solved.stats as SolveStats);
-      chunkBase = new Float32Array(0);
-      chunkExposure = new Float32Array(0);
-      solved = undefined;
-      postProgress(id, useGpu ? "Decompose pixels (WebGPU)" : "Decompose pixels (wasm-cpu)", 25 + (stop / totalPixels) * 65, {
-        processed: stop,
-        projected: stats.projected_pixels,
-        clipped: stats.clipped_pixels,
-        non_finite: stats.non_finite_pixels,
-      });
-      start = stop;
-      await yieldToUi();
-    }
-    if (cancelled.has(id)) return;
-    // The source raster and uploaded file are no longer needed after solving.
-    // Drop both before reading/encoding preview data so mobile devices do not
-    // carry decoder, prepared, preview, and encoder allocations together.
+    await sourceSink.close();
     prepared.free();
     prepared = undefined;
     bytes = new Uint8Array(0);
-    stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
-    stats.preview_transform_ms = performance.now() - previewStartedAt;
-    if (cancelled.has(id)) return;
-    postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
-    await yieldToUi();
-    await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
-    await basePreviewRaw.close(); await exposurePreviewRaw.close();
-    const report = build_report(width, height, message.request, stats, warnings);
-    if (cancelled.has(id)) return;
-    const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
-    // The decomposition worker is deliberately finished before JPEG encoding.
-    // The page can terminate this worker and run each full-resolution encoder
-    // in a fresh worker, reclaiming the decoder/preparation WASM heap first.
-    postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
-    scope.postMessage({ kind: "preview-encode", id, width, height, report, outputs, storage: "opfs" });
+    message.bytes = new ArrayBuffer(0);
+    postProgress(id, "Prepared source stored locally", 23, { processed: width * height });
+    scope.postMessage({ kind: "source-ready", id, width, height, source: sourceName, request: message.request, warnings });
+    return;
   } catch (error) {
     await closeSinks();
     await cleanupOutputFiles(id);

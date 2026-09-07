@@ -45,6 +45,7 @@ type OutputFile = { name: string; size: number; kind: string };
 type WorkerMessage =
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
+  | { kind: "source-ready"; id: number; width: number; height: number; source: string; request: Request; warnings: string[] }
   | { kind: "preview-encode"; id: number; width: number; height: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "result"; id: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "error"; id: number; message: string }
@@ -314,6 +315,19 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     }
     return;
   }
+  if (message.kind === "source-ready") {
+    progressStage.textContent = "Decompose pixels";
+    progressBar.value = 25;
+    progressPercent.value = "25";
+    progressPercent.textContent = "25%";
+    progressCounters.textContent = "Starting bounded batches";
+    // Preparation/decoding has its own worker lifetime. Terminating it here
+    // releases the decoder and prepared raster before solve batches begin.
+    worker.terminate();
+    worker = createWorker();
+    worker.postMessage({ kind: "solve", id: message.id, width: message.width, height: message.height, source: message.source, request: message.request, warnings: message.warnings });
+    return;
+  }
   if (message.kind === "inspect-result") {
     renderSummary(message.summary);
     progressStage.textContent = "Ready for confirmation";
@@ -346,6 +360,7 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
       const root = await (navigator.storage as any).getDirectory();
       await root.removeEntry(`decomposition-${message.id}-base-preview.rgb`).catch(() => undefined);
       await root.removeEntry(`decomposition-${message.id}-exposure-preview.rgb`).catch(() => undefined);
+      await root.removeEntry(`decomposition-${message.id}-source.f32`).catch(() => undefined);
       const outputs = [...message.outputs,
         { name: baseName, size: baseSize, kind: "base-preview-jpeg" },
         { name: exposureName, size: exposureSize, kind: "exposure-preview-jpeg" }];
@@ -535,6 +550,7 @@ function cancel(): void {
   // Rust/WASM calls are synchronous inside a worker. Terminate the current
   // worker so cancellation also interrupts an in-flight large image job.
   worker.terminate();
+  void cleanupOpfsJob(cancelledId);
   worker = createWorker();
   activeJob = undefined;
   setBusy(false);

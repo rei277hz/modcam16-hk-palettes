@@ -62,11 +62,11 @@ failure changes the operation.
 Implementation snapshot (2026-09-07): decomposition now writes scanline EXRs
 and raw full-resolution preview planes directly to OPFS and returns file
 descriptors to the page. The worker no longer allocates full base, exposure,
-or EXR result buffers. Preparation exposes one flattened WASM view instead of
-copying the complete prepared raster into a second JS buffer, and ICC
-conversion now runs in place. Full source preparation still uses one
-decoder/prepared raster; each full-resolution JPEG is encoded in a separate
-worker and that worker is terminated after completion to reclaim its WASM heap.
-During decomposition, CPU batches are solved directly from Rust-owned pixels;
-GPU batches use only the active bounded readback/input buffers. HEIC decoder
-pixel and gain-map buffers are released immediately after Rust preparation.
+or EXR result buffers. Preparation writes the prepared float raster to an OPFS
+scratch file in small batches, then its worker is terminated. The solve worker
+reads one bounded source range at a time, so the decoder/preparation heap is
+not resident during "Decompose pixels". Each full-resolution JPEG is encoded
+in a separate worker and that worker is terminated after completion to reclaim
+its WASM heap. CPU and GPU paths use only the active bounded source/result
+buffers. HEIC decoder pixel and gain-map buffers are released immediately
+after Rust preparation.
