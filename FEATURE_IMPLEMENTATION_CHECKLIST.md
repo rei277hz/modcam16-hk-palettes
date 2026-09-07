@@ -89,12 +89,17 @@ Branch: `feat/web-image-decomposition-p3-preview`
 - [x] Keep the mobile progress bar and Decompose/Cancel action on one row with
       the action right-aligned.
 - [x] Remove the WebGPU availability footnote. Explain normalized exposure as
-      `v = (EV + 10) / 20`, its -10 to +10 stop range relative to Base EXR,
-      and reconstruction using `Base EXR * 2^(20 * v - 10)` in the output
-      footnote, retaining the Substance 3D Painter use case.
-- [x] Add a preceding reconstruction footnote: multiply Base EXR and Exposure
-      EXR in linear AP1 (ACEScg), then pass through the exact selected ACES
-      profile transform; keep its displayed name synchronized with the menu.
+      `v = (EV + 10) / 20` in the normalized 0–1 range, covering −10 to +10
+      stops relative to the Base EXR colors.
+- [x] Add a preceding reconstruction footnote: multiply Base EXR by Exposure
+      EXR in linear AP1 (ACEScg), then apply the exact selected ACES view
+      transform; keep its displayed name synchronized with the menu.
+- [x] Use consistent `*`/`**` footnote markers and match the colour picker
+      footer font size on desktop and mobile.
+- [x] Match `index.html` typography: 14px field labels, 12px inputs and
+      detail text, and 11px secondary text, including on mobile.
+- [x] Reserve result space on short mobile screens; scroll source information
+      within its row when needed to prevent overlap with the footnotes.
 - [x] Keep preview JPEG output fixed to P3-D65 primaries with sRGB encoding.
 - [x] Define the preview pipeline as the OCIO ACES 2.0 built-in transform
       `ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0`.

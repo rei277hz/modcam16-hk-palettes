@@ -265,14 +265,19 @@ top, followed by source interpretation and decomposition options, progress,
 then the two preview images and EXR download controls. Preview images are
 buttons: selecting one opens a full-screen overlay with its larger image.
 The default Exposure EXR stores direct scalar exposure replicated across ACEScg
-RGB. The first output footnote explains reconstruction: multiply Base EXR and
-Exposure EXR in linear AP1 (ACEScg), then pass the result through the exact
-selected ACES profile transform. The profile name is updated to match the
+RGB. The first output footnote explains reconstruction: multiply Base EXR by
+Exposure EXR in linear AP1 (ACEScg), then apply the exact selected ACES view
+transform. The profile name is updated to match the
 ACES profile control. The second footnote explains normalized exposure as
-`v = (EV + 10) / 20` in `[0,1]`, covering -10 to +10 stops relative to Base EXR
-colors, and reconstruction as `Base EXR * 2^(20 * v - 10)`. It retains the
-Substance 3D Painter use case because its material picker is limited to
-`[0,1]`. The page has no WebGPU availability footnote.
+`v = (EV + 10) / 20` in the normalized 0–1 range, covering −10 to +10 stops
+of exposure relative to the Base EXR colors. The page has no WebGPU
+availability footnote. The two footnotes use consistent asterisk markers (`*`
+and `**`) and match the colour picker footer typography at 11px on desktop
+and mobile. Other text follows the `index.html` scale: 14px field labels,
+12px inputs and detail text, and 11px secondary text. Mobile keeps the same
+sizes, with wrapping and flexible preview space to fit the viewport.
+On short mobile screens, the source-information area scrolls within its row
+to reserve space for previews and downloads without overlapping the footnotes.
 
 The EXR download buttons share one row on desktop and mobile. Base EXR is
 on the left with 1.5 times the width of each exposure button to its right;

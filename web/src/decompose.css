@@ -18,13 +18,13 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .upload-button { min-height: 44px; display: inline-flex; align-items: center; gap: 10px; border: 1px solid #79d5b9; background: #183d35; padding: 8px 15px; text-align: left; }
 .upload-button:hover { background: #225346; }
 .upload-button strong, .upload-button small { display: block; }
-.upload-button strong { font-size: 13px; }
-.upload-button small { margin-top: 2px; color: #a9c8bf; font-size: 10px; }
+.upload-button strong { font-size: 14px; }
+.upload-button small { margin-top: 2px; color: #a9c8bf; font-size: 11px; }
 .upload-mark { width: 20px; height: 20px; flex: 0 0 20px; fill: none; stroke: #9bf1d5; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
-.metadata-summary { min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 3px 12px; color: #aebbc2; font-size: 11px; overflow: hidden; }
+.metadata-summary { min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: baseline; gap: 3px 12px; color: #aebbc2; font-size: 12px; overflow: hidden; }
 .metadata-summary dt { color: #71808b; }
 .metadata-summary dd { min-width: 0; margin: 0; overflow-wrap: anywhere; white-space: normal; }
-.inline-warning, .inline-status { min-width: 0; color: #e7d3a7; font-size: 11px; line-height: 1.35; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
+.inline-warning, .inline-status { min-width: 0; color: #e7d3a7; font-size: 12px; line-height: 1.35; overflow: hidden; overflow-wrap: anywhere; white-space: normal; }
 .inline-warning { border-left: 2px solid #d3a75f; padding-left: 8px; }
 .button { min-height: 34px; border: 1px solid #3b4a55; background: #182029; padding: 0 12px; font-size: 12px; }
 .button:hover:not(:disabled), .download-button:hover:not(:disabled) { border-color: #89e0c4; background: #203a35; }
@@ -41,60 +41,60 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); column-gap: 8px; }
 .form-grid-options .field:last-child { justify-items: end; }
 .field { min-width: 0; display: grid; gap: 4px; }
-.field > span { color: #bfcbd0; font-size: 11px; }
+.field > span { color: #bfcbd0; font-size: 14px; }
 select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid #3a4752; border-radius: 0; background: #111820; padding: 0 9px; font-size: 12px; }
 #refl { width: 7ch; max-width: 100%; font-variant-numeric: tabular-nums; }
 .field-note { min-height: 13px; color: #71808b; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirm-line { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #aebbc2; font-size: 11px; }
 .confirm-line input { width: 15px; height: 15px; margin: 0; accent-color: #89e0c4; }
-.validation-message { margin: 5px 0 0; color: #efaaaa; font-size: 11px; }
+.validation-message { margin: 5px 0 0; color: #efaaaa; font-size: 12px; }
 .processing-row { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(120px, .5fr); align-items: center; gap: 18px; padding-bottom: 11px; border-bottom: 1px solid #2b3540; }
 .process-controls { display: flex; align-items: center; gap: 9px; white-space: nowrap; }
 .process-controls h2 { margin: 0 5px 0 0; color: #dce6e8; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 .progress-block { min-width: 0; }
-.progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 11px; }
+.progress-label-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 5px; color: #becbd0; font-size: 12px; }
 .progress-label-row output { color: #89e0c4; font-variant-numeric: tabular-nums; }
 progress { width: 100%; height: 7px; appearance: none; border: 0; background: #27323b; }
 progress::-webkit-progress-bar { background: #27323b; }
 progress::-webkit-progress-value { background: #89e0c4; }
 progress::-moz-progress-bar { background: #89e0c4; }
-.progress-counters { min-height: 14px; margin-top: 4px; color: #71808b; font-size: 10px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.progress-counters { min-height: 14px; margin-top: 4px; color: #71808b; font-size: 11px; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results-row { min-height: 0; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .9fr); align-items: start; gap: 22px; }
 .previews { min-width: 0; min-height: 0; width: min(100%, 62vw); height: clamp(100px, 18vh, 180px); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-self: start; }
 .previews figure { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; margin: 0; }
 .preview-trigger { min-width: 0; min-height: 0; width: 100%; height: 100%; border: 1px solid #33414c; background: #080b0e; padding: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .preview-trigger:hover:not(:disabled) { border-color: #89e0c4; }
 .preview-image { display: block; min-width: 0; min-height: 0; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: cover; }
-.previews figcaption { padding-top: 6px; color: #7f8e97; font-size: 10px; }
-.preview-download { min-width: 0; min-height: 36px; padding: 3px 5px; margin-top: 4px; font-size: 10px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
+.previews figcaption { padding-top: 6px; color: #7f8e97; font-size: 12px; }
+.preview-download { min-width: 0; min-height: 36px; padding: 3px 5px; margin-top: 4px; font-size: 11px; line-height: 1.3; white-space: normal; overflow-wrap: anywhere; }
 .preview-download span, .preview-download small { display: block; }
-.preview-download small { color: #aebbc2; font-size: 9px; }
+.preview-download small { color: #aebbc2; font-size: 11px; }
 .downloads { min-width: 0; align-content: start; display: grid; grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(0, 1fr)); gap: 9px; }
 .download-button { min-width: 0; min-height: 58px; border: 1px solid #35434d; background: #151d25; padding: 10px; text-align: left; overflow-wrap: anywhere; }
 .download-button span, .download-button small { display: block; }
 .download-button span { color: #e4ecee; font-size: 12px; font-weight: 700; }
-.download-button small { margin-top: 3px; color: #71808b; font-size: 10px; line-height: 1.25; }
+.download-button small { margin-top: 3px; color: #71808b; font-size: 11px; line-height: 1.25; }
 .download-button small + small { color: #aebbc2; }
 .report-row { min-width: 0; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 18px; padding-top: 9px; border-top: 1px solid #2b3540; overflow: hidden; }
-.report-row h2 { margin: 1px 0 0; color: #71808b; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-.empty-state, .report-summary { color: #71808b; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.report-row h2 { margin: 1px 0 0; color: #71808b; font-size: 12px; letter-spacing: 0; text-transform: uppercase; }
+.empty-state, .report-summary { color: #71808b; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .report-summary { color: #c3cdd1; }
 .report-row #report-content { min-width: 0; overflow: hidden; }
 .report-row .inline-warning { margin-top: 3px; }
 .metrics { display: flex; flex-wrap: nowrap; gap: 15px; margin: 4px 0 0; overflow: hidden; }
 .metrics div { min-width: 0; }
-.metrics dt { color: #71808b; font-size: 9px; }
-.metrics dd { max-width: 180px; margin: 1px 0 0; color: #c3cdd1; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.metrics dt { color: #71808b; font-size: 11px; }
+.metrics dd { max-width: 180px; margin: 1px 0 0; color: #c3cdd1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .page-footer { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-top: 3px; }
 .footnotes { min-width: 0; display: grid; gap: 3px; }
-.output-footnote { min-width: 0; color: #71808b; font-size: 9px; line-height: 1.35; }
-.picker-link { flex: 0 0 auto; color: #71808b; font-size: 10px; text-decoration: none; }
+.output-footnote { min-width: 0; color: #71808b; font-size: 11px; line-height: 1.35; }
+.picker-link { flex: 0 0 auto; color: #71808b; font-size: 11px; text-decoration: none; }
 .picker-link:hover { color: #89e0c4; }
 .preview-overlay { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; }
 .preview-overlay[hidden] { display: none; }
 .overlay-backdrop { position: absolute; inset: 0; background: rgb(3 6 9 / .92); }
 .overlay-panel { position: relative; z-index: 1; width: min(96vw, 1400px); height: min(94dvh, 900px); display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; padding: 16px; background: #10171e; border: 1px solid #3d505b; }
-.overlay-toolbar { display: flex; justify-content: space-between; align-items: center; color: #dce6e8; font-size: 13px; }
+.overlay-toolbar { display: flex; justify-content: space-between; align-items: center; color: #dce6e8; font-size: 14px; }
 .overlay-image-area { min-width: 0; min-height: 0; display: grid; place-items: center; overflow: hidden; }
 .overlay-image { display: block; width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
 @media (max-width: 800px) {
@@ -115,14 +115,15 @@ progress::-moz-progress-bar { background: #89e0c4; }
   .download-button small { margin-top: 2px; }
   .report-row { display: none; }
   .picker-link { display: none; }
-  .output-footnote { font-size: 8px; }
 }
 @media (max-width: 520px) {
   .control-row { grid-template-columns: 1fr; }
   .form-grid-options { grid-template-columns: minmax(0, 3fr) minmax(0, 1fr); }
   #refl { width: 100%; }
   .field-wide { grid-column: 1 / -1; }
-  .download-button span { font-size: 10px; }
-  .previews figcaption { font-size: 9px; }
   .overlay-panel { width: 100vw; height: 100dvh; border: 0; }
+}
+@media (max-width: 800px) and (max-height: 700px) {
+  .decompose-shell { grid-template-rows: minmax(0, auto) auto auto minmax(200px, 1fr) auto auto; }
+  .upload-row { min-height: 0; overflow-y: auto; }
 }
