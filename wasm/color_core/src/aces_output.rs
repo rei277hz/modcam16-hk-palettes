@@ -707,3 +707,82 @@ pub fn forward(profile: u32, acescg: [f64; 3]) -> [f64; 3] {
     let target_rgb = clamp3(jmh_to_target_rgb(compressed, p), 0.0, p.input_max);
     mat(&p.target_to_xyz, target_rgb)
 }
+
+/// Flatten the exact ACES 2.0 profile parameters and OCIO-derived lookup
+/// tables for the browser's f32 WGSL implementation.
+///
+/// The blob is deliberately produced from the same `Parameters` values used
+/// by the f64 CPU path. The decomposition GPU backend treats this layout as a
+/// read-only storage buffer; keeping the serialization here prevents the
+/// shader from acquiring a second, silently divergent set of constants.
+pub fn gpu_parameter_blob() -> Vec<f32> {
+    const PROFILE_STRIDE: usize = 56;
+    const TABLE_SET_STRIDE: usize = 1815;
+    let profiles = [0_u32, 1, 2, 4];
+    let mut blob = Vec::with_capacity(profiles.len() * PROFILE_STRIDE + 4 * TABLE_SET_STRIDE);
+    for profile in profiles {
+        let p = parameters(profile);
+        for matrix in [
+            p.xyz_to_rgb,
+            p.rgb_to_lms,
+            p.target_to_xyz,
+            p.jmh_to_target_rgb,
+        ] {
+            for row in matrix {
+                for value in row {
+                    blob.push(value as f32);
+                }
+            }
+        }
+        for value in [
+            p.j_max,
+            p.input_max,
+            p.output_max,
+            p.focus_j,
+            p.slope_gain,
+            p.gamma_bottom_inv,
+            p.tonescale_y_max,
+            p.tonescale_y_scale,
+            p.tonescale_y_ref,
+            p.mnorm_cosine[0],
+            p.mnorm_cosine[1],
+            p.mnorm_cosine[2],
+            p.mnorm_sine[0],
+            p.mnorm_sine[1],
+            p.mnorm_sine[2],
+            p.mnorm_offset,
+            p.toe_first_gain,
+            p.toe_second_gain,
+            p.toe_second_k2,
+        ] {
+            blob.push(value as f32);
+        }
+        let table_set = match profile {
+            1 => 0.0,
+            0 => 1.0,
+            4 => 2.0,
+            _ => 3.0,
+        };
+        blob.push(table_set);
+    }
+    for (reach, cusp, hues) in [
+        (tables::SDR_REACH_M, tables::SDR_GAMUT_CUSP, tables::SDR_GAMUT_HUES),
+        (tables::HDR_REACH_M, tables::HDR_GAMUT_CUSP, tables::HDR_GAMUT_HUES),
+        (
+            tables::SDR_REACH_M,
+            tables::SDR_P3_GAMUT_CUSP,
+            tables::SDR_P3_GAMUT_HUES,
+        ),
+        (
+            tables::HDR_REACH_M,
+            tables::HDR_P3_GAMUT_CUSP,
+            tables::HDR_P3_GAMUT_HUES,
+        ),
+    ] {
+        blob.extend(reach.iter().map(|value| *value as f32));
+        blob.extend(cusp.iter().map(|value| *value as f32));
+        blob.extend(hues.iter().map(|value| *value as f32));
+    }
+    debug_assert_eq!(blob.len(), profiles.len() * PROFILE_STRIDE + 4 * TABLE_SET_STRIDE);
+    blob
+}

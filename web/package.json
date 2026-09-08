@@ -4,13 +4,21 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test": "node --experimental-strip-types --test tests/source_batches.test.mjs tests/exr_zip.test.mjs",
+    "test:batches": "node --experimental-strip-types --test tests/source_batches.test.mjs",
+    "test:exr": "node --experimental-strip-types --test tests/exr_zip.test.mjs",
     "build:wasm": "wasm-pack build ../wasm/color_core --target web --release --out-dir ../../web/src/wasm/pkg --no-pack",
+    "build:wasm:decomposition": "wasm-pack build ../wasm/decomposition --target web --release --out-dir ../../web/src/wasm/decomposition --no-pack",
     "dev": "vite",
-    "build": "npm run build:wasm && vite build",
+    "build": "npm run build:wasm && npm run build:wasm:decomposition && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "libheif-js": "1.23.2"
   }
 }

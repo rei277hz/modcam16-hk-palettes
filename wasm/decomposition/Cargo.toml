@@ -1,0 +1,34 @@
+[package]
+name = "modcam16-decomposition-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+exr = { version = "1.74.2", default-features = false }
+cmx = "0.2.0"
+icc-profile = "0.0.6"
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+jpeg-decoder = { version = "0.3.2", default-features = false }
+modcam16-color-core = { path = "../color_core" }
+png = "0.18.1"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+wasm-bindgen = "0.2"
+half = "2.6"
+js-sys = "0.3"
+ultrahdr-core = { version = "0.6.0", default-features = false }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }
+bytemuck = { version = "1.22", features = ["derive"] }
+futures-channel = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
+bytemuck = "1.22"
+pollster = "0.4"

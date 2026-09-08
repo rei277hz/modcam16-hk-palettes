@@ -49,8 +49,8 @@ post-2014 Lab/D50 data with CAT02 adaptation used by the Python tools. Each dot
 is an absolute linear ACEScg patch reference rendered through the selected
 profile; its Hue, Sat, and Refl coordinates use the same target-profile solve
 as ACEScg entry and profile switching. An unavailable source preimage does not
-hide or move its dot. See [ACES_PROFILE_BEHAVIOR.md](./ACES_PROFILE_BEHAVIOR.md)
-for the precise notation and conversion contract.
+hide or move its dot. See [PALETTE_BEHAVIOR.md](./PALETTE_BEHAVIOR.md) for the
+complete palette, profile, adaptation, and entry contract.
 The Rec.2020 (P3-D65 limited), P3-D65 HDR, and P3-D65 SDR modes are encoded
 for a tagged Display P3 canvas when the browser supports it; the Rec.709-D65
 mode uses sRGB. Browsers without Display P3 support use the explicit sRGB
@@ -65,7 +65,11 @@ display-side XYZ to the selected white and applies a J_HK-preserving scale, so t
 ColorChecker dots, and background surround all respond without changing the
 pre-adaptation Refl/Hue/Sat state. Hex entry is interpreted as the visible
 adapted color and reverse-adapted before solving the sliders. See
-[CHROMATIC_ADAPTATION_BEHAVIOR.md](./CHROMATIC_ADAPTATION_BEHAVIOR.md).
+[PALETTE_BEHAVIOR.md](./PALETTE_BEHAVIOR.md) for the complete adaptation
+contract. The browser decomposition page is documented in
+[DECOMPOSITION_BEHAVIOR.md](./DECOMPOSITION_BEHAVIOR.md), with its release
+checks in
+[DECOMPOSITION_OPERATIONAL_CHECKLIST.md](./DECOMPOSITION_OPERATIONAL_CHECKLIST.md).
 Temp uses a piecewise reciprocal-temperature (mired) slider curve: the
 2000..6500 K and 6500..20000 K spans occupy equal halves of the track, putting
 6500 K at the exact midpoint while keeping each side's response consistent in

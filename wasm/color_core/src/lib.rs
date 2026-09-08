@@ -9,7 +9,7 @@
 //! modCAM16-HK equations used by ``modcam16_palette.cam16_hk`` with its
 //! default ``AppearanceConfig``.
 
-mod aces_output;
+pub mod aces_output;
 
 use wasm_bindgen::prelude::*;
 
@@ -615,6 +615,15 @@ fn attributes(model: Model, xyz: [f64; 3]) -> (f64, f64, f64, f64) {
     let chroma = 35.0 * colorfulness / model.cam_a_w;
     let j_hk = (j * j + HK_COEFFICIENT * chroma).max(0.0).sqrt();
     (j, chroma, hue, j_hk)
+}
+
+/// Return the modCAM16-HK lightness correlate for normalized D65 XYZ.
+///
+/// The decomposition worker uses this same appearance-model implementation as
+/// the picker so its per-pixel exposure root has one numerical definition of
+/// the neutral target and does not need to duplicate the model constants.
+pub fn j_hk_from_xyz(xyz: [f64; 3]) -> f64 {
+    attributes(model(), xyz).3
 }
 
 // This is the profile-side neutral curve used to construct D = F_p(C) for a
