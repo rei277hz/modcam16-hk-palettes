@@ -1,3 +1,6 @@
+import { appendDebug, syncDiagnosticScroll } from "./debug_panel";
+import type { DebugMessage } from "./debug_log";
+import { listScratchFiles, readScratchFile, removeScratchFile } from "./scratch_store";
 import "./decompose.css";
 
 type SourceSummary = {
@@ -8,6 +11,7 @@ type SourceSummary = {
   transfer?: string | null;
   metadata_source?: string | null;
   automatic_icc?: boolean;
+  embedded_available?: boolean;
   warnings?: string[];
 };
 
@@ -43,12 +47,14 @@ type Report = {
 type ProgressMessage = { kind: "progress"; id: number; stage: string; percent: number; counters?: Record<string, number | undefined> };
 type OutputFile = { name: string; size: number; kind: string; width?: number; height?: number };
 type WorkerMessage =
+  | DebugMessage
   | ProgressMessage
   | { kind: "inspect-result"; id: number; summary: SourceSummary }
+  | { kind: "source-preview"; id: number; generation: number; width: number; height: number; mode: "embedded" | "manual" | "raw-muted"; jpeg: ArrayBuffer }
   | { kind: "source-ready"; id: number; width: number; height: number; source: string; request: Request; warnings: string[] }
   | { kind: "preview-encode"; id: number; width: number; height: number; displayWidth: number; displayHeight: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
   | { kind: "result"; id: number; report: Report; outputs: OutputFile[]; storage: "opfs" }
-  | { kind: "error"; id: number; message: string }
+  | { kind: "error"; id: number; message: string; generation?: number }
   | { kind: "cancelled"; id: number };
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
@@ -58,14 +64,16 @@ const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
 };
 
 const fileInput = $("#file-input") as HTMLInputElement;
-const uploadButton = $("#upload-button") as HTMLButtonElement;
-const metadataSummary = $("#metadata-summary");
-const metadataWarning = $("#metadata-warning");
+const sourcePreviewFrame = $("#source-preview-frame") as HTMLButtonElement;
+const sourcePreviewEmpty = $("#source-preview-empty");
+const sourcePreviewImage = $("#source-preview-image") as HTMLImageElement;
+const sourcePreviewState = $("#source-preview-state");
+const interpretationGroup = $(".interpretation-group") as HTMLDivElement;
 const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
-const interpretationFields = $("#interpretation-fields") as HTMLDivElement;
-const overrideSource = $("#override-source") as HTMLButtonElement;
-const interpretationError = $("#interpretation-error");
+const transferField = $("#source-transfer-field") as HTMLLabelElement;
+const gamutAction = $("#source-gamut-action");
+const sourceFormatIndicator = $("#source-format-indicator");
 const profileSelect = $("#aces-profile") as HTMLSelectElement;
 const reflInput = $("#refl") as HTMLInputElement;
 const optionsError = $("#options-error");
@@ -92,14 +100,13 @@ const basePreviewTrigger = $("#base-preview-trigger") as HTMLButtonElement;
 const exposurePreviewTrigger = $("#exposure-preview-trigger") as HTMLButtonElement;
 const previewOverlay = $("#preview-overlay") as HTMLDivElement;
 const previewOverlayImage = $("#preview-overlay-image") as HTMLImageElement;
-const previewOverlayLabel = $("#preview-overlay-label");
+const previewOverlayTitle = $("#preview-overlay-title");
+const previewOverlayMeta = $("#preview-overlay-meta");
+const saveOverlayPreview = $("#save-overlay-preview") as HTMLButtonElement;
+const previewSaveStatus = $("#preview-save-status");
 const closePreviewButton = $("#close-preview") as HTMLButtonElement;
 const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
 const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
-const downloadBasePreview = $("#download-base-preview") as HTMLButtonElement;
-const downloadExposurePreview = $("#download-exposure-preview") as HTMLButtonElement;
-const basePreviewSize = $("#base-preview-size");
-const exposurePreviewSize = $("#exposure-preview-size");
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
 const exposureRgbSize = $("#exposure-rgb-size");
@@ -107,11 +114,18 @@ const exposureRgbSize = $("#exposure-rgb-size");
 let worker = createWorker();
 let selectedFile: File | undefined;
 let selectedFormat = "";
+let sourceInspected = false;
 let inspectionId = 0;
 let jobId = 0;
 let activeJob: number | undefined;
-let automaticIccAvailable = false;
-let sourceOverrideActive = false;
+let embeddedAvailable = false;
+let embeddedLabel = "Use embedded interpretation";
+let primaryEmbeddedSelection = false;
+let interpretationMode: "embedded" | "manual" | "unresolved" = "unresolved";
+let sourcePreviewGeneration = 0;
+let sourcePreviewUrl: string | undefined;
+let sourcePreviewTimer: number | undefined;
+let sourceCacheReadyId: number | undefined;
 let baseUrl: string | undefined;
 let exposureUrl: string | undefined;
 let exposureRgbUrl: string | undefined;
@@ -119,16 +133,40 @@ let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
 let baseFullPreviewUrl: string | undefined;
 let exposureFullPreviewUrl: string | undefined;
+let baseFullPreviewFile: File | undefined;
+let exposureFullPreviewFile: File | undefined;
+let baseDisplayDimensions = "";
+let exposureDisplayDimensions = "";
+let openPreviewKind: "base" | "exposure" | undefined;
+let sharingPreview = false;
 let previewEncoding: AbortController | undefined;
 
 function createWorker(): Worker {
+  console.info("Create decomposition worker");
   const instance = new Worker(new URL("./decompose_worker.ts", import.meta.url), { type: "module" });
-  instance.onmessage = (event: MessageEvent<WorkerMessage>) => onWorkerMessage(event.data);
+  instance.onmessage = (event: MessageEvent<WorkerMessage>) => {
+    if (event.data.kind === "debug-log") { appendDebug(event.data.entry); return; }
+    if (instance === worker) void onWorkerMessage(event.data);
+  };
   instance.onerror = (event) => {
+    console.error("Decomposition worker uncaught error", event.error ?? event.message, { file: event.filename, line: event.lineno, column: event.colno, inspectionId, activeJob, stage: progressStage.textContent });
+    if (instance !== worker) return;
+    activeJob = undefined;
+    progressStage.textContent = "Error";
     showStatus(event.message || "The decomposition worker failed.", true);
     setBusy(false);
   };
+  instance.onmessageerror = () => console.error("Unable to deserialize decomposition worker message", { inspectionId, activeJob });
   return instance;
+}
+
+function replaceWorker(): void {
+  console.info("Replace decomposition worker", { inspectionId, activeJob, stage: progressStage.textContent });
+  worker.terminate();
+  // The File remains on the main thread; only the worker's byte cache expires.
+  sourceCacheReadyId = undefined;
+  sourcePreviewGeneration += 1;
+  worker = createWorker();
 }
 
 function formatBytes(value: number): string {
@@ -151,7 +189,7 @@ function detectFormat(file: File): string | undefined {
   return undefined;
 }
 
-function revokeUrls(): void {
+function revokeOutputUrls(): void {
   if (baseUrl) URL.revokeObjectURL(baseUrl);
   if (exposureUrl) URL.revokeObjectURL(exposureUrl);
   if (exposureRgbUrl) URL.revokeObjectURL(exposureRgbUrl);
@@ -166,6 +204,14 @@ function revokeUrls(): void {
   exposurePreviewUrl = undefined;
   baseFullPreviewUrl = undefined;
   exposureFullPreviewUrl = undefined;
+  baseFullPreviewFile = undefined;
+  exposureFullPreviewFile = undefined;
+}
+
+function revokeUrls(): void {
+  revokeOutputUrls();
+  if (sourcePreviewUrl) URL.revokeObjectURL(sourcePreviewUrl);
+  sourcePreviewUrl = undefined;
 }
 
 function clearPreview(image: HTMLImageElement): void {
@@ -173,10 +219,129 @@ function clearPreview(image: HTMLImageElement): void {
   image.hidden = true;
 }
 
+function setSourcePreviewState(state: "empty" | "loading" | "ready" | "muted" | "error", message = ""): void {
+  sourcePreviewFrame.classList.toggle("source-preview-muted", state === "muted");
+  sourcePreviewFrame.classList.toggle("source-preview-loading", state === "loading");
+  sourcePreviewFrame.classList.toggle("source-preview-error", state === "error");
+  sourcePreviewEmpty.hidden = state !== "empty";
+  sourcePreviewState.hidden = !message;
+  sourcePreviewState.textContent = message;
+  sourcePreviewFrame.setAttribute("aria-label", state === "empty" ? "Load an image" : "Replace source image");
+}
+
+function clearSourcePreview(): void {
+  if (sourcePreviewUrl) URL.revokeObjectURL(sourcePreviewUrl);
+  sourcePreviewUrl = undefined;
+  sourcePreviewImage.removeAttribute("src");
+  sourcePreviewImage.hidden = true;
+  setSourcePreviewState("empty");
+}
+
+function showRawSourcePreview(file: File): void {
+  if (!/^image\/(png|jpeg|heic|heif)/i.test(file.type) && !/\.(png|jpe?g|heic|heif)$/i.test(file.name)) {
+    setSourcePreviewState("muted", "Choose an interpretation to preview this image.");
+    return;
+  }
+  if (sourcePreviewUrl) URL.revokeObjectURL(sourcePreviewUrl);
+  sourcePreviewUrl = URL.createObjectURL(file);
+  sourcePreviewImage.src = sourcePreviewUrl;
+  sourcePreviewImage.hidden = false;
+  setSourcePreviewState("muted", "Raw decoder preview · interpretation required");
+}
+
+function interpretationFromSelectors(): "embedded" | "manual" | "unresolved" {
+  if (gamutSelect.value === "embedded" && embeddedAvailable) return "embedded";
+  if (gamutSelect.value && transferSelect.value && gamutSelect.value !== "embedded") return "manual";
+  return "unresolved";
+}
+
+function syncTransferControl(busy = activeJob !== undefined): void {
+  const embedded = gamutSelect.value === "embedded" && embeddedAvailable;
+  const manualPrimaries = Boolean(gamutSelect.value && gamutSelect.value !== "embedded");
+  transferField.hidden = !manualPrimaries;
+  transferSelect.disabled = busy || !manualPrimaries;
+  gamutAction.hidden = !sourceInspected || embeddedAvailable || manualPrimaries;
+  if (embedded && transferSelect.value !== "sRGB") transferSelect.value = "sRGB";
+}
+
+function updateInterpretationState(): void {
+  syncTransferControl();
+  interpretationMode = interpretationFromSelectors();
+  const unresolved = interpretationMode === "unresolved";
+  if (sourcePreviewImage.src) {
+    setSourcePreviewState(unresolved ? "muted" : "ready", unresolved ? "Complete both selectors to update the preview." : "");
+  }
+  updateCalculateState();
+}
+
+function setEmbeddedOption(summary: SourceSummary): void {
+  embeddedAvailable = Boolean(summary.embedded_available ?? summary.automatic_icc);
+  embeddedLabel = summary.metadata_source ? `Use embedded ${summary.metadata_source.replace(/^(PNG|JPEG|HEIF|EXR)\s+/i, "")}` : "Use embedded interpretation";
+  const option = gamutSelect.querySelector<HTMLOptionElement>('option[value="embedded"]');
+  if (option) {
+    option.disabled = !embeddedAvailable;
+    option.textContent = embeddedLabel;
+  }
+}
+
 function closePreview(): void {
   previewOverlay.hidden = true;
   previewOverlayImage.removeAttribute("src");
+  saveOverlayPreview.hidden = true;
+  previewSaveStatus.hidden = true;
+  previewSaveStatus.textContent = "";
+  openPreviewKind = undefined;
   document.body.classList.remove("preview-open");
+}
+
+function isAppleTouchDevice(): boolean {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+async function savePreviewFile(kind: "base" | "exposure"): Promise<void> {
+  const url = kind === "base" ? baseFullPreviewUrl : exposureFullPreviewUrl;
+  const file = kind === "base" ? baseFullPreviewFile : exposureFullPreviewFile;
+  if (!url || !file || sharingPreview) return;
+  previewSaveStatus.hidden = true;
+  const shareData: ShareData = { files: [file] };
+  let canShare = false;
+  try {
+    canShare = typeof navigator.share === "function"
+      && (!navigator.canShare || navigator.canShare(shareData));
+  } catch { /* Unsupported file sharing uses the platform fallback below. */ }
+  if (canShare) {
+    sharingPreview = true;
+    saveOverlayPreview.disabled = true;
+    try {
+      // The named JPEG is prepared with the results. No file read or other
+      // asynchronous work may precede share(), preserving Safari's tap gesture.
+      await navigator.share(shareData);
+    } catch (error) {
+      // Cancellation must never trigger a fallback download. Other failures
+      // need a new user gesture instead of an asynchronously opened popup.
+      if (!(error instanceof Error && error.name === "AbortError") && openPreviewKind === kind) {
+        previewSaveStatus.textContent = "Unable to open the save options. Tap Save full-size JPEG to try again.";
+        previewSaveStatus.hidden = false;
+      }
+    } finally {
+      sharingPreview = false;
+      saveOverlayPreview.disabled = !(openPreviewKind === "base" ? baseFullPreviewFile : exposureFullPreviewFile);
+    }
+    return;
+  }
+  if (isAppleTouchDevice()) {
+    // HTTP pages do not expose Web Share. Safari's image context menu still
+    // offers Save to Photos in a full-size image tab opened from this tap.
+    const imageTab = window.open(url, "_blank");
+    if (imageTab) imageTab.opener = null;
+    previewSaveStatus.textContent = imageTab
+      ? "In the image tab, touch and hold the image, then choose Save to Photos."
+      : "Allow pop-ups, then tap Save full-size JPEG again to open the image for saving to Photos.";
+    previewSaveStatus.hidden = false;
+    return;
+  }
+  download(url, `${kind}-preview-display-p3`, "jpg");
 }
 
 function openPreview(kind: "base" | "exposure"): void {
@@ -184,7 +349,12 @@ function openPreview(kind: "base" | "exposure"): void {
   if (!url) return;
   previewOverlayImage.src = url;
   previewOverlayImage.alt = kind === "base" ? "Enlarged base preview JPEG" : "Enlarged exposure preview JPEG";
-  previewOverlayLabel.textContent = kind === "base" ? "Base preview (Display P3)" : "Exposure preview (Display P3)";
+  previewOverlayTitle.textContent = kind === "base" ? "Base preview" : "Exposure preview";
+  previewOverlayMeta.textContent = `Display P3 · ${kind === "base" ? baseDisplayDimensions : exposureDisplayDimensions}`;
+  openPreviewKind = kind;
+  saveOverlayPreview.hidden = false;
+  saveOverlayPreview.disabled = sharingPreview || !(kind === "base" ? baseFullPreviewFile : exposureFullPreviewFile);
+  previewSaveStatus.hidden = true;
   previewOverlay.hidden = false;
   document.body.classList.add("preview-open");
   closePreviewButton.focus();
@@ -200,6 +370,8 @@ function showPreview(image: HTMLImageElement, url: string | undefined): void {
 }
 
 function showStatus(message: string, error = false): void {
+  if (error) console.error("Status", message);
+  else console.info("Status", message);
   processingStatus.hidden = false;
   processingStatus.textContent = message;
   processingStatus.classList.toggle("callout-error", error);
@@ -211,21 +383,19 @@ function setBusy(busy: boolean): void {
   calculateButton.textContent = busy ? "Cancel" : "Decompose";
   calculateButton.classList.toggle("button-primary", !busy);
   calculateButton.classList.toggle("button-danger", busy);
-  uploadButton.disabled = busy;
+  sourcePreviewFrame.disabled = busy;
   gamutSelect.disabled = busy;
-  transferSelect.disabled = busy;
+  syncTransferControl(busy);
   profileSelect.disabled = busy;
   reflInput.disabled = busy;
 }
 
 function canCalculate(): boolean {
-  const manualOverride = sourceOverrideActive && Boolean(gamutSelect.value && transferSelect.value);
-  const manualSelectionPresent = sourceOverrideActive && Boolean(gamutSelect.value || transferSelect.value);
   return Boolean(
     selectedFile
       && selectedFormat
       && validOptions()
-      && (manualOverride || (automaticIccAvailable && !manualSelectionPresent)),
+      && interpretationMode !== "unresolved",
   );
 }
 
@@ -253,15 +423,15 @@ function resetResults(): void {
   setReportExpanded(false);
   clearPreview(basePreviewImage);
   clearPreview(exposurePreviewImage);
-  revokeUrls();
+  revokeOutputUrls();
   downloadBase.disabled = true;
   downloadExposure.disabled = true;
   downloadExposureRgb.disabled = true;
   basePreviewTrigger.disabled = true;
   exposurePreviewTrigger.disabled = true;
-  downloadBasePreview.disabled = true;
-  downloadExposurePreview.disabled = true;
-  for (const size of [baseSize, exposureRgbSize, exposureSize, basePreviewSize, exposurePreviewSize]) {
+  baseDisplayDimensions = "";
+  exposureDisplayDimensions = "";
+  for (const size of [baseSize, exposureRgbSize, exposureSize]) {
     size.textContent = "Waiting";
   }
   emptyReport.hidden = false;
@@ -276,39 +446,78 @@ function setReportExpanded(expanded: boolean): void {
   const mobile = reportMobileViewport.matches;
   document.documentElement.classList.toggle("report-open", mobile && expanded);
   document.body.classList.toggle("report-open", mobile && expanded);
-  if (mobile && !expanded) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  syncDiagnosticScroll();
 }
 
 function renderSummary(summary: SourceSummary): void {
+  console.info("Image inspection complete", { inspectionId, summary });
   selectedFormat = summary.format;
-  automaticIccAvailable = Boolean(summary.automatic_icc);
-  sourceOverrideActive = !automaticIccAvailable;
-  interpretationFields.hidden = automaticIccAvailable;
-  overrideSource.hidden = !automaticIccAvailable;
-  const rows = [
-    ["File", selectedFile?.name ?? "Unknown"],
-    ["Size", selectedFile ? formatBytes(selectedFile.size) : "Unknown"],
-    ["Format", summary.format.toUpperCase()],
-    ["Dimensions", `${formatCount(summary.width)} × ${formatCount(summary.height)}`],
-    ["Metadata", summary.metadata_source ?? "Profile metadata unavailable"],
-  ];
-  metadataSummary.innerHTML = rows.map(([label, value]) => `<dt>${escapeText(label)}</dt><dd>${escapeText(value)}</dd>`).join("");
-  metadataSummary.hidden = false;
-  const warnings = summary.warnings ?? [];
-  if (warnings.length) {
-    metadataWarning.textContent = warnings.join(" ");
-    metadataWarning.hidden = false;
-  }
-  // Metadata is a starting point for the two override controls. An embedded
-  // ICC profile remains authoritative until the user changes either value.
-  gamutSelect.value = summary.gamut ?? "";
-  transferSelect.value = summary.transfer ?? "";
+  sourceInspected = true;
+  interpretationGroup.hidden = false;
+  sourceCacheReadyId = inspectionId;
+  setEmbeddedOption(summary);
+  gamutSelect.value = embeddedAvailable ? "embedded" : "";
+  transferSelect.value = embeddedAvailable ? "sRGB" : "";
+  primaryEmbeddedSelection = embeddedAvailable;
+  interpretationMode = embeddedAvailable ? "embedded" : "unresolved";
+  sourceFormatIndicator.textContent = selectedFormat.toUpperCase();
+  sourceFormatIndicator.hidden = false;
+  updateInterpretationState();
+  scheduleSourcePreview();
   updateCalculateState();
+}
+
+function scheduleSourcePreview(): void {
+  if (sourcePreviewTimer !== undefined) window.clearTimeout(sourcePreviewTimer);
+  sourcePreviewTimer = window.setTimeout(() => {
+    sourcePreviewTimer = undefined;
+    void requestSourcePreview();
+  }, 100);
+}
+
+async function requestSourcePreview(): Promise<void> {
+  // The decomposition flow replaces the preparation worker after it stores
+  // the source raster. A preview queued across that handoff would arrive in
+  // a fresh worker without the source-byte cache, so keep preview work out of
+  // the calculation lifecycle entirely.
+  if (activeJob !== undefined || !selectedFile || !selectedFormat) return;
+  const generation = ++sourcePreviewGeneration;
+  const mode = interpretationMode === "embedded"
+    ? "embedded"
+    : interpretationMode === "manual"
+      ? "manual"
+      : "raw-muted";
+  const request: Request = {
+    format: selectedFormat,
+    gamut: mode === "manual" ? gamutSelect.value : null,
+    transfer: mode === "manual" ? transferSelect.value : null,
+    profile: 4,
+    refl: 0.5,
+    blur_sigma: 0,
+  };
+  setSourcePreviewState("loading", mode === "raw-muted" ? "Preparing raw preview…" : "Updating preview…");
+  console.info("Source preview requested", { inspectionId, generation, mode, request, cached: sourceCacheReadyId === inspectionId });
+  try {
+    const message: { kind: "preview"; id: number; generation: number; format: string; request: Request; mode: "embedded" | "manual" | "raw-muted"; bytes?: ArrayBuffer } = { kind: "preview", id: inspectionId, generation, format: selectedFormat, request, mode };
+    if (sourceCacheReadyId !== inspectionId) {
+      const bytes = await selectedFile.arrayBuffer();
+      if (generation !== sourcePreviewGeneration || activeJob !== undefined) return;
+      message.bytes = bytes;
+      worker.postMessage(message, [bytes]);
+      sourceCacheReadyId = inspectionId;
+    } else {
+      worker.postMessage(message);
+    }
+  } catch (error) {
+    console.error("Source preview request failed", error, { inspectionId, generation });
+    if (generation === sourcePreviewGeneration) setSourcePreviewState("error", error instanceof Error ? error.message : String(error));
+  }
 }
 
 let previewEncoderId = 0;
 type EncodedPreview = { size: number; width: number; height: number };
-function encodePreviewFile(input: string, output: string, width: number, height: number, signal: AbortSignal): Promise<EncodedPreview> {
+function encodePreviewFile(input: string, output: string, width: number, height: number, signal: AbortSignal, sourceWidth = width, sourceHeight = height): Promise<EncodedPreview> {
+  console.info("Create JPEG encoder worker", { input, output, width, height, sourceWidth, sourceHeight });
   signal.throwIfAborted();
   const encoder = new Worker(new URL("./preview_encoder_worker.ts", import.meta.url), { type: "module" });
   const id = ++previewEncoderId;
@@ -316,27 +525,63 @@ function encodePreviewFile(input: string, output: string, width: number, height:
     const finish = () => { encoder.terminate(); signal.removeEventListener("abort", abort); };
     const abort = () => { finish(); reject(new DOMException("Preview encoding cancelled.", "AbortError")); };
     signal.addEventListener("abort", abort, { once: true });
-    encoder.onmessage = (event: MessageEvent<{ kind: string; id: number; size: number; width: number; height: number; message?: string }>) => {
+    encoder.onmessage = (event: MessageEvent<DebugMessage | { kind: string; id: number; size: number; width: number; height: number; message?: string }>) => {
+      if ("entry" in event.data) { appendDebug(event.data.entry); return; }
       if (event.data.id !== id) return;
       if (event.data.kind === "complete") { finish(); resolve({ size: event.data.size, width: event.data.width, height: event.data.height }); }
       else if (event.data.kind === "error") { finish(); reject(new Error(event.data.message ?? "Preview JPEG encoding failed.")); }
     };
-    encoder.onerror = (event) => { finish(); reject(new Error(event.message || "Preview JPEG worker failed.")); };
-    encoder.postMessage({ id, input, output, width, height });
+    encoder.onerror = (event) => {
+      console.error("JPEG encoder uncaught error", event.error ?? event.message, { id, input, output, width, height, file: event.filename, line: event.lineno, column: event.colno });
+      finish(); reject(event.error instanceof Error ? event.error : new Error(event.message || "Preview JPEG worker failed."));
+    };
+    encoder.onmessageerror = () => { finish(); reject(new Error("Unable to deserialize JPEG encoder worker message.")); };
+    encoder.postMessage({ id, input, output, width, height, sourceWidth, sourceHeight });
   });
+}
+
+async function encodeDisplayPreviewFile(input: string, output: string, width: number, height: number, signal: AbortSignal): Promise<EncodedPreview> {
+  try {
+    return await encodePreviewFile(input, output, width, height, signal);
+  } catch (firstError) {
+    if (signal.aborted) throw firstError;
+    // iOS Safari can terminate a worker while the 2048-pixel RGB plane is
+    // copied into the encoder's WASM heap. Retry in a new worker with a
+    // bounded raster and keep the aspect ratio. The encoded dimensions are
+    // returned to the caller and become the displayed preview metadata.
+    const maxEdge = 1024;
+    if (Math.max(width, height) <= maxEdge) throw firstError;
+    const scale = maxEdge / Math.max(width, height);
+    const retryWidth = Math.max(1, Math.round(width * scale));
+    const retryHeight = Math.max(1, Math.round(height * scale));
+    console.warn("Display JPEG encoder worker failed; retrying with bounded raster", {
+      input, output, firstError, width, height, retryWidth, retryHeight,
+    });
+    return encodePreviewFile(input, output, retryWidth, retryHeight, signal, width, height);
+  }
 }
 
 async function cleanupOpfsJob(id: number): Promise<void> {
   try {
-    const root = await (navigator.storage as any).getDirectory();
-    for await (const [name] of root.entries()) {
-      if (name.startsWith(`decomposition-${id}-`)) await root.removeEntry(name);
+    for (const name of await listScratchFiles()) {
+      if (name.startsWith(`decomposition-${id}-`)) await removeScratchFile(name);
     }
   } catch { /* best effort during cancellation */ }
 }
 
 async function onWorkerMessage(message: WorkerMessage): Promise<void> {
+  if (message.kind === "debug-log") { appendDebug(message.entry); return; }
   if (message.id !== inspectionId && message.id !== activeJob) return;
+  if (message.kind === "source-preview") {
+    if (message.generation !== sourcePreviewGeneration) return;
+    console.info("Source preview received", { id: message.id, generation: message.generation, width: message.width, height: message.height, mode: message.mode, bytes: message.jpeg.byteLength });
+    if (sourcePreviewUrl) URL.revokeObjectURL(sourcePreviewUrl);
+    sourcePreviewUrl = URL.createObjectURL(new Blob([message.jpeg], { type: "image/jpeg" }));
+    sourcePreviewImage.src = sourcePreviewUrl;
+    sourcePreviewImage.hidden = false;
+    setSourcePreviewState(message.mode === "raw-muted" ? "muted" : "ready", message.mode === "raw-muted" ? "Raw decoder preview · interpretation required" : "");
+    return;
+  }
   if (message.kind === "progress") {
     progressStage.textContent = message.stage;
     progressBar.value = Math.max(progressBar.value, Math.min(100, message.percent));
@@ -355,6 +600,7 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     return;
   }
   if (message.kind === "source-ready") {
+    console.info("Prepared source received; handing off to solve worker", { id: message.id, width: message.width, height: message.height, request: message.request, warnings: message.warnings });
     progressStage.textContent = "Decompose pixels";
     progressBar.value = 25;
     progressPercent.value = "25";
@@ -362,8 +608,7 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     progressCounters.textContent = "Starting bounded batches";
     // Preparation/decoding has its own worker lifetime. Terminating it here
     // releases the decoder and prepared raster before solve batches begin.
-    worker.terminate();
-    worker = createWorker();
+    replaceWorker();
     worker.postMessage({ kind: "solve", id: message.id, width: message.width, height: message.height, source: message.source, request: message.request, warnings: message.warnings });
     return;
   }
@@ -377,9 +622,10 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     return;
   }
   if (message.kind === "preview-encode") {
+    console.info("Solve complete; handing off to JPEG encoders", { id: message.id, width: message.width, height: message.height, displayWidth: message.displayWidth, displayHeight: message.displayHeight, report: message.report });
     // Each JPEG encoder gets its own lifetime. Never display full-size JPEGs
     // in the page: only the two capped files may be decoded by image elements.
-    worker.terminate();
+    replaceWorker();
     const encoding = new AbortController();
     previewEncoding = encoding;
     try {
@@ -395,20 +641,25 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
         progressBar.value = 94 + index * 1.5;
         progressPercent.value = String(progressBar.value);
         progressPercent.textContent = `${Math.round(progressBar.value)}%`;
-        progressCounters.textContent = display ? "2048-pixel display preview" : "Full-resolution JPEG";
-        const result = await encodePreviewFile(`decomposition-${message.id}-${component}-${suffix}.rgb`, name,
-          display ? message.displayWidth : message.width, display ? message.displayHeight : message.height, encoding.signal);
+        progressCounters.textContent = display ? "Display preview" : "Full-resolution JPEG";
+        const result = display
+          ? await encodeDisplayPreviewFile(`decomposition-${message.id}-${component}-${suffix}.rgb`, name, message.displayWidth, message.displayHeight, encoding.signal)
+          : await encodePreviewFile(`decomposition-${message.id}-${component}-${suffix}.rgb`, name, message.width, message.height, encoding.signal);
         if (activeJob !== message.id) { await cleanupOpfsJob(message.id); return; }
         outputs.push({ name, ...result, kind: `${component}-${suffix}-jpeg` });
       }
-      const root = await (navigator.storage as any).getDirectory();
-      await root.removeEntry(`decomposition-${message.id}-base-preview.rgb`).catch(() => undefined);
-      await root.removeEntry(`decomposition-${message.id}-exposure-preview.rgb`).catch(() => undefined);
-      await root.removeEntry(`decomposition-${message.id}-base-display.rgb`).catch(() => undefined);
-      await root.removeEntry(`decomposition-${message.id}-exposure-display.rgb`).catch(() => undefined);
-      await root.removeEntry(`decomposition-${message.id}-source.f32`).catch(() => undefined);
+      await removeScratchFile(`decomposition-${message.id}-base-preview.rgb`);
+      await removeScratchFile(`decomposition-${message.id}-exposure-preview.rgb`);
+      await removeScratchFile(`decomposition-${message.id}-base-display.rgb`);
+      await removeScratchFile(`decomposition-${message.id}-exposure-display.rgb`);
+      for (const name of await listScratchFiles()) {
+        if (name === `decomposition-${message.id}-source.f32` || name.startsWith(`decomposition-${message.id}-source-`)) {
+          await removeScratchFile(name);
+        }
+      }
       await onWorkerMessage({ kind: "result", id: message.id, report: message.report, outputs, storage: "opfs" });
     } catch (error) {
+      console.error("JPEG output pipeline failed", error, { id: message.id, stage: progressStage.textContent });
       await cleanupOpfsJob(message.id);
       if (activeJob === message.id) {
         activeJob = undefined;
@@ -419,7 +670,6 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     } finally {
       if (previewEncoding === encoding) {
         previewEncoding = undefined;
-        worker = createWorker();
       }
     }
     return;
@@ -431,7 +681,13 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     progressStage.textContent = "Cancelled";
     return;
   }
+  if (message.kind === "error" && message.generation !== undefined) {
+    console.error("Source preview failed", message);
+    if (message.generation === sourcePreviewGeneration) setSourcePreviewState("error", message.message);
+    return;
+  }
   if (message.kind === "error") {
+    console.error("Decomposition failed", message, { stage: progressStage.textContent });
     activeJob = undefined;
     setBusy(false);
     showStatus(message.message, true);
@@ -440,24 +696,40 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   }
   activeJob = undefined;
   let files: Map<string, OutputFile>;
+  console.info("Open completed output files", { id: message.id, outputs: message.outputs });
   try {
-    const root = await (navigator.storage as any).getDirectory();
     files = new Map(message.outputs.map((entry) => [entry.kind, entry]));
-    const openUrl = async (kind: string, mime: string): Promise<string | undefined> => {
+    const openFile = async (kind: string, mime: string, name?: string): Promise<File | undefined> => {
       const entry = files.get(kind);
       if (!entry) return undefined;
-      const handle = await root.getFileHandle(entry.name);
-      return URL.createObjectURL(await handle.getFile({ type: mime }));
+      // OPFS getFile() takes no MIME options. Tag the bytes explicitly so file
+      // sharing and Safari image tabs recognize the JPEG without re-encoding.
+      const file = await readScratchFile(entry.name, mime);
+      return new File([file], name ?? entry.name, { type: mime });
     };
-    revokeUrls();
+    const openUrl = async (kind: string, mime: string): Promise<string | undefined> => {
+      const file = await openFile(kind, mime);
+      return file ? URL.createObjectURL(file) : undefined;
+    };
+    revokeOutputUrls();
     baseUrl = await openUrl("base-exr", "image/x-exr");
     exposureUrl = await openUrl("exposure-normalized-ev", "image/x-exr");
     exposureRgbUrl = await openUrl("exposure-exr", "image/x-exr");
     basePreviewUrl = await openUrl("base-display-jpeg", "image/jpeg");
     exposurePreviewUrl = await openUrl("exposure-display-jpeg", "image/jpeg");
-    baseFullPreviewUrl = await openUrl("base-preview-jpeg", "image/jpeg");
-    exposureFullPreviewUrl = await openUrl("exposure-preview-jpeg", "image/jpeg");
+    const baseName = selectedFile!.name.replace(/\.[^.]+$/, "");
+    baseFullPreviewFile = await openFile("base-preview-jpeg", "image/jpeg", `${baseName}-base-preview-display-p3.jpg`);
+    exposureFullPreviewFile = await openFile("exposure-preview-jpeg", "image/jpeg", `${baseName}-exposure-preview-display-p3.jpg`);
+    baseFullPreviewUrl = baseFullPreviewFile ? URL.createObjectURL(baseFullPreviewFile) : undefined;
+    exposureFullPreviewUrl = exposureFullPreviewFile ? URL.createObjectURL(exposureFullPreviewFile) : undefined;
+    const displayLabel = (kind: string): string => {
+      const file = files.get(kind);
+      return file?.width && file.height ? `${file.width} × ${file.height}` : "Unavailable";
+    };
+    baseDisplayDimensions = displayLabel("base-display-jpeg");
+    exposureDisplayDimensions = displayLabel("exposure-display-jpeg");
   } catch (error) {
+    console.error("Opening output files failed", error, { id: message.id });
     setBusy(false);
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
@@ -470,14 +742,6 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   downloadExposureRgb.disabled = false;
   basePreviewTrigger.disabled = false;
   exposurePreviewTrigger.disabled = false;
-  downloadBasePreview.disabled = !baseFullPreviewUrl;
-  downloadExposurePreview.disabled = !exposureFullPreviewUrl;
-  const jpegLabel = (kind: string): string => {
-    const file = files.get(kind);
-    return file ? `${file.width} × ${file.height} · ${formatBytes(file.size)}` : "Unavailable";
-  };
-  basePreviewSize.textContent = jpegLabel("base-preview-jpeg");
-  exposurePreviewSize.textContent = jpegLabel("exposure-preview-jpeg");
   baseSize.textContent = formatBytes(files.get("base-exr")?.size ?? 0);
   exposureSize.textContent = formatBytes(files.get("exposure-normalized-ev")?.size ?? 0);
   exposureRgbSize.textContent = formatBytes(files.get("exposure-exr")?.size ?? 0);
@@ -487,6 +751,7 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   progressPercent.textContent = "100%";
   progressStage.textContent = "Complete";
   showStatus("Calculation complete. Outputs are ready.");
+  if (sourcePreviewFrame.classList.contains("source-preview-loading") || !sourcePreviewUrl) scheduleSourcePreview();
 }
 
 function renderReport(report: Report): void {
@@ -501,10 +766,10 @@ function renderReport(report: Report): void {
     if (/sRGB/i.test(value)) return "sRGB";
     return value.replace(/\s+encoding$/i, "").trim();
   };
-  const confirmedSource = gamutSelect.value && transferSelect.value
+  const confirmedSource = interpretationMode === "manual"
     ? `${normalizePrimaries(gamutSelect.value)} / ${normalizeTransfer(transferSelect.value)}`
-    : automaticIccAvailable
-      ? "Embedded ICC profile"
+    : interpretationMode === "embedded"
+      ? embeddedLabel
       : "Manual selection required";
   const metrics: Array<[string, string]> = [
     ["Pixel count", formatCount(report.pixel_count)],
@@ -525,7 +790,7 @@ function renderReport(report: Report): void {
     ["Preview backend", `${report.preview_backend} (${report.preview_transform_ms.toFixed(1)} ms)`],
     ["Base output", "Linear ACEScg RGB, fp16"],
     ["Exposure output", "Scalar exposure replicated across linear ACEScg RGB, fp16"],
-    ["Exposure normalized output", "Normalized EV, scalar fp16"],
+    ["Exposure norm EV output", "norm EV, scalar fp16"],
     ["Base preview", "P3-D65 JPEG, sRGB encoding"],
     ["Exposure preview", "P3-D65 JPEG, sRGB encoding"],
   ];
@@ -545,15 +810,35 @@ function renderReport(report: Report): void {
 }
 
 async function inspectFile(file: File, format: string): Promise<void> {
+  console.info("Read source bytes for inspection", { inspectionId, name: file.name, size: file.size, type: file.type, format });
+  const id = inspectionId;
   const bytes = await file.arrayBuffer();
-  const id = ++inspectionId;
+  console.info("Source bytes read", { id, bytes: bytes.byteLength });
+  if (id !== inspectionId) return;
   worker.postMessage({ kind: "inspect", id, format, bytes }, [bytes]);
 }
 
 async function chooseFile(file: File): Promise<void> {
+  console.info("Source selected", file);
   const format = detectFormat(file);
   resetResults();
-  sourceOverrideActive = false;
+  inspectionId += 1;
+  replaceWorker();
+  if (sourcePreviewTimer !== undefined) window.clearTimeout(sourcePreviewTimer);
+  clearSourcePreview();
+  sourceCacheReadyId = undefined;
+  sourceInspected = false;
+  interpretationGroup.hidden = true;
+  sourceFormatIndicator.textContent = "";
+  sourceFormatIndicator.hidden = true;
+  embeddedAvailable = false;
+  primaryEmbeddedSelection = false;
+  interpretationMode = "unresolved";
+  gamutSelect.value = "";
+  transferSelect.value = "";
+  const option = gamutSelect.querySelector<HTMLOptionElement>('option[value="embedded"]');
+  if (option) option.disabled = true;
+  syncTransferControl();
   if (!format) {
     selectedFile = undefined;
     selectedFormat = "";
@@ -563,33 +848,25 @@ async function chooseFile(file: File): Promise<void> {
   }
   selectedFile = file;
   selectedFormat = format;
-  metadataSummary.hidden = true;
-  metadataWarning.hidden = true;
+  setSourcePreviewState("loading", "Loading image…");
   progressStage.textContent = "Inspecting metadata";
   progressBar.value = 0;
   progressPercent.textContent = "0%";
   try {
     await inspectFile(file, format);
   } catch (error) {
+    console.error("Image inspection request failed", error);
     showStatus(error instanceof Error ? error.message : String(error), true);
+    showRawSourcePreview(file);
   }
   updateCalculateState();
 }
 
 async function calculate(): Promise<void> {
   if (!selectedFile || !selectedFormat) return;
-  interpretationError.hidden = true;
   optionsError.hidden = true;
-  const manualOverride = sourceOverrideActive && Boolean(gamutSelect.value && transferSelect.value);
-  const manualSelectionPresent = sourceOverrideActive && Boolean(gamutSelect.value || transferSelect.value);
-  if (manualSelectionPresent && !manualOverride) {
-    interpretationError.textContent = "Select both source values, or leave both blank to use the embedded ICC profile.";
-    interpretationError.hidden = false;
-    return;
-  }
-  if (!manualOverride && !automaticIccAvailable) {
-    interpretationError.textContent = "Select gamut and transfer manually: this file has no usable embedded ICC profile.";
-    interpretationError.hidden = false;
+  interpretationMode = interpretationFromSelectors();
+  if (interpretationMode === "unresolved") {
     return;
   }
   if (!validOptions()) {
@@ -597,6 +874,11 @@ async function calculate(): Promise<void> {
     optionsError.hidden = false;
     return;
   }
+  if (sourcePreviewTimer !== undefined) {
+    window.clearTimeout(sourcePreviewTimer);
+    sourcePreviewTimer = undefined;
+  }
+  sourcePreviewGeneration += 1;
   resetResults();
   const id = ++jobId;
   activeJob = id;
@@ -610,30 +892,32 @@ async function calculate(): Promise<void> {
   const bytes = await selectedFile.arrayBuffer();
   const request: Request = {
     format: selectedFormat,
-    gamut: manualOverride ? gamutSelect.value : null,
-    transfer: manualOverride ? transferSelect.value : null,
+    gamut: interpretationMode === "manual" ? gamutSelect.value : null,
+    transfer: interpretationMode === "manual" ? transferSelect.value : null,
     profile: Number(profileSelect.value),
     refl: Number(reflInput.value),
     blur_sigma: 0,
   };
+  console.info("Decomposition requested", { id, inspectionId, name: selectedFile.name, bytes: bytes.byteLength, interpretationMode, request });
   worker.postMessage({ kind: "calculate", id, format: selectedFormat, bytes, request }, [bytes]);
 }
 
 function cancel(): void {
   if (activeJob === undefined) return;
   const cancelledId = activeJob;
+  console.warn("Cancel requested; terminating worker", { id: cancelledId, stage: progressStage.textContent });
   worker.postMessage({ kind: "cancel", id: cancelledId });
   // Rust/WASM calls are synchronous inside a worker. Terminate the current
   // worker so cancellation also interrupts an in-flight large image job.
-  worker.terminate();
+  replaceWorker();
   previewEncoding?.abort();
   previewEncoding = undefined;
   void cleanupOpfsJob(cancelledId);
-  worker = createWorker();
   activeJob = undefined;
   setBusy(false);
   showStatus("Calculation cancelled. Worker buffers were released.");
   progressStage.textContent = "Cancelled";
+  if (sourcePreviewFrame.classList.contains("source-preview-loading") || !sourcePreviewUrl) scheduleSourcePreview();
 }
 
 function download(url: string | undefined, suffix: string, extension: string): void {
@@ -645,46 +929,42 @@ function download(url: string | undefined, suffix: string, extension: string): v
   link.click();
 }
 
-uploadButton.addEventListener("click", () => fileInput.click());
+sourcePreviewFrame.addEventListener("click", () => { fileInput.value = ""; fileInput.click(); });
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
 calculateButton.addEventListener("click", () => { if (activeJob !== undefined) cancel(); else void calculate(); });
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
-downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-normalized-ev", "exr"));
+downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-norm-ev", "exr"));
 downloadExposureRgb.addEventListener("click", () => download(exposureRgbUrl, "exposure-acescg-fp16", "exr"));
-downloadBasePreview.addEventListener("click", () => download(baseFullPreviewUrl, "base-preview-display-p3", "jpg"));
-downloadExposurePreview.addEventListener("click", () => download(exposureFullPreviewUrl, "exposure-preview-display-p3", "jpg"));
+saveOverlayPreview.addEventListener("click", () => {
+  if (openPreviewKind) void savePreviewFile(openPreviewKind);
+});
 basePreviewTrigger.addEventListener("click", () => openPreview("base"));
 exposurePreviewTrigger.addEventListener("click", () => openPreview("exposure"));
 closePreviewButton.addEventListener("click", closePreview);
 previewOverlay.querySelector("[data-close-preview]")?.addEventListener("click", closePreview);
 previewOverlay.addEventListener("click", (event) => {
   const target = event.target as Node;
-  if (target === previewOverlay || target === previewOverlayImage || (target instanceof HTMLElement && target.closest("#close-preview"))) return;
+  if (target === previewOverlay || target === previewOverlayImage || (target instanceof HTMLElement && target.closest("button"))) return;
   // Keep the enlarged view dismissible from any backdrop or empty panel area.
   if (!(target instanceof HTMLButtonElement)) closePreview();
 });
 window.addEventListener("keydown", (event) => { if (event.key === "Escape" && !previewOverlay.hidden) closePreview(); });
-for (const control of [gamutSelect, transferSelect, profileSelect, reflInput]) {
-  control.addEventListener("input", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
-  control.addEventListener("change", () => { interpretationError.hidden = true; optionsError.hidden = true; updateCalculateState(); });
+for (const control of [transferSelect, profileSelect, reflInput]) {
+  control.addEventListener("input", () => { optionsError.hidden = true; updateInterpretationState(); if (control === transferSelect) scheduleSourcePreview(); });
+  control.addEventListener("change", () => { optionsError.hidden = true; updateInterpretationState(); if (control === transferSelect) scheduleSourcePreview(); });
 }
 profileSelect.addEventListener("change", updateReconstructionProfile);
-gamutSelect.addEventListener("change", () => {
-  if (gamutSelect.value === "Rec.709 / sRGB" || gamutSelect.value === "Display P3 / P3-D65") {
-    transferSelect.value = "sRGB";
-  }
-  interpretationError.hidden = true;
-  updateCalculateState();
+for (const eventName of ["input", "change"] as const) gamutSelect.addEventListener(eventName, () => {
+  const wasEmbedded = primaryEmbeddedSelection;
+  primaryEmbeddedSelection = gamutSelect.value === "embedded" && embeddedAvailable;
+  const manualPrimaries = Boolean(gamutSelect.value && !primaryEmbeddedSelection);
+  if (manualPrimaries && (wasEmbedded || !transferSelect.value)) transferSelect.value = "sRGB";
+  optionsError.hidden = true;
+  updateInterpretationState();
+  scheduleSourcePreview();
 });
 reflInput.addEventListener("change", normalizeReflDisplay);
 reflInput.addEventListener("blur", normalizeReflDisplay);
-overrideSource.addEventListener("click", () => {
-  sourceOverrideActive = true;
-  interpretationFields.hidden = false;
-  overrideSource.hidden = true;
-  gamutSelect.focus();
-  updateCalculateState();
-});
 reportToggle.addEventListener("click", () => setReportExpanded(!reportRow.classList.contains("report-expanded")));
 reportMobileViewport.addEventListener("change", () => setReportExpanded(false));
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });

@@ -92,7 +92,7 @@ test("rejects incomplete files and truncated reads", async () => {
 });
 
 test("batch budgets are row-aligned and respect the GPU adapter", () => {
-  assert.equal(batchPixelLimit(6000, true), 522000);
+  assert.equal(batchPixelLimit(6000, true), 126000);
   assert.equal(batchPixelLimit(6000, false), 30000);
   assert.equal(batchPixelLimit(6000, true, { max_batch_pixels: 10000 }), 6000);
   assert.equal(batchPixelLimit(6000, true, { max_batch_pixels: 5999 }), 0);
@@ -129,7 +129,7 @@ test("6000x4000 traversal stays bounded, row-aligned, and visits every source sa
     consumed++;
   }
   assert.equal(cursor, total);
-  assert.equal(consumed, 46);
+  assert.equal(consumed, 191);
 });
 
 test("EXR row conversion is independent of batch boundaries", () => {

@@ -15,15 +15,19 @@ struct AreaPreview {
 
 impl AreaPreview {
     fn new(width: usize, height: usize) -> Result<Self, String> {
+        Self::new_with_max_edge(width, height, MAX_EDGE)
+    }
+
+    fn new_with_max_edge(width: usize, height: usize, max_edge: usize) -> Result<Self, String> {
         if width == 0 || height == 0 || width > 65535 || height > 65535 {
             return Err("Invalid JPEG preview dimensions.".into());
         }
         let longest = width.max(height);
         let scaled = |value: usize| {
-            if longest <= MAX_EDGE {
+            if longest <= max_edge {
                 value
             } else {
-                ((value as u64 * MAX_EDGE as u64 + longest as u64 / 2) / longest as u64).max(1)
+                ((value as u64 * max_edge as u64 + longest as u64 / 2) / longest as u64).max(1)
                     as usize
             }
         };
@@ -109,7 +113,7 @@ impl AreaPreview {
             return Err("Invalid preview Refl.".into());
         }
         // Match the full-size preview's scene-linear neutral AP0 canvas.
-        // Average Refl * s, never normalized EV or tone-mapped RGB.
+        // Average Refl * s, never norm EV or tone-mapped RGB.
         self.append(exposure.len(), |i| {
             [refl * super::exposure_scalar(exposure[i]); 3]
         })
@@ -157,6 +161,19 @@ impl DisplayPreview {
     pub fn finish(&self) -> Result<(), JsValue> {
         self.inner.finish().map_err(|e| JsValue::from_str(&e))
     }
+}
+
+/// Construct a preview with a caller-selected longest-edge cap. Source
+/// previews use a smaller cap than decomposition output previews.
+#[wasm_bindgen]
+pub fn new_bounded_display_preview(width: u32, height: u32, max_edge: u32) -> Result<DisplayPreview, JsValue> {
+    let max_edge = max_edge as usize;
+    if max_edge == 0 {
+        return Err(JsValue::from_str("Preview edge cap must be positive."));
+    }
+    AreaPreview::new_with_max_edge(width as usize, height as usize, max_edge)
+        .map(|inner| DisplayPreview { inner })
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 #[cfg(test)]

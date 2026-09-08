@@ -28,7 +28,11 @@ function floatToHalf(value: number): number {
 export function batchPixelLimit(width: number, gpu: boolean, probe?: { max_batch_pixels?: number }): number {
   if (!Number.isSafeInteger(width) || width <= 0) throw new Error("Invalid source width.");
   // CPU calls are synchronous, so keep their budget smaller for responsiveness.
-  const target = gpu ? 524_288 : 32_768;
+  // Keep GPU allocations conservative on mobile WebGPU implementations. A
+  // solve batch also needs output, flags, and readback buffers; 131,072
+  // pixels keeps each padded vec4 buffer near 2 MiB instead of the 8 MiB
+  // allocation rejected by the affected Android device.
+  const target = gpu ? 131_072 : 32_768;
   const adapterLimit = gpu ? probe?.max_batch_pixels ?? Number.POSITIVE_INFINITY : Number.POSITIVE_INFINITY;
   if (!(adapterLimit >= width)) return 0; // The caller selects CPU when a GPU row cannot fit.
   return Math.floor(Math.min(Math.max(width, target), adapterLimit) / width) * width;

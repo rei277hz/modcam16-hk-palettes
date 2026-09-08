@@ -27,6 +27,23 @@ use ultrahdr_core::metadata::apple::{from_apple_headroom, parse_exif_for_apple_h
 mod gpu;
 mod preview_display;
 
+// Emit the panic reason/location before wasm32 turns it into an opaque
+// `unreachable` trap. The worker console bridge preserves this and the JS stack.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = error)]
+    fn log_panic(message: &str, error: &js_sys::Error);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn install_panic_diagnostics() {
+    std::panic::set_hook(Box::new(|info| {
+        log_panic(&format!("Rust/WASM panic: {info}"), &js_sys::Error::new("Rust/WASM panic stack"));
+    }));
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod gpu_host_tests;
 
@@ -88,6 +105,7 @@ pub struct DecodeSummary {
     pub transfer: Option<String>,
     pub metadata_source: Option<String>,
     pub automatic_icc: bool,
+    pub embedded_available: bool,
     pub warnings: Vec<String>,
 }
 
@@ -235,6 +253,7 @@ fn prepare_rgb(
     height: usize,
     req: &Request,
     icc_profile: Option<&[u8]>,
+    embedded_pair: Option<(&str, &str)>,
 ) -> Result<Vec<[f32; 3]>, String> {
     let manual = match (&req.gamut, &req.transfer) {
         (Some(gamut), Some(transfer)) => Some((gamut.as_str(), transfer.as_str())),
@@ -254,6 +273,13 @@ fn prepare_rgb(
         }
     } else if let Some(icc) = icc_profile {
         icc_rgb_to_ap0(&mut rgb, icc)?;
+    } else if let Some((gamut, transfer)) = embedded_pair {
+        for px in &mut rgb {
+            for c in px.iter_mut() {
+                *c = decode_transfer(*c, transfer);
+            }
+            *px = source_to_ap0(*px, gamut);
+        }
     } else {
         return Err(
             "Select gamut and transfer manually: this image has no usable embedded ICC profile.".into(),
@@ -475,6 +501,7 @@ fn parse_png_inner(data: &[u8]) -> Result<Pixels, String> {
         }
     });
     let automatic_icc = icc_profile.is_some();
+    let embedded_available = automatic_icc || cicp.is_some();
     Ok(Pixels {
         width: out.width as usize,
         height: out.height as usize,
@@ -494,6 +521,7 @@ fn parse_png_inner(data: &[u8]) -> Result<Pixels, String> {
                 None
             },
             automatic_icc,
+            embedded_available,
             warnings: if automatic_icc {
                 Vec::new()
             } else if info.icc_profile.is_some() {
@@ -520,9 +548,28 @@ fn parse_png(data: &[u8]) -> Result<Pixels, String> {
         },
     }
 }
-fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
+fn parse_jpeg_inner_scaled(data: &[u8], max_edge: Option<u32>) -> Result<Pixels, String> {
     let mut d = JpegDecoder::new(Cursor::new(data));
     d.read_info().map_err(|e| e.to_string())?;
+    let full = d.info().ok_or("JPEG metadata missing")?;
+    let full_width = full.width;
+    let full_height = full.height;
+    if let Some(max_edge) = max_edge {
+        if max_edge == 0 {
+            return Err("JPEG preview edge cap must be positive.".into());
+        }
+        // JPEG's native decoder can perform a 1/2, 1/4, or 1/8 IDCT directly.
+        // Requesting the preview bound here avoids allocating and converting
+        // the full raster on every source interpretation change.
+        let max_edge = max_edge.min(65_535);
+        let longest = u32::from(full_width).max(u32::from(full_height));
+        let requested_width = ((u32::from(full_width) * max_edge + longest - 1) / longest)
+            .clamp(1, u32::from(full_width));
+        let requested_height = ((u32::from(full_height) * max_edge + longest - 1) / longest)
+            .clamp(1, u32::from(full_height));
+        d.scale(requested_width as u16, requested_height as u16)
+            .map_err(|e| e.to_string())?;
+    }
     let icc = d.icc_profile();
     let px = d.decode().map_err(|e| e.to_string())?;
     let info = d.info().ok_or("JPEG metadata missing")?;
@@ -575,9 +622,13 @@ fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
             transfer: None,
             metadata_source,
             automatic_icc,
+            embedded_available: automatic_icc,
             warnings,
         },
     })
+}
+fn parse_jpeg_inner(data: &[u8]) -> Result<Pixels, String> {
+    parse_jpeg_inner_scaled(data, None)
 }
 fn parse_jpeg(data: &[u8]) -> Result<Pixels, String> {
     parse_jpeg_inner(data)
@@ -648,6 +699,7 @@ fn parse_exr(data: &[u8]) -> Result<Pixels, String> {
             transfer,
             metadata_source: detected_gamut.as_ref().map(|_| "EXR chromaticities".into()),
             automatic_icc: false,
+            embedded_available: detected_gamut.is_some(),
             warnings: if detected_gamut.is_none() {
                 vec!["Select gamut and transfer manually: EXR chromaticities are missing or unsupported.".into()]
             } else {
@@ -724,6 +776,21 @@ fn write_exr(
 pub fn inspect(data: Vec<u8>, format: String) -> Result<JsValue, JsValue> {
     let p = parse(&data, &format).map_err(|e| JsValue::from_str(&e))?;
     serde_wasm_bindgen::to_value(&p.summary).map_err(|e| JsValue::from_str(&e.to_string()))
+}
+
+/// Prepare a bounded JPEG source preview without decoding the full-resolution
+/// raster. The native JPEG IDCT scale is selected before pixel conversion.
+#[wasm_bindgen]
+pub fn prepare_jpeg_preview(data: Vec<u8>, request: JsValue, max_edge: u32) -> Result<PreparedImage, JsValue> {
+    let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
+    let p = parse_jpeg_inner_scaled(&data, Some(max_edge)).map_err(|e| JsValue::from_str(&e))?;
+    let width = p.width;
+    let height = p.height;
+    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
+    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref(), embedded_pair)
+        .map_err(|e| JsValue::from_str(&e))?;
+    prepared_payload_rgb(rgb, width, height, p.summary.warnings.clone())
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 fn parse_request(value: JsValue) -> Result<Request, String> {
@@ -1155,12 +1222,14 @@ fn encode_result(
 }
 
 fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
+    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
     p.rgb = prepare_rgb(
         std::mem::take(&mut p.rgb),
         p.width,
         p.height,
         &req,
         p.icc_profile.as_deref(),
+        embedded_pair,
     )?;
     let (base, exposure, stats) = solve_prepared(&p.rgb, &req);
     let report = report_from_stats(p.width, p.height, &req, &stats, p.summary.warnings.clone());
@@ -1266,7 +1335,8 @@ pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<PreparedImage, JsValue
     let width = p.width;
     let height = p.height;
     let warnings = p.summary.warnings.clone();
-    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref())
+    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
+    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref(), embedded_pair)
         .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width, height, warnings).map_err(|e| JsValue::from_str(&e))
 }
@@ -1285,7 +1355,7 @@ pub fn prepare_pixels(
         ));
     }
     let rgb = flat_to_rgb(data).map_err(|e| JsValue::from_str(&e))?;
-    let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None)
+    let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None, None)
         .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width as usize, height as usize, Vec::new())
     .map_err(|e| JsValue::from_str(&e))
@@ -1351,6 +1421,7 @@ pub fn prepare_heic_pixels(
         height as usize,
         &req,
         (!icc_profile.is_empty()).then_some(icc_profile.as_slice()),
+        None,
     )
     .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(prepared, width as usize, height as usize, Vec::new())
@@ -1603,6 +1674,7 @@ pub fn decompose_pixels(
             transfer: req.transfer.clone(),
             metadata_source: Some("libheif-js".into()),
             automatic_icc: false,
+            embedded_available: false,
             warnings: Vec::new(),
         },
         icc_profile: None,

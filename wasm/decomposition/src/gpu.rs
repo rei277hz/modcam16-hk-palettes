@@ -28,6 +28,27 @@ mod webgpu {
         adapter_name: String,
     }
 
+    struct TemporaryBuffers(Vec<wgpu::Buffer>);
+
+    impl TemporaryBuffers {
+        fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        fn track(&mut self, buffer: wgpu::Buffer) -> wgpu::Buffer {
+            self.0.push(buffer.clone());
+            buffer
+        }
+    }
+
+    impl Drop for TemporaryBuffers {
+        fn drop(&mut self) {
+            for buffer in &self.0 {
+                buffer.destroy();
+            }
+        }
+    }
+
     pub struct GpuResult {
         pub base: Vec<f32>,
         pub exposure: Vec<f32>,
@@ -228,6 +249,24 @@ mod webgpu {
             .collect()
     }
 
+    fn create_upload_buffer(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &'static str,
+        contents: &[u8],
+        usage: wgpu::BufferUsages,
+        buffers: &mut TemporaryBuffers,
+    ) -> wgpu::Buffer {
+        let buffer = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: contents.len() as u64,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        queue.write_buffer(&buffer, 0, contents);
+        buffer
+    }
+
     pub async fn solve(data: Vec<f32>, request: &Request) -> Result<GpuResult, String> {
         if data.len() % 3 != 0 {
             return Err("Prepared pixel chunk must contain RGB triples.".into());
@@ -268,42 +307,46 @@ mod webgpu {
             0,
             0,
         ];
-        let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("decomposition input"),
-            contents: bytemuck::cast_slice(&input),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let mut buffers = TemporaryBuffers::new();
+        let input_buffer = create_upload_buffer(
+            &device,
+            &queue,
+            "decomposition input",
+            bytemuck::cast_slice(&input),
+            wgpu::BufferUsages::STORAGE,
+            &mut buffers,
+        );
         let output_size = (count * 4 * std::mem::size_of::<f32>()) as u64;
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let output_buffer = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decomposition output"),
             size: output_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        });
+        }));
         let flags_size = (count * std::mem::size_of::<u32>()) as u64;
-        let flags_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let flags_buffer = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decomposition flags"),
             size: flags_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        });
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        }));
+        let params_buffer = buffers.track(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("decomposition parameters"),
             contents: bytemuck::cast_slice(&params),
             usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let output_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        }));
+        let output_readback = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decomposition output readback"),
             size: output_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
-        });
-        let flags_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        }));
+        let flags_readback = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decomposition flags readback"),
             size: flags_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
-        });
+        }));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("decomposition compute bind group"),
             layout: &bind_group_layout,
@@ -347,14 +390,6 @@ mod webgpu {
         queue.submit(Some(encoder.finish()));
         let output_bytes = map_readback(&device, &output_readback, output_size).await?;
         let flags_bytes = map_readback(&device, &flags_readback, flags_size).await?;
-        // Explicit destruction is important on iOS/WebKit, where deferred GPU
-        // resource reclamation can otherwise overlap many row batches.
-        input_buffer.destroy();
-        output_buffer.destroy();
-        flags_buffer.destroy();
-        params_buffer.destroy();
-        output_readback.destroy();
-        flags_readback.destroy();
         let packed = bytes_as_f32(&output_bytes);
         let flags = bytes_as_u32(&flags_bytes);
         let mut base = Vec::with_capacity(count * 3);
@@ -432,36 +467,40 @@ mod webgpu {
         }
         let params = [4u32, refl.to_bits(), 0u32, count as u32, mode, 0, 0, 0];
         let input_size = (count * 4 * std::mem::size_of::<f32>()) as u64;
-        let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ACES preview input"),
-            contents: bytemuck::cast_slice(&input),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
+        let mut buffers = TemporaryBuffers::new();
+        let input_buffer = create_upload_buffer(
+            &device,
+            &queue,
+            "ACES preview input",
+            bytemuck::cast_slice(&input),
+            wgpu::BufferUsages::STORAGE,
+            &mut buffers,
+        );
         let output_size = input_size;
-        let output_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let output_buffer = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ACES preview output"),
             size: output_size,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
-        });
+        }));
         let flags_size = (count * std::mem::size_of::<u32>()) as u64;
-        let flags_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        let flags_buffer = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ACES preview flags"),
             size: flags_size,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
-        });
-        let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        }));
+        let params_buffer = buffers.track(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ACES preview parameters"),
             contents: bytemuck::cast_slice(&params),
             usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let output_readback = device.create_buffer(&wgpu::BufferDescriptor {
+        }));
+        let output_readback = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ACES preview readback"),
             size: output_size,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
-        });
+        }));
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ACES preview bind group"),
             layout: &bind_group_layout,
@@ -503,11 +542,6 @@ mod webgpu {
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &output_readback, 0, output_size);
         queue.submit(Some(encoder.finish()));
         let output_bytes = map_readback(&device, &output_readback, output_size).await?;
-        input_buffer.destroy();
-        output_buffer.destroy();
-        flags_buffer.destroy();
-        params_buffer.destroy();
-        output_readback.destroy();
         let packed = bytes_as_f32(&output_bytes);
         let mut pixels = Vec::with_capacity(count * 3);
         for index in 0..count {

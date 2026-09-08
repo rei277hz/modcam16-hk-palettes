@@ -1,7 +1,9 @@
-import init, { DisplayPreview, build_report, cpu_preview_ap0, cpu_preview_pixels, gpu_preview_ap0, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, prepare, prepare_heic_pixels, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
+import { checkpoint, setDebugMemory } from "./debug_worker";
+import init, { DisplayPreview, build_report, cpu_preview_ap0, cpu_preview_pixels, encode_preview_pixels, gpu_preview_ap0, gpu_preview_pixels, gpu_probe, gpu_solve_chunk, inspect, new_bounded_display_preview, prepare, prepare_heic_pixels, prepare_jpeg_preview, solve_chunk } from "./wasm/decomposition/modcam16_decomposition_wasm.js";
 import { batchPixelLimit, convertExrRow } from "./decomposition_buffers";
 import { sourceBatches } from "./source_batches";
 import { ScanlineExrWriter } from "./exr_zip";
+import { IndexedDbAccess, listScratchFiles, readScratchFile, removeIndexedDbFile, removeScratchFile } from "./scratch_store";
 import libheif from "libheif-js/wasm-bundle";
 
 type DecompositionRequest = {
@@ -14,11 +16,13 @@ type DecompositionRequest = {
 };
 
 type JobMessage = {
-  kind: "inspect" | "calculate";
+  kind: "inspect" | "calculate" | "preview";
   id: number;
   format: string;
-  bytes: ArrayBuffer;
+  bytes?: ArrayBuffer;
   request?: DecompositionRequest;
+  generation?: number;
+  mode?: "embedded" | "manual" | "raw-muted";
 };
 
 type CancelMessage = { kind: "cancel"; id: number };
@@ -80,17 +84,51 @@ class OpfsSink implements FileSink {
   private closed = false;
   private constructor(private readonly access: any, private readonly synchronous: boolean, readonly name: string) {}
   static async create(name: string): Promise<OpfsSink> {
-    const root = await (navigator.storage as any).getDirectory();
-    const handle = await root.getFileHandle(name, { create: true });
-    let sink: OpfsSink;
-    if (handle.createSyncAccessHandle) {
-      const access = await handle.createSyncAccessHandle();
-      access.truncate(0);
-      sink = new OpfsSink(access, true, name);
-    } else if (handle.createWritable) {
-      sink = new OpfsSink(await handle.createWritable({ keepExistingData: false }), false, name);
-    } else throw new Error("This browser cannot open an OPFS output stream.");
+    checkpoint("Open OPFS output", { name });
+    let sink: OpfsSink | undefined;
+    let handle: any;
+    try {
+      const root = await (navigator.storage as any).getDirectory();
+      handle = await root.getFileHandle(name, { create: true });
+    } catch (error) {
+      console.warn("OPFS file handle creation failed; using IndexedDB scratch storage", { name }, error);
+    }
+    // Some browsers expose createSyncAccessHandle but reject it at runtime
+    // (for example when the file is temporarily locked by another worker).
+    // Fall back to the asynchronous writable stream instead of failing the
+    // complete calculation on that capability check.
+    if (handle?.createSyncAccessHandle) {
+      try {
+        const access = await handle.createSyncAccessHandle();
+        try {
+          access.truncate(0);
+          await removeIndexedDbFile(name);
+          sink = new OpfsSink(access, true, name);
+        } catch (error) {
+          try { await access.close(); } catch { /* best effort */ }
+          console.warn("OPFS sync handle initialization failed; trying writable stream", { name }, error);
+        }
+      } catch (error) {
+        console.warn("OPFS sync handle unavailable; trying writable stream", { name }, error);
+      }
+    }
+    if (!sink && handle?.createWritable) {
+      try {
+        const writable = await handle.createWritable({ keepExistingData: false });
+        await removeIndexedDbFile(name);
+        sink = new OpfsSink(writable, false, name);
+      } catch (error) {
+        console.warn("OPFS writable stream unavailable; using IndexedDB scratch storage", { name }, error);
+      }
+    }
+    if (!sink) {
+      const access = new IndexedDbAccess(name);
+      await access.truncate(0);
+      sink = new OpfsSink(access, false, name);
+      checkpoint("IndexedDB scratch output opened", { name });
+    }
     openSinks.add(sink);
+    checkpoint("OPFS output opened", { name, synchronous: sink.synchronous });
     return sink;
   }
   async write(data: Uint8Array, offset = this.size): Promise<void> {
@@ -116,12 +154,13 @@ class OpfsSink implements FileSink {
     } finally {
       try { await this.access.close(); } finally { openSinks.delete(this); }
     }
+    checkpoint("OPFS output closed", { name: this.name, bytes: this.size });
   }
 }
 
 const openSinks = new Set<OpfsSink>();
 async function closeSinks(): Promise<void> {
-  for (const sink of openSinks) await sink.close().catch(() => undefined);
+  for (const sink of openSinks) await sink.close().catch(error => console.warn("OPFS close failed", { name: sink.name }, error));
 }
 
 async function createOutputWriters(id: number, width: number, height: number): Promise<{ writers: { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }; outputs: OutputFile[] }> {
@@ -144,45 +183,45 @@ async function createOutputWriters(id: number, width: number, height: number): P
 
 async function cleanupOutputFiles(id: number, preserveSource = false): Promise<void> {
   const storage = (navigator as any).storage;
-  if (!storage?.getDirectory) return;
+  const prefix = `decomposition-${id}-`;
   try {
-    const root = await storage.getDirectory();
-    const prefix = `decomposition-${id}-`;
-    for await (const [name] of root.entries()) {
-      if (name.startsWith(prefix) && !(preserveSource && name === `${prefix}source.f32`)) await root.removeEntry(name);
+    for (const name of await listScratchFiles()) {
+      if (name.startsWith(prefix) && !(preserveSource && name.startsWith(`${prefix}source-`))) await removeScratchFile(name);
     }
-  } catch {
-    // Cleanup is best effort; quota and cancellation errors are reported by
-    // the operation that caused them.
-  }
+  } catch { /* best effort cleanup */ }
 }
 
 async function cleanupPreviousOutputs(currentId: number): Promise<void> {
-  const storage = (navigator as any).storage;
-  if (!storage?.getDirectory) return;
   try {
-    const root = await storage.getDirectory();
-    for await (const [name] of root.entries()) {
-      if (name.startsWith("decomposition-") && !name.startsWith(`decomposition-${currentId}-`)) await root.removeEntry(name);
+    for (const name of await listScratchFiles()) {
+      if (name.startsWith("decomposition-") && !name.startsWith(`decomposition-${currentId}-`)) await removeScratchFile(name);
     }
   } catch { /* best effort */ }
 }
 
 async function removeOpfsFile(name: string): Promise<void> {
-  try { const root = await (navigator.storage as any).getDirectory(); await root.removeEntry(name); } catch { /* best effort */ }
+  await removeScratchFile(name);
+}
+
+function uniqueSourceName(id: number): string {
+  const suffix = typeof crypto?.randomUUID === "function"
+    ? crypto.randomUUID().replaceAll("-", "")
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `decomposition-${id}-source-${suffix}.f32`;
 }
 
 async function openSourceFile(name: string): Promise<File> {
-  const root = await (navigator.storage as any).getDirectory();
-  const handle = await root.getFileHandle(name);
-  return handle.getFile();
+  return readScratchFile(name, "application/octet-stream");
 }
 
 async function ensureScratchQuota(width: number, height: number): Promise<void> {
   const storage = (navigator as any).storage;
-  if (!storage?.getDirectory) throw new Error("This browser cannot provide local scratch storage for a full-resolution job.");
+  const hasOpfs = typeof storage?.getDirectory === "function";
+  const hasIndexedDb = typeof indexedDB !== "undefined";
+  if (!hasOpfs && !hasIndexedDb) throw new Error("This browser cannot provide local scratch storage for a full-resolution job.");
   const estimate = storage.estimate ? await storage.estimate() : undefined;
   const required = width * height * 28 + Math.min(width * height, 2048 * 2048) * 12 + 32 * 1024 * 1024;
+  checkpoint("Scratch storage quota", { width, height, required, estimate });
   if (estimate?.quota && estimate.usage !== undefined && estimate.quota - estimate.usage < required) {
     throw new Error(`Insufficient local storage for this full-resolution job (need about ${formatBytes(required)} free).`);
   }
@@ -197,15 +236,22 @@ let gpuProbeResult: Promise<GpuProbe | undefined> | undefined;
 let gpuProbeFailure: string | undefined;
 const gpuValidationCache = new Map<string, GpuValidation>();
 const cancelled = new Set<number>();
+const sourceBytes = new Map<number, Uint8Array>();
+const previewGenerations = new Map<number, number>();
+const heifSources = new Map<number, Awaited<ReturnType<typeof decodeHeif>>>();
 
 
 function postProgress(id: number, stage: string, percent: number, counters?: Progress["counters"]): void {
+  checkpoint("Progress", { id, stage, percent: Math.round(percent * 10) / 10, counters });
   const event: Progress = { kind: "progress", id, stage, percent, counters };
   scope.postMessage(event);
 }
 
 function ensureWasm(): Promise<void> {
-  wasmReady ??= init().then(() => undefined);
+  if (!wasmReady) {
+    checkpoint("Initialize decomposition WASM");
+    wasmReady = init().then(exports => { setDebugMemory(exports.memory); checkpoint("Decomposition WASM ready"); });
+  }
   return wasmReady;
 }
 
@@ -266,9 +312,12 @@ async function probeGpu(): Promise<GpuProbe | undefined> {
       return undefined;
     }
     try {
+      checkpoint("Probe GPU adapter");
       const result = await gpu_probe();
+      checkpoint("GPU probe result", result);
       return result as GpuProbe;
     } catch (error) {
+      console.warn("GPU probe failed", error);
       gpuProbeFailure = formatError(error);
       return undefined;
     }
@@ -304,6 +353,7 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
       if (profile === request.profile) selected = cached;
       continue;
     }
+    checkpoint("Validate GPU profile", { profile, request: profileRequest });
     const cpu = solve_chunk(VALIDATION_PIXELS, profileRequest);
     const gpu = await gpu_solve_chunk(VALIDATION_PIXELS, profileRequest);
     const cpuBase = cpu.base instanceof Float32Array ? cpu.base : new Float32Array(cpu.base);
@@ -344,6 +394,7 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
       maxExposureErrorStops,
       maxPreviewError,
     };
+    checkpoint("GPU profile validated", validation);
     gpuValidationCache.set(key, validation);
     if (profile === request.profile) selected = validation;
   }
@@ -366,6 +417,88 @@ function parseNclx(bytes: Uint8Array): { gamut: string; transfer: string } | und
     if (gamut && tr) return { gamut, transfer: tr };
   }
   return undefined;
+}
+
+async function renderSourcePreview(message: JobMessage): Promise<void> {
+  if (!message.request || !message.mode) throw new Error("Missing source preview interpretation.");
+  const id = message.id;
+  let prepared: any;
+  let display: DisplayPreview | undefined;
+  let decoded: Awaited<ReturnType<typeof decodeHeif>> | undefined;
+  try {
+    if (message.bytes) sourceBytes.set(id, new Uint8Array(message.bytes));
+    const bytes = sourceBytes.get(id);
+    if (!bytes) throw new Error("The source preview cache is unavailable; reload the image to continue.");
+    const generation = message.generation ?? 0;
+    const isCurrent = () => previewGenerations.get(id) === generation;
+    if (!isCurrent()) return;
+    const sourceRequest = message.mode === "raw-muted"
+      ? { ...message.request, gamut: "Rec.709 / sRGB", transfer: "sRGB" }
+      : message.request;
+    checkpoint("Prepare source preview", { id, generation, format: message.format, mode: message.mode, bytes: bytes.byteLength, request: sourceRequest });
+    if (message.format === "heic" || message.format === "heif") {
+      decoded = heifSources.get(id) ?? await decodeHeif(bytes, id);
+      heifSources.set(id, decoded);
+      if (cancelled.has(id)) return;
+      const request = { ...message.request };
+      if (message.mode === "embedded" && !decoded.icc.length && decoded.gamut && decoded.transfer) {
+        request.gamut = decoded.gamut;
+        request.transfer = decoded.transfer;
+      }
+      if (message.mode === "raw-muted") {
+        request.gamut = "Rec.709 / sRGB";
+        request.transfer = "sRGB";
+      }
+      prepared = prepare_heic_pixels(
+        decoded.pixels,
+        decoded.width,
+        decoded.height,
+        request,
+        decoded.icc,
+        decoded.gain?.pixels ?? new Float32Array(),
+        decoded.gain?.width ?? 0,
+        decoded.gain?.height ?? 0,
+        decoded.exif,
+      );
+    } else if (message.format === "jpeg") {
+      prepared = prepare_jpeg_preview(bytes, sourceRequest, 1024);
+    } else {
+      prepared = prepare(bytes, sourceRequest);
+    }
+    const width = Number(prepared.width), height = Number(prepared.height);
+    checkpoint("Source preview prepared; begin display transform", { id, generation, width, height });
+    display = new_bounded_display_preview(width, height, 1024);
+    const chunks: Uint8Array[] = [];
+    const rowsPerBatch = Math.max(1, Math.min(height, Math.floor(256 * 1024 / Math.max(1, width))));
+    let rowsSinceYield = 0;
+    for (let y = 0; y < height; y += rowsPerBatch) {
+      if (cancelled.has(id) || !isCurrent()) return;
+      const rows = Math.min(rowsPerBatch, height - y);
+      const pixels = prepared.read_pixels(y * width, rows * width);
+      const reduced = display.append_rgb(pixels);
+      if (reduced.length) chunks.push(cpu_preview_ap0(reduced));
+      rowsSinceYield += rows;
+      if (rowsSinceYield >= 16) {
+        rowsSinceYield = 0;
+        await yieldToUi();
+      }
+    }
+    if (!isCurrent()) return;
+    display.finish();
+    const rgb = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+    let offset = 0;
+    for (const chunk of chunks) { rgb.set(chunk, offset); offset += chunk.byteLength; }
+    checkpoint("Encode source preview JPEG", { id, generation, width: display.width, height: display.height, rgbBytes: rgb.byteLength });
+    const jpeg = encode_preview_pixels(rgb, display.width, display.height);
+    checkpoint("Source preview JPEG complete", { id, generation, jpegBytes: jpeg.byteLength });
+    const buffer = jpeg.buffer.slice(jpeg.byteOffset, jpeg.byteOffset + jpeg.byteLength);
+    if (!isCurrent()) return;
+    scope.postMessage({ kind: "source-preview", id, generation, width: display.width, height: display.height, mode: message.mode, jpeg: buffer }, [buffer]);
+  } finally {
+    display?.free();
+    prepared?.free();
+    // Cached HEIF samples stay alive for subsequent interpretation changes.
+  }
 }
 
 function nativeRgb16(image: any): { width: number; height: number; pixels: Float32Array; bitDepth: number } {
@@ -449,11 +582,14 @@ async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: numbe
   postProgress(id, "Decode HEIF/HEIC", 12);
   const module = libheif as any;
   const decoder = new module.HeifDecoder();
+  checkpoint("libheif decode container", { id, bytes: bytes.byteLength });
   const images = decoder.decode(bytes);
   if (!images || images.length === 0) throw new Error("The HEIF file contains no decodable image.");
   const image = module.heif_js_context_get_primary_image_handle(decoder.decoder);
   if (!image || image.code) throw new Error("The HEIF file contains no decodable primary image.");
+  checkpoint("libheif decode native RGB", { id });
   const native = nativeRgb16(image);
+  checkpoint("libheif native RGB ready", { id, width: native.width, height: native.height, bitDepth: native.bitDepth, pixelBytes: native.pixels.byteLength });
   const width = native.width, height = native.height;
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
     throw new Error("The HEIF image has invalid dimensions.");
@@ -468,7 +604,9 @@ async function decodeHeif(bytes: Uint8Array, id: number): Promise<{ width: numbe
     module._free(dst); module._free(err);
   }
   const exif = extractExif(module, image);
+  checkpoint("Read HEIF metadata and auxiliary gain map", { id, iccBytes: icc.length, exifBytes: exif.length, gainMapDetected: textHasGainMap(bytes) });
   const gain = textHasGainMap(bytes) ? nativeAuxiliary(module, decoder.decoder, image) : undefined;
+  checkpoint("HEIF decode complete", { id, width, height, gainWidth: gain?.width, gainHeight: gain?.height });
   const nclx = parseNclx(bytes);
   const warnings: string[] = [];
   if (textHasGainMap(bytes) && !gain) warnings.push("Apple HDR gain-map metadata was detected, but its auxiliary image could not be decoded.");
@@ -487,6 +625,7 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
     try {
       gpuValidation = await validateGpu(message.request, probe);
     } catch (error) {
+      console.warn("GPU validation failed; use CPU", error, { id });
       gpuValidationFailure = formatError(error);
       warnings.push(`WebGPU was not enabled because validation against the original f64 CPU modCAM16-HK implementation failed: ${gpuValidationFailure}`);
     }
@@ -498,6 +637,7 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
     useGpu = false;
     warnings.push("This image's row exceeds the WebGPU batch limit; processing will use wasm-cpu.");
   }
+  checkpoint("Select solve backend", { id, width, height, useGpu, gpuValidation, gpuProbeFailure });
   let backend = useGpu ? "webgpu" : "wasm-cpu";
   let batchSize = batchPixelLimit(width, useGpu, probe);
   await cleanupPreviousOutputs(id);
@@ -518,8 +658,7 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
     if (previewUseGpu) {
       try { return await gpu_preview_ap0(ap0); }
       catch (error) {
-        previewUseGpu = false;
-        warnings.push(`WebGPU display preview transform failed; processing continued with exact CPU ACES 2.0: ${formatError(error)}`);
+        throw new Error(`WebGPU display preview transform failed: ${formatError(error)}`);
       }
     }
     return cpu_preview_ap0(ap0);
@@ -544,14 +683,51 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
       const batch = next.value;
       const { start, stop } = batch;
       if (cancelled.has(id)) return;
+      const pixelCount = stop - start;
+      checkpoint("Solve batch start", {
+        id,
+        start,
+        stop,
+        backend,
+        inputBytes: batch.pixels.byteLength,
+        gpuInputBytes: useGpu ? pixelCount * 16 : undefined,
+        gpuOutputBytes: useGpu ? pixelCount * 16 : undefined,
+        gpuFlagsBytes: useGpu ? pixelCount * 4 : undefined,
+        gpuReadbackBytes: useGpu ? pixelCount * 20 : undefined,
+      });
+      const batchStartedAt = performance.now();
       let solved: any;
       try {
         solved = useGpu ? await gpu_solve_chunk(batch.pixels, message.request) : solve_chunk(batch.pixels, message.request);
+        batch.pixels = new Float32Array(0);
+        let chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
+        let chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
+        checkpoint("Solve batch complete; transform output previews", { id, start, stop, backend, solveMs: performance.now() - batchStartedAt, previewUseGpu });
+        const preview = previewUseGpu
+          ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
+          : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
+        checkpoint("Write batch previews and EXR rows", { id, start, stop });
+        await basePreviewRaw.write(preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base));
+        await exposurePreviewRaw.write(preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure));
+        // Average the solved scene-linear AP0 and linear exposure canvas first.
+        // Only completed display rows pass through the existing ACES transform.
+        await baseDisplayRaw.write(await transformDisplay(baseDisplay.append_rgb(chunkBase)));
+        await exposureDisplayRaw.write(await transformDisplay(exposureDisplay.append_exposure(chunkExposure, message.request.refl)));
+        for (let row = 0; row < (stop - start) / width; row++) {
+          const y = Math.floor(start / width) + row;
+          const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
+          await writers.base.writeRow(y, { B: rows.baseB, G: rows.baseG, R: rows.baseR });
+          await writers.exposureRgb.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
+          await writers.exposure.writeRow(y, { exposure: rows.exposure });
+        }
+        addStats(stats, solved.stats as SolveStats);
+        chunkBase = new Float32Array(0); chunkExposure = new Float32Array(0); solved = undefined;
       } catch (error) {
+        console.error("GPU batch or preview failed", error, { id, start, stop, backend, previewUseGpu });
         batch.pixels = new Float32Array(0);
         if (!useGpu) throw error;
         await batches.return();
-        warnings.push(`WebGPU stopped during processing and the complete job was restarted on wasm-cpu: ${formatError(error)}`);
+        warnings.push(`WebGPU failed during processing and the complete job was restarted on wasm-cpu: ${formatError(error)}`);
         useGpu = false;
         previewUseGpu = false;
         backend = "wasm-cpu";
@@ -566,39 +742,11 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
         baseDisplay.free(); exposureDisplay.free();
         baseDisplay = new DisplayPreview(width, height);
         exposureDisplay = new DisplayPreview(width, height);
-        stats = emptyStats(); stats.compute_backend = backend; stats.gpu_adapter = gpuValidation?.adapter ?? null; stats.gpu_validation = "GPU validation passed; processing fell back to original f64 CPU modCAM16-HK after a device error"; stats.batch_size = batchSize;
+        stats = emptyStats(); stats.compute_backend = backend; stats.gpu_adapter = gpuValidation?.adapter ?? null; stats.gpu_validation = `GPU failed and processing restarted on wasm-cpu: ${formatError(error)}`; stats.batch_size = batchSize;
         batches = sourceBatches(sourceFile, totalPixels, batchSize);
         postProgress(id, "Restarting on wasm-cpu", 25, { processed: 0, projected: 0, clipped: 0, non_finite: 0 });
         continue;
       }
-      batch.pixels = new Float32Array(0);
-      let chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
-      let chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
-      let preview;
-      try {
-        preview = previewUseGpu ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl) : cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
-      } catch (error) {
-        if (!previewUseGpu) throw error;
-        previewUseGpu = false;
-        warnings.push(`WebGPU preview transform failed; this job continued with the exact CPU ACES 2.0 implementation: ${formatError(error)}`);
-        preview = cpu_preview_pixels(chunkBase, chunkExposure, message.request.refl);
-      }
-      await basePreviewRaw.write(preview.base instanceof Uint8Array ? preview.base : new Uint8Array(preview.base));
-      await exposurePreviewRaw.write(preview.exposure instanceof Uint8Array ? preview.exposure : new Uint8Array(preview.exposure));
-      preview = undefined;
-      // Average the solved scene-linear AP0 and linear exposure canvas first.
-      // Only completed display rows pass through the existing ACES transform.
-      await baseDisplayRaw.write(await transformDisplay(baseDisplay.append_rgb(chunkBase)));
-      await exposureDisplayRaw.write(await transformDisplay(exposureDisplay.append_exposure(chunkExposure, message.request.refl)));
-      for (let row = 0; row < (stop - start) / width; row++) {
-        const y = Math.floor(start / width) + row;
-        const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
-        await writers.base.writeRow(y, { B: rows.baseB, G: rows.baseG, R: rows.baseR });
-        await writers.exposureRgb.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
-        await writers.exposure.writeRow(y, { exposure: rows.exposure });
-      }
-      addStats(stats, solved.stats as SolveStats);
-      chunkBase = new Float32Array(0); chunkExposure = new Float32Array(0); solved = undefined;
       postProgress(id, useGpu ? "Decompose pixels (WebGPU)" : "Decompose pixels (wasm-cpu)", 25 + (stop / totalPixels) * 65, { processed: stop, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
       if (performance.now() - lastYield >= 50) {
         await yieldToUi();
@@ -621,6 +769,7 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
   await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
   await basePreviewRaw.close(); await exposurePreviewRaw.close();
   await baseDisplayRaw.close(); await exposureDisplayRaw.close();
+  checkpoint("Build analytic report", { id, width, height, stats, warnings });
   const report = build_report(width, height, message.request, stats, warnings);
   const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
   postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
@@ -630,6 +779,8 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
 async function handle(message: WorkerMessage): Promise<void> {
   const { id } = message;
   let prepared: any;
+  const startedAt = performance.now();
+  checkpoint("Request start", { ...message, bytes: "bytes" in message ? message.bytes?.byteLength : undefined });
   try {
     await ensureWasm();
     if (cancelled.has(id)) return;
@@ -637,16 +788,26 @@ async function handle(message: WorkerMessage): Promise<void> {
       await solvePreparedFromOpfs(message);
       return;
     }
+    if (message.kind === "preview") {
+      await renderSourcePreview(message);
+      return;
+    }
     if (message.kind === "cancel") return;
     const format = message.format;
+    if (!message.bytes) throw new Error("The worker did not receive image bytes.");
     let bytes = new Uint8Array(message.bytes);
     if (message.kind === "inspect") {
+      for (const key of sourceBytes.keys()) if (key !== id) sourceBytes.delete(key);
+      for (const key of heifSources.keys()) if (key !== id) heifSources.delete(key);
+      sourceBytes.set(id, bytes);
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
         const decoded = await decodeHeif(bytes, id);
-        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: decoded.gamut ?? null, transfer: decoded.transfer ?? null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : decoded.gamut ? "HEIF nclx metadata" : null, automatic_icc: decoded.icc.length > 0 || Boolean(decoded.gamut && decoded.transfer), warnings: decoded.warnings } });
+        scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: decoded.gamut ?? null, transfer: decoded.transfer ?? null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : decoded.gamut ? "HEIF nclx metadata" : null, automatic_icc: decoded.icc.length > 0, embedded_available: decoded.icc.length > 0 || Boolean(decoded.gamut && decoded.transfer), warnings: decoded.warnings } });
       } else {
+        checkpoint("WASM inspect start", { id, format, bytes: bytes.byteLength });
         const summary = inspect(bytes, format);
+        checkpoint("WASM inspect complete", { id, summary });
         scope.postMessage({ kind: "inspect-result", id, summary });
       }
       postProgress(id, "Ready for confirmation", 15);
@@ -656,7 +817,8 @@ async function handle(message: WorkerMessage): Promise<void> {
     postProgress(id, "Decode and prepare pixels", 18);
     let warnings: string[] = [];
     if (format === "heic" || format === "heif") {
-      const decoded = await decodeHeif(bytes, id);
+      const decoded = heifSources.get(id) ?? await decodeHeif(bytes, id);
+      heifSources.set(id, decoded);
       if (cancelled.has(id)) return;
       const gain = decoded.gain;
       const effectiveRequest = { ...message.request };
@@ -664,13 +826,13 @@ async function handle(message: WorkerMessage): Promise<void> {
         effectiveRequest.gamut = decoded.gamut;
         effectiveRequest.transfer = decoded.transfer;
       }
+      checkpoint("WASM prepare HEIF pixels", { id, width: decoded.width, height: decoded.height, request: effectiveRequest });
       prepared = prepare_heic_pixels(decoded.pixels, decoded.width, decoded.height, effectiveRequest, decoded.icc, gain?.pixels ?? new Float32Array(), gain?.width ?? 0, gain?.height ?? 0, decoded.exif);
       // libheif's JS buffers are separate from the Rust-owned prepared image.
       // Release them as soon as conversion finishes, before batch solving.
-      decoded.pixels = new Float32Array(0);
-      if (gain) gain.pixels = new Float32Array(0);
       warnings = decoded.warnings;
     } else {
+      checkpoint("WASM prepare source", { id, format, bytes: bytes.byteLength, request: message.request });
       prepared = prepare(bytes, message.request);
       warnings = Array.isArray(prepared?.warnings) ? prepared.warnings : [];
     }
@@ -679,8 +841,9 @@ async function handle(message: WorkerMessage): Promise<void> {
     const height = Number(prepared.height);
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
     warnings = [...warnings, ...preparedWarnings];
+    checkpoint("Source prepared", { id, width, height, warnings });
     await ensureScratchQuota(width, height);
-    const sourceName = `decomposition-${id}-source.f32`;
+    const sourceName = uniqueSourceName(id);
     const sourceSink = await OpfsSink.create(sourceName);
     const sourceBatch = batchPixelLimit(width, true);
     let lastProgress = 0;
@@ -704,22 +867,29 @@ async function handle(message: WorkerMessage): Promise<void> {
     scope.postMessage({ kind: "source-ready", id, width, height, source: sourceName, request: message.request, warnings });
     return;
   } catch (error) {
-    await closeSinks();
-    await cleanupOutputFiles(id);
-    if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, message: formatError(error) });
+    console.error("Request failed", { id, kind: message.kind, generation: "generation" in message ? message.generation : undefined, elapsedMs: performance.now() - startedAt }, error);
+    // A preview request is read-only. It must not close decomposition sinks or
+    // remove a source raster when a stale request reaches a worker handoff.
+    if (message.kind !== "preview") {
+      await closeSinks();
+      await cleanupOutputFiles(id);
+    }
+    if (!cancelled.has(id)) scope.postMessage({ kind: "error", id, generation: message.kind === "preview" ? message.generation : undefined, message: formatError(error) });
   } finally {
-    await closeSinks();
+    if (message.kind !== "preview") await closeSinks();
     prepared?.free();
+    checkpoint("Request finished", { id, kind: message.kind, elapsedMs: performance.now() - startedAt });
   }
 }
 
 scope.onmessage = (event: MessageEvent<WorkerMessage>) => {
   const message = event.data;
+  if (message.kind === "preview") previewGenerations.set(message.id, message.generation ?? 0);
   if (message.kind === "cancel") {
     cancelled.add(message.id);
     void cleanupOutputFiles(message.id);
     scope.postMessage({ kind: "cancelled", id: message.id });
     return;
   }
-  void handle(message);
+  void handle(message).catch(error => console.error("Request cleanup failed", { id: message.id, kind: message.kind }, error));
 };
