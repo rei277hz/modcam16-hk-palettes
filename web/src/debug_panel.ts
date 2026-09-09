@@ -1,8 +1,8 @@
 import { debugEnvironment, installDebugCapture, type DebugEntry } from "./debug_log";
 
-const panel = document.querySelector<HTMLDetailsElement>("#debug-panel")!;
+const toggle = document.querySelector<HTMLButtonElement>("#debug-toggle")!;
+const panel = document.querySelector<HTMLElement>("#debug-panel")!;
 const log = document.querySelector<HTMLTextAreaElement>("#debug-output")!;
-const count = document.querySelector<HTMLElement>("#debug-count")!;
 const save = document.querySelector<HTMLButtonElement>("#save-debug")!;
 const saveStatus = document.querySelector<HTMLElement>("#debug-save-status")!;
 const entries: string[] = [];
@@ -14,9 +14,8 @@ function contents(): string {
 }
 function render(): void {
   pending = undefined;
-  count.textContent = `${entries.length} entries${dropped ? ` · ${dropped} older omitted` : ""}`;
   // Do not replace the value while the user selects text on a phone.
-  if (!panel.open || document.activeElement === log) return;
+  if (panel.hidden || document.activeElement === log) return;
   const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 32;
   log.value = contents();
   if (atEnd) log.scrollTop = log.scrollHeight;
@@ -35,14 +34,26 @@ export function appendDebug(entry: DebugEntry): void {
 installDebugCapture("page", appendDebug);
 console.info("Debug capture ready", debugEnvironment());
 
+export function setDebugExpanded(expanded: boolean): void {
+  panel.hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  if (expanded) log.value = contents();
+  syncDiagnosticScroll();
+  if (expanded) render();
+}
+
 export function syncDiagnosticScroll(): void {
-  const scroll = panel.open || (matchMedia("(max-width: 800px)").matches && document.querySelector(".report-expanded") !== null);
+  const scroll = !panel.hidden || (matchMedia("(max-width: 800px)").matches && document.querySelector(".report-expanded") !== null);
   const wasOpen = document.documentElement.classList.contains("diagnostics-open");
   document.documentElement.classList.toggle("diagnostics-open", scroll);
   document.body.classList.toggle("diagnostics-open", scroll);
   if (wasOpen && !scroll) window.scrollTo({ top: 0, left: 0, behavior: "instant" });
 }
-panel.addEventListener("toggle", () => { syncDiagnosticScroll(); if (panel.open) log.value = contents(); render(); });
+toggle.addEventListener("click", () => {
+  const expanded = panel.hidden;
+  if (expanded) document.dispatchEvent(new CustomEvent("debug-panel-toggle", { detail: { open: true } }));
+  setDebugExpanded(expanded);
+});
 syncDiagnosticScroll();
 log.addEventListener("blur", render);
 function debugFile(): File {

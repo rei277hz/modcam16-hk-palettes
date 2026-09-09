@@ -278,22 +278,25 @@ and warnings. Expanding it on mobile enables page scrolling; folding it returns
 to the single-viewport layout and scrolls to the top. A new file or job folds
 it again. Preview overlays lock background scrolling.
 
-The Debug info disclosure sits below the report and starts folded. It has a
-read-only selectable text area and `Save debug info as .txt`. The saved file
-contains the complete bounded session log, including page and worker console
-output, uncaught errors, rejected promises, resource errors, stacks, WASM
-panic details, backend transitions, storage operations, JPEG encoder retries,
-checkpoints, and cancellation. Logs remain available across retries and file
-replacement within the session, with a maximum of 1,500 entries and roughly
-one million characters. Older or oversized entries are explicitly truncated.
+`Debug info` is a text-style disclosure control on the same heading line as
+the report. It starts folded and reveals a full-width read-only selectable text
+area with `Save debug info as .txt`. Opening Debug info folds the report, and
+opening the report folds Debug info. The saved file contains the complete
+bounded session log, including page and worker console output, uncaught errors,
+rejected promises, resource errors, stacks, WASM panic details, backend
+transitions, storage operations, JPEG encoder retries, checkpoints, and
+cancellation. Logs remain available across retries and file replacement within
+the session, with a maximum of 1,500 entries and roughly one million
+characters. Older or oversized entries are explicitly truncated; the retained
+entry count is not displayed in the main UI.
 
 The page preserves ordinary console output. Browser-internal DevTools output,
 operating-system logs, and fatal browser-process crashes cannot be captured.
 Logs identify time, severity, and page/worker instance, but never include image
 bytes, pixel arrays, or embedded profile payloads. On Android/iOS the save
 action shares `decomposition-debug.txt` through the native sheet when
-available; other browsers save it directly. Expanding Debug info enables its
-own page scrolling independently of the report.
+available; other browsers save it directly. Expanding Debug info enables page
+scrolling independently of the folded report.
 
 ## Responsive, accessible, and privacy requirements
 

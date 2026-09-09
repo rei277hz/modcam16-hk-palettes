@@ -281,6 +281,14 @@ try {
   assert.equal(await page.locator("#source-gamut-action").isVisible(), false);
   assert.equal(await page.locator("#source-transfer-field").isVisible(), false);
   assert.equal(await page.locator("#source-gamut").inputValue(), "embedded");
+  if (process.env.DNG_FIXTURE) {
+    await page.locator("#file-input").setInputFiles(process.env.DNG_FIXTURE);
+    await page.waitForFunction(() => document.querySelector("#progress-stage").textContent === "Ready for confirmation", null, { timeout: 120000 });
+    assert.equal(await page.locator("#source-format-indicator").textContent(), "DNG");
+    assert.equal(await page.locator("#source-gamut-field").isVisible(), false);
+    assert.equal(await page.locator("#source-transfer-field").isVisible(), false);
+    assert.equal(await page.locator("#source-format-indicator").isVisible(), true);
+  }
   assert.deepEqual(await page.evaluate(() => window.previewErrors), []);
   assert.deepEqual(errors, []);
   console.log("Cancellation recovery, replacement, hidden prompt/Transfer, placeholder-free menus, and complete-image frame bounds pass on desktop/mobile.");

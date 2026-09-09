@@ -1,4 +1,4 @@
-import { appendDebug, syncDiagnosticScroll } from "./debug_panel";
+import { appendDebug, setDebugExpanded, syncDiagnosticScroll } from "./debug_panel";
 import type { DebugMessage } from "./debug_log";
 import { listScratchFiles, readScratchFile, removeScratchFile } from "./scratch_store";
 import "./decompose.css";
@@ -455,6 +455,7 @@ function updateCalculateState(): void {
 function resetResults(): void {
   closePreview();
   setReportExpanded(false);
+  setDebugExpanded(false);
   clearPreview(basePreviewImage);
   clearPreview(exposurePreviewImage);
   revokeOutputUrls();
@@ -474,7 +475,9 @@ function resetResults(): void {
 }
 
 function setReportExpanded(expanded: boolean): void {
+  if (expanded) setDebugExpanded(false);
   reportRow.classList.toggle("report-expanded", expanded);
+  reportContent.hidden = !expanded;
   reportToggle.setAttribute("aria-expanded", String(expanded));
   reportToggle.setAttribute("aria-label", expanded ? "Collapse analytic report" : "Expand analytic report");
   const mobile = reportMobileViewport.matches;
@@ -500,10 +503,7 @@ function renderSummary(summary: SourceSummary): void {
   transferSelect.value = embeddedAvailable ? "sRGB" : "";
   primaryEmbeddedSelection = embeddedAvailable;
   interpretationMode = embeddedAvailable ? "embedded" : "unresolved";
-  const orientation = summary.orientation && summary.orientation > 1 ? ` · orientation ${summary.orientation}` : "";
-  sourceFormatIndicator.textContent = isDng
-    ? `DNG · ${summary.width} × ${summary.height}${orientation}${summary.camera_model ? ` · ${summary.camera_model}` : ""}${summary.photometry ? ` · ${summary.photometry}` : ""}${summary.bit_depth ? ` · ${summary.bit_depth}-bit` : ""}${summary.compression ? ` · ${summary.compression}` : ""} · embedded camera calibration · linear ACES2065-1/AP0`
-    : selectedFormat.toUpperCase();
+  sourceFormatIndicator.textContent = isDng ? "DNG" : selectedFormat.toUpperCase();
   setLayoutVisibility(sourceFormatIndicator, true);
   updateInterpretationState();
   scheduleSourcePreview();
@@ -1013,6 +1013,10 @@ reflInput.addEventListener("change", normalizeReflDisplay);
 reflInput.addEventListener("blur", normalizeReflDisplay);
 reportToggle.addEventListener("click", () => setReportExpanded(!reportRow.classList.contains("report-expanded")));
 reportMobileViewport.addEventListener("change", () => setReportExpanded(false));
+document.addEventListener("debug-panel-toggle", (event) => {
+  const detail = (event as CustomEvent<{ open?: boolean }>).detail;
+  if (detail?.open) setReportExpanded(false);
+});
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });
 updateReconstructionProfile();
 setBusy(false);

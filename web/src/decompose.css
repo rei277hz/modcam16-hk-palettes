@@ -94,10 +94,13 @@ progress::-moz-progress-bar { background: var(--accent); }
 .report-caret { width: 0; height: 0; border-top: 5px solid transparent; border-bottom: 5px solid transparent; border-left: 6px solid currentColor; transition: transform .15s ease; }
 .report-expanded .report-caret { transform: rotate(90deg); }
 .report-row h2 { margin: 1px 0 0; color: #71808b; font-size: 12px; letter-spacing: 0; text-transform: uppercase; }
+.debug-toggle { margin-left: auto; border: 0; background: transparent; color: #aebbc2; padding: 0; font-size: 12px; cursor: pointer; }
+.debug-toggle:hover { color: var(--accent); text-decoration: underline; }
 .empty-state, .report-summary { min-width: 0; color: #71808b; font-size: 12px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; }
 .report-summary { color: #c3cdd1; }
 .report-row #report-content { min-width: 0; }
 .report-row .inline-warning { margin-top: 3px; }
+.report-row #debug-panel { min-width: 0; }
 .metrics { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 24px; margin-top: 10px; }
 .metrics dl { min-width: 0; display: grid; grid-template-columns: fit-content(44%) minmax(0, 1fr); align-content: start; align-items: baseline; gap: 5px 12px; margin: 0; font-size: 12px; line-height: 1.4; }
 .metrics dl > div { display: contents; }
@@ -164,6 +167,7 @@ progress::-moz-progress-bar { background: var(--accent); }
 html.diagnostics-open, body.diagnostics-open { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; }
 body.diagnostics-open .decompose-shell { height: auto; min-height: 100dvh; grid-template-rows: auto auto auto minmax(200px, auto) auto auto auto; }
 body.diagnostics-open .upload-row { overflow: visible; }
+body.diagnostics-open .report-row { max-height: none; overflow: visible; }
 @media (max-width: 800px) {
   html.report-open, body.report-open { height: auto; min-height: 100dvh; overflow-x: hidden; overflow-y: auto; }
   body.report-open .decompose-shell { height: auto; min-height: 100dvh; grid-template-rows: auto auto auto minmax(200px, auto) auto auto auto; }
@@ -171,8 +175,6 @@ body.diagnostics-open .upload-row { overflow: visible; }
 }
 html:has(body.preview-open), body.diagnostics-open.preview-open, body.report-open.preview-open { overflow: hidden; }
 .debug-panel { min-width: 0; border-top: 1px solid #2b3540; padding-top: 6px; color: #aebbc2; font-size: 12px; }
-.debug-panel summary { cursor: pointer; color: #aebbc2; min-height: 20px; }
-#debug-count { color: #71808b; margin-left: 8px; font-size: 11px; }
 .debug-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0; }
 #debug-save-status { overflow-wrap: anywhere; }
 #debug-output { display: block; width: 100%; min-height: 240px; height: 50dvh; resize: vertical; border: 1px solid #3a4752; background: #080b0e; color: #bfcbd0; padding: 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
