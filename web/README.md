@@ -70,6 +70,11 @@ contract. The browser decomposition page is documented in
 [DECOMPOSITION_BEHAVIOR.md](./DECOMPOSITION_BEHAVIOR.md), with its release
 checks in
 [DECOMPOSITION_OPERATIONAL_CHECKLIST.md](./DECOMPOSITION_OPERATIONAL_CHECKLIST.md).
+[DNG_BEHAVIOR.md](./DNG_BEHAVIOR.md) documents the DNG import contract and
+[DNG_OPERATIONAL_CHECKLIST.md](./DNG_OPERATIONAL_CHECKLIST.md) its release checks.
+DNG files are decoded locally through embedded camera calibration and developed
+to signed, scene-linear ACES2065-1/AP0 `f32` pixels without external DCP or
+highlight clipping.
 Temp uses a piecewise reciprocal-temperature (mired) slider curve: the
 2000..6500 K and 6500..20000 K spans occupy equal halves of the track, putting
 6500 K at the exact midpoint while keeping each side's response consistent in

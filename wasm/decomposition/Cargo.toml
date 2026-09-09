@@ -21,6 +21,8 @@ wasm-bindgen = "0.2"
 half = "2.6"
 js-sys = "0.3"
 ultrahdr-core = { version = "0.6.0", default-features = false }
+rawler = { version = "0.8.0", default-features = false }
+uuid = { version = "1.26.0", features = ["js"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "webgpu", "wgsl"] }

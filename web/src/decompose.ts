@@ -12,6 +12,30 @@ type SourceSummary = {
   metadata_source?: string | null;
   automatic_icc?: boolean;
   embedded_available?: boolean;
+  orientation?: number | null;
+  camera_model?: string | null;
+  photometry?: string | null;
+  bit_depth?: number | null;
+  compression?: string | null;
+  dng_transform?: {
+    color_matrix_first_weight: number;
+    forward_matrix_used: boolean;
+    as_shot_neutral: [number, number, number];
+    white_balance_multipliers: [number, number, number];
+    source_white_xyz: [number, number, number];
+    raw_sample_range: [number, number];
+    normalized_sample_range: [number, number];
+    demosaiced_rgb_range: number[][];
+    post_vignette_rgb_range: number[][];
+    final_ap0_range: number[][];
+    representative_camera_rgb: number[][];
+    representative_ap0: number[][];
+    camera_to_xyz_d50: number[][];
+    cat02_d50_to_d65: number[][];
+    camera_to_d65: number[][];
+    camera_to_ap0: number[][];
+    white_balance_integrated: boolean;
+  } | null;
   warnings?: string[];
 };
 
@@ -69,6 +93,7 @@ const sourcePreviewEmpty = $("#source-preview-empty");
 const sourcePreviewImage = $("#source-preview-image") as HTMLImageElement;
 const sourcePreviewState = $("#source-preview-state");
 const interpretationGroup = $(".interpretation-group") as HTMLDivElement;
+const interpretationControls = $(".interpretation-controls") as HTMLDivElement;
 const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
 const transferField = $("#source-transfer-field") as HTMLLabelElement;
@@ -181,6 +206,7 @@ function escapeText(value: string): string { return value.replace(/[&<>"']/g, (c
 
 function detectFormat(file: File): string | undefined {
   const lower = file.name.toLowerCase();
+  if (lower.endsWith(".dng") || file.type === "image/x-adobe-dng" || file.type === "image/dng") return "dng";
   if (lower.endsWith(".png") || file.type === "image/png") return "png";
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg") || file.type === "image/jpeg") return "jpeg";
   if (lower.endsWith(".exr") || file.type === "image/x-exr") return "exr";
@@ -453,14 +479,21 @@ function renderSummary(summary: SourceSummary): void {
   console.info("Image inspection complete", { inspectionId, summary });
   selectedFormat = summary.format;
   sourceInspected = true;
+  // DNG is already developed to linear ACES2065-1/AP0 by the WASM decoder;
+  // there is no user-selectable source transfer or gamut to expose.
+  const isDng = summary.format.toLowerCase() === "dng";
   interpretationGroup.hidden = false;
+  interpretationControls.hidden = isDng;
   sourceCacheReadyId = inspectionId;
   setEmbeddedOption(summary);
   gamutSelect.value = embeddedAvailable ? "embedded" : "";
   transferSelect.value = embeddedAvailable ? "sRGB" : "";
   primaryEmbeddedSelection = embeddedAvailable;
   interpretationMode = embeddedAvailable ? "embedded" : "unresolved";
-  sourceFormatIndicator.textContent = selectedFormat.toUpperCase();
+  const orientation = summary.orientation && summary.orientation > 1 ? ` · orientation ${summary.orientation}` : "";
+  sourceFormatIndicator.textContent = isDng
+    ? `DNG · ${summary.width} × ${summary.height}${orientation}${summary.camera_model ? ` · ${summary.camera_model}` : ""}${summary.photometry ? ` · ${summary.photometry}` : ""}${summary.bit_depth ? ` · ${summary.bit_depth}-bit` : ""}${summary.compression ? ` · ${summary.compression}` : ""} · embedded camera calibration · linear ACES2065-1/AP0`
+    : selectedFormat.toUpperCase();
   sourceFormatIndicator.hidden = false;
   updateInterpretationState();
   scheduleSourcePreview();
@@ -842,7 +875,7 @@ async function chooseFile(file: File): Promise<void> {
   if (!format) {
     selectedFile = undefined;
     selectedFormat = "";
-    showStatus("Unsupported file type. Choose EXR, JPEG, PNG, HEIC, or HEIF.", true);
+    showStatus("Unsupported file type. Choose DNG, EXR, JPEG, PNG, HEIC, or HEIF.", true);
     setBusy(false);
     return;
   }

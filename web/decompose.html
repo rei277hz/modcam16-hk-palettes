@@ -11,14 +11,14 @@
       <h1 class="sr-only">Image decomposition</h1>
       <section class="upload-row" aria-labelledby="input-heading">
         <h2 id="input-heading" class="sr-only">Input image</h2>
-        <input id="file-input" type="file" accept=".exr,.jpg,.jpeg,.png,.heic,.heif,image/png,image/jpeg,image/heif,image/heic" hidden />
+        <input id="file-input" type="file" accept=".dng,.DNG,.exr,.jpg,.jpeg,.png,.heic,.heif,image/x-adobe-dng,image/dng,image/png,image/jpeg,image/heif,image/heic" hidden />
         <button id="source-preview-frame" class="source-preview-frame" type="button" aria-label="Load an image">
-          <span id="source-preview-empty" class="source-preview-empty"><strong>Load an image</strong><small>EXR · JPEG · PNG · HEIC · HEIF</small></span>
+          <span id="source-preview-empty" class="source-preview-empty"><strong>Load an image</strong><small>DNG · EXR · JPEG · PNG · HEIC</small></span>
           <img id="source-preview-image" class="source-preview-image" alt="Source image preview" hidden />
           <span id="source-preview-state" class="source-preview-state" aria-live="polite" hidden></span>
         </button>
         <div class="control-group interpretation-group" hidden>
-          <div class="form-grid">
+          <div class="form-grid interpretation-controls">
             <label class="field"><span id="source-gamut-label">Primaries <em id="source-gamut-action" hidden>(action needed)</em></span><select id="source-gamut"><option value="embedded">Use embedded interpretation</option><option value="Rec.709 / sRGB">sRGB (Rec.709)</option><option value="Display P3 / P3-D65">Display P3 (P3-D65)</option><option value="Rec.2020">Rec.2020</option><option value="Adobe RGB">Adobe RGB</option><option value="ACEScg">ACEScg</option><option value="ACES2065-1">ACES2065-1</option></select></label>
             <label id="source-transfer-field" class="field"><span>Transfer</span><select id="source-transfer"><option value="Linear">Linear</option><option value="sRGB">sRGB</option><option value="Gamma 1.8">Gamma 1.8</option><option value="Gamma 2.2">Gamma 2.2</option><option value="Gamma 2.4 / BT.1886">Gamma 2.4 / BT.1886</option><option value="BT.709 / BT.2020">BT.709 / BT.2020</option><option value="PQ / ST 2084">PQ / ST 2084</option><option value="HLG / BT.2100">HLG / BT.2100</option></select></label>
           </div>
