@@ -94,6 +94,7 @@ const sourcePreviewImage = $("#source-preview-image") as HTMLImageElement;
 const sourcePreviewState = $("#source-preview-state");
 const interpretationGroup = $(".interpretation-group") as HTMLDivElement;
 const interpretationControls = $(".interpretation-controls") as HTMLDivElement;
+const gamutField = $("#source-gamut-field") as HTMLLabelElement;
 const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
 const transferField = $("#source-transfer-field") as HTMLLabelElement;
@@ -146,6 +147,7 @@ let activeJob: number | undefined;
 let embeddedAvailable = false;
 let embeddedLabel = "Use embedded interpretation";
 let primaryEmbeddedSelection = false;
+let sourceIsDng = false;
 let interpretationMode: "embedded" | "manual" | "unresolved" = "unresolved";
 let sourcePreviewGeneration = 0;
 let sourcePreviewUrl: string | undefined;
@@ -281,10 +283,16 @@ function interpretationFromSelectors(): "embedded" | "manual" | "unresolved" {
   return "unresolved";
 }
 
+function setLayoutVisibility(element: HTMLElement, visible: boolean): void {
+  element.classList.toggle("layout-hidden", !visible);
+  element.setAttribute("aria-hidden", String(!visible));
+  element.toggleAttribute("inert", !visible);
+}
+
 function syncTransferControl(busy = activeJob !== undefined): void {
   const embedded = gamutSelect.value === "embedded" && embeddedAvailable;
   const manualPrimaries = Boolean(gamutSelect.value && gamutSelect.value !== "embedded");
-  transferField.hidden = !manualPrimaries;
+  setLayoutVisibility(transferField, !sourceIsDng && manualPrimaries);
   transferSelect.disabled = busy || !manualPrimaries;
   gamutAction.hidden = !sourceInspected || embeddedAvailable || manualPrimaries;
   if (embedded && transferSelect.value !== "sRGB") transferSelect.value = "sRGB";
@@ -482,8 +490,10 @@ function renderSummary(summary: SourceSummary): void {
   // DNG is already developed to linear ACES2065-1/AP0 by the WASM decoder;
   // there is no user-selectable source transfer or gamut to expose.
   const isDng = summary.format.toLowerCase() === "dng";
-  interpretationGroup.hidden = false;
-  interpretationControls.hidden = isDng;
+  sourceIsDng = isDng;
+  setLayoutVisibility(interpretationGroup, true);
+  setLayoutVisibility(gamutField, !isDng);
+  setLayoutVisibility(interpretationControls, true);
   sourceCacheReadyId = inspectionId;
   setEmbeddedOption(summary);
   gamutSelect.value = embeddedAvailable ? "embedded" : "";
@@ -494,7 +504,7 @@ function renderSummary(summary: SourceSummary): void {
   sourceFormatIndicator.textContent = isDng
     ? `DNG · ${summary.width} × ${summary.height}${orientation}${summary.camera_model ? ` · ${summary.camera_model}` : ""}${summary.photometry ? ` · ${summary.photometry}` : ""}${summary.bit_depth ? ` · ${summary.bit_depth}-bit` : ""}${summary.compression ? ` · ${summary.compression}` : ""} · embedded camera calibration · linear ACES2065-1/AP0`
     : selectedFormat.toUpperCase();
-  sourceFormatIndicator.hidden = false;
+  setLayoutVisibility(sourceFormatIndicator, true);
   updateInterpretationState();
   scheduleSourcePreview();
   updateCalculateState();
@@ -861,9 +871,12 @@ async function chooseFile(file: File): Promise<void> {
   clearSourcePreview();
   sourceCacheReadyId = undefined;
   sourceInspected = false;
-  interpretationGroup.hidden = true;
+  sourceIsDng = false;
+  setLayoutVisibility(interpretationGroup, false);
+  setLayoutVisibility(gamutField, false);
+  setLayoutVisibility(interpretationControls, true);
   sourceFormatIndicator.textContent = "";
-  sourceFormatIndicator.hidden = true;
+  setLayoutVisibility(sourceFormatIndicator, false);
   embeddedAvailable = false;
   primaryEmbeddedSelection = false;
   interpretationMode = "unresolved";

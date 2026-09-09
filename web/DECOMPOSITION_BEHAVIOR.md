@@ -24,8 +24,12 @@ The source preview preserves the source aspect ratio with `object-fit:
 contain`; black borders are allowed and cropping or stretching is forbidden.
 The frame height is flexible and may compress on a short viewport, but it
 remains at least tall enough for the stacked interpretation controls and format
-indicator. The source area has no local vertical scroller and no horizontal
-overflow.
+indicator. The interpretation group remains in the layout before inspection,
+during replacement, and when individual controls are unavailable; those slots
+are visually hidden but still provide the row's intrinsic minimum height.
+Visible slots are ordered before hidden slots, so a hidden selector never leaves
+an empty gap before a visible format indicator. The source area has no local
+vertical scroller and no horizontal overflow.
 
 After successful inspection, the only text below the interpretation menus is
 the decoder's actual source format, such as `JPEG`, `PNG`, `EXR`, `HEIC`, or
@@ -50,11 +54,15 @@ An ICC profile can be used directly even when it cannot be reduced to one of
 the manual gamut/transfer pairs. The page never guesses from a filename,
 extension, weak metadata, or an ambiguous profile.
 
-The Primaries and Transfer controls are hidden before inspection and while a
-replacement is being inspected. Neither menu contains a `Select Primaries` or
-`Select Transfer` placeholder. The Primaries menu contains the only embedded
-option, at the top, with provenance such as `Use embedded ICC`, `Use embedded
-CICP`, `Use embedded chromaticities`, or `Use embedded metadata`.
+The Primaries and Transfer controls are visually and accessibly hidden before
+inspection and while a replacement is being inspected, but their layout slots
+remain present so the interpretation group can establish the upload row's
+intrinsic height. The same layout-preserving hiding applies to Transfer when
+embedded interpretation is active and to the interpretation controls for DNG.
+Neither menu contains a `Select Primaries` or `Select Transfer` placeholder.
+The Primaries menu contains the only embedded option, at the top, with
+provenance such as `Use embedded ICC`, `Use embedded CICP`, `Use embedded
+chromaticities`, or `Use embedded metadata`.
 
 When authoritative embedded information is usable, Primaries is preselected to
 that option and Transfer is hidden. Transfer never contains an embedded option
