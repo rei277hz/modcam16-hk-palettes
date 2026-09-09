@@ -230,6 +230,19 @@ const cancelled = new Set<number>();
 const sourceBytes = new Map<number, Uint8Array>();
 const previewGenerations = new Map<number, number>();
 const heifSources = new Map<number, Awaited<ReturnType<typeof decodeHeif>>>();
+// DNG development is expensive and produces a large AP0 raster. Keep that
+// prepared object alive between the initial source preview and the subsequent
+// decomposition request so the same selected file is decoded only once.
+const preparedSources = new Map<number, { image: any; warnings: string[] }>();
+
+function clearPreparedSources(keepId?: number): void {
+  for (const [id, entry] of preparedSources) {
+    if (id !== keepId) {
+      try { entry.image.free(); } catch { /* best effort during replacement */ }
+      preparedSources.delete(id);
+    }
+  }
+}
 
 
 function postProgress(id: number, stage: string, percent: number, counters?: Progress["counters"]): void {
@@ -423,6 +436,7 @@ async function renderSourcePreview(message: JobMessage): Promise<void> {
   if (!message.request || !message.mode) throw new Error("Missing source preview interpretation.");
   const id = message.id;
   let prepared: any;
+  let cachedPrepared = false;
   let display: DisplayPreview | undefined;
   let decoded: Awaited<ReturnType<typeof decodeHeif>> | undefined;
   try {
@@ -463,7 +477,17 @@ async function renderSourcePreview(message: JobMessage): Promise<void> {
     } else if (message.format === "jpeg") {
       prepared = prepare_jpeg_preview(bytes, sourceRequest, 1024);
     } else {
-      prepared = prepare(bytes, sourceRequest);
+      const cached = message.format === "dng" ? preparedSources.get(id) : undefined;
+      if (cached) {
+        prepared = cached.image;
+        cachedPrepared = true;
+      } else {
+        prepared = prepare(bytes, sourceRequest);
+        if (message.format === "dng") {
+          preparedSources.set(id, { image: prepared, warnings: Array.isArray(prepared.warnings) ? prepared.warnings : [] });
+          cachedPrepared = true;
+        }
+      }
     }
     const width = Number(prepared.width), height = Number(prepared.height);
     checkpoint("Source preview prepared; begin display transform", { id, generation, width, height });
@@ -496,7 +520,7 @@ async function renderSourcePreview(message: JobMessage): Promise<void> {
     scope.postMessage({ kind: "source-preview", id, generation, width: display.width, height: display.height, mode: message.mode, jpeg: buffer }, [buffer]);
   } finally {
     display?.free();
-    prepared?.free();
+    if (!cachedPrepared) prepared?.free();
     // Cached HEIF samples stay alive for subsequent interpretation changes.
   }
 }
@@ -800,11 +824,47 @@ async function handle(message: WorkerMessage): Promise<void> {
     if (message.kind === "inspect") {
       for (const key of sourceBytes.keys()) if (key !== id) sourceBytes.delete(key);
       for (const key of heifSources.keys()) if (key !== id) heifSources.delete(key);
+      clearPreparedSources(id);
       sourceBytes.set(id, bytes);
       postProgress(id, "Inspect metadata", 8);
       if (format === "heic" || format === "heif") {
         const decoded = await decodeHeif(bytes, id);
         scope.postMessage({ kind: "inspect-result", id, summary: { format, width: decoded.width, height: decoded.height, gamut: decoded.gamut ?? null, transfer: decoded.transfer ?? null, metadata_source: decoded.icc.length ? "HEIF ICC profile" : decoded.gamut ? "HEIF nclx metadata" : null, automatic_icc: decoded.icc.length > 0, embedded_available: decoded.icc.length > 0 || Boolean(decoded.gamut && decoded.transfer), warnings: decoded.warnings } });
+      } else if (format === "dng") {
+        // DNG inspection necessarily decodes/develops the raw raster to verify
+        // its embedded calibration and opcode chain. Retain that object for
+        // the preview and calculation so the expensive development happens
+        // only once per selected file.
+        const dngRequest = { format: "dng", gamut: null, transfer: null, profile: 4, refl: 0.5, blur_sigma: 0 };
+        checkpoint("WASM DNG preparation start", { id, bytes: bytes.byteLength });
+        const prepared = prepare(bytes, dngRequest);
+        const summary = prepared.summary ?? null;
+        if (!summary) throw new Error("DNG decoder did not return source metadata.");
+        preparedSources.set(id, { image: prepared, warnings: Array.isArray(prepared.warnings) ? prepared.warnings : [] });
+        checkpoint("WASM DNG preparation complete", {
+          id,
+          width: Number(prepared.width),
+          height: Number(prepared.height),
+          warnings: Array.isArray(prepared.warnings) ? prepared.warnings : [],
+          summary,
+        });
+        const transform = summary.dng_transform;
+        if (transform) {
+          checkpoint("DNG color transform diagnostics", {
+            id,
+            sourceWhiteXYZ: transform.source_white_xyz,
+            rawRange: transform.raw_sample_range,
+            normalizedRange: transform.normalized_sample_range,
+            demosaicedRange: transform.demosaiced_rgb_range,
+            postVignetteRange: transform.post_vignette_rgb_range,
+            finalAP0Range: transform.final_ap0_range,
+            representativeCameraRGB: transform.representative_camera_rgb,
+            representativeAP0: transform.representative_ap0,
+            matrixFirstWeight: transform.color_matrix_first_weight,
+            forwardMatrixUsed: transform.forward_matrix_used,
+          });
+        }
+        scope.postMessage({ kind: "inspect-result", id, summary });
       } else {
         checkpoint("WASM inspect start", { id, format, bytes: bytes.byteLength });
         const summary = inspect(bytes, format);
@@ -834,14 +894,29 @@ async function handle(message: WorkerMessage): Promise<void> {
       warnings = decoded.warnings;
     } else {
       checkpoint("WASM prepare source", { id, format, bytes: bytes.byteLength, request: message.request });
-      prepared = prepare(bytes, message.request);
-      warnings = Array.isArray(prepared?.warnings) ? prepared.warnings : [];
+      if (format === "dng") {
+        const cached = preparedSources.get(id);
+        if (cached) {
+          prepared = cached.image;
+          warnings = cached.warnings;
+          preparedSources.delete(id);
+        } else {
+          prepared = prepare(bytes, message.request);
+          warnings = Array.isArray(prepared?.warnings) ? prepared.warnings : [];
+        }
+      } else {
+        prepared = prepare(bytes, message.request);
+        warnings = Array.isArray(prepared?.warnings) ? prepared.warnings : [];
+      }
     }
     if (cancelled.has(id)) return;
     const width = Number(prepared.width);
     const height = Number(prepared.height);
     const preparedWarnings = Array.isArray(prepared.warnings) ? prepared.warnings : [];
-    warnings = [...warnings, ...preparedWarnings];
+    // The cached DNG image carries the same warning list exposed by the
+    // prepared object.  Merge both sources while keeping report diagnostics
+    // stable when a preparation was reused between inspection and solving.
+    warnings = [...new Set([...warnings, ...preparedWarnings])];
     checkpoint("Source prepared", { id, width, height, warnings });
     await ensureScratchQuota(width, height);
     const sourceName = uniqueSourceName(id);

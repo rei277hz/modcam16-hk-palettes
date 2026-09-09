@@ -44,3 +44,10 @@ License, version 3 (LGPL-3.0); its source and license are available at
 <https://github.com/catdad-experiments/libheif-js>. The generated bundle is
 used through its documented browser API and remains a separately identifiable
 dependency in the npm lockfile.
+
+## rawler 0.8.0
+
+The decomposition WASM module bundles `rawler` 0.8.0 for browser-side DNG
+sample decoding and PPG Bayer demosaicing. The crate is distributed under
+LGPL-2.1:
+<https://crates.io/crates/rawler>.
