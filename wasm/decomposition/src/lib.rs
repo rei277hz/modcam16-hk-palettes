@@ -2612,10 +2612,6 @@ fn solve_prepared(
     (base, exposure, exposure_scalar, stats)
 }
 
-fn exposure_scalar(normalized: f32) -> f32 {
-    2.0_f32.powf(normalized * 20.0 - 10.0)
-}
-
 fn report_from_stats(
     width: usize,
     height: usize,
@@ -3660,13 +3656,6 @@ mod tests {
         assert_eq!(exposure, 0.0);
         assert_eq!(base, [0.5; 3]);
         assert!(!clipped);
-    }
-
-    #[test]
-    fn exposure_rgb_output_uses_direct_scalar_encoding() {
-        assert!((exposure_scalar(0.5) - 1.0).abs() < 1.0e-6);
-        assert!((exposure_scalar(0.75) - 32.0).abs() < 1.0e-5);
-        assert!((exposure_scalar(0.0) - 0.0009765625).abs() < 1.0e-9);
     }
 
     #[test]
