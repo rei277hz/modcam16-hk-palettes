@@ -65,16 +65,7 @@ type SolveStats = {
 };
 
 type GpuProbe = { available: boolean; adapter_name?: string; max_batch_pixels?: number };
-type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number; maxPreviewError: number };
-type EncodedOutputs = {
-  report: any;
-  base_exr: Uint8Array | ArrayBuffer;
-  exposure_exr: Uint8Array | ArrayBuffer;
-  exposure_rgb_exr: Uint8Array | ArrayBuffer;
-  base_preview_jpeg: Uint8Array | ArrayBuffer;
-  exposure_preview_jpeg: Uint8Array | ArrayBuffer;
-};
-
+type GpuValidation = { adapter: string; batchSize: number; key: string; maxBaseError: number; maxExposureErrorStops: number; maxExposureScalarErrorStops: number; maxPreviewError: number };
 type OutputFile = { name: string; size: number; kind: string };
 
 type FileSink = { write(data: Uint8Array, offset?: number): Promise<void>; close(): Promise<void>; size: number; name: string };
@@ -163,22 +154,22 @@ async function closeSinks(): Promise<void> {
   for (const sink of openSinks) await sink.close().catch(error => console.warn("OPFS close failed", { name: sink.name }, error));
 }
 
-async function createOutputWriters(id: number, width: number, height: number): Promise<{ writers: { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }; outputs: OutputFile[] }> {
+async function createOutputWriters(id: number, width: number, height: number): Promise<{ writers: { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureNormEv: ScanlineExrWriter }; outputs: OutputFile[] }> {
   const prefix = `decomposition-${id}`;
   const specs = [
     ["base.exr", ["B", "G", "R"], "base", "base"],
-    ["exposure.exr", ["exposure"], "exposure", "exposure"],
-    ["exposure-rgb.exr", ["B", "G", "R"], "exposureRgb", "exposure_rgb"],
+    ["exposure.exr", ["exposure"], "exposureNormEv", "exposure_norm-ev"],
+    ["exposure-rgb.exr", ["B", "G", "R"], "exposure", "exposure"],
   ] as const;
-  const writers: Partial<{ base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }> = {};
+  const writers: Partial<{ base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureNormEv: ScanlineExrWriter }> = {};
   const outputs: OutputFile[] = [];
   for (const [suffix, channels, key, component] of specs) {
     const name = `${prefix}-${suffix}`;
     const sink = await OpfsSink.create(name);
     writers[key] = await ScanlineExrWriter.create(sink, width, height, [...channels], component);
-    outputs.push({ name, size: 0, kind: component === "base" ? "base-exr" : component === "exposure_rgb" ? "exposure-exr" : "exposure-normalized-ev" });
+    outputs.push({ name, size: 0, kind: component === "base" ? "base-exr" : component === "exposure" ? "exposure-exr" : "exposure-normalized-ev" });
   }
-  return { writers: writers as { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureRgb: ScanlineExrWriter }, outputs };
+  return { writers: writers as { base: ScanlineExrWriter; exposure: ScanlineExrWriter; exposureNormEv: ScanlineExrWriter }, outputs };
 }
 
 async function cleanupOutputFiles(id: number, preserveSource = false): Promise<void> {
@@ -360,22 +351,30 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
     const gpuBase = gpu.base instanceof Float32Array ? gpu.base : new Float32Array(gpu.base);
     const cpuExposure = cpu.exposure instanceof Float32Array ? cpu.exposure : new Float32Array(cpu.exposure);
     const gpuExposure = gpu.exposure instanceof Float32Array ? gpu.exposure : new Float32Array(gpu.exposure);
+    const cpuExposureScalar = cpu.exposure_scalar instanceof Float32Array ? cpu.exposure_scalar : new Float32Array(cpu.exposure_scalar);
+    const gpuExposureScalar = gpu.exposure_scalar instanceof Float32Array ? gpu.exposure_scalar : new Float32Array(gpu.exposure_scalar);
     let maxBaseError = 0;
     let maxExposureErrorStops = 0;
+    let maxExposureScalarErrorStops = 0;
     for (let i = 0; i < cpuBase.length; i += 1) maxBaseError = Math.max(maxBaseError, Math.abs(cpuBase[i] - gpuBase[i]));
     for (let i = 0; i < cpuExposure.length; i += 1) maxExposureErrorStops = Math.max(maxExposureErrorStops, Math.abs(cpuExposure[i] - gpuExposure[i]) * 20);
+    for (let i = 0; i < cpuExposureScalar.length; i += 1) {
+      const cpuScalar = cpuExposureScalar[i], gpuScalar = gpuExposureScalar[i];
+      if (cpuScalar === 0 || gpuScalar === 0) maxExposureScalarErrorStops = Math.max(maxExposureScalarErrorStops, cpuScalar === gpuScalar ? 0 : 1000);
+      else maxExposureScalarErrorStops = Math.max(maxExposureScalarErrorStops, Math.abs(Math.log2(cpuScalar) - Math.log2(gpuScalar)));
+    }
     const cpuStats = cpu.stats as SolveStats;
     const gpuStats = gpu.stats as SolveStats;
-    if (maxBaseError > 0.0002 || maxExposureErrorStops > 0.002
+    if (maxBaseError > 0.0002 || maxExposureErrorStops > 0.002 || maxExposureScalarErrorStops > 0.002
         || cpuStats.projected_pixels !== gpuStats.projected_pixels
         || cpuStats.clipped_pixels !== gpuStats.clipped_pixels
         || cpuStats.non_finite_pixels !== gpuStats.non_finite_pixels) {
-      throw new Error(`WebGPU validation for ACES profile ${profile} exceeded the CPU reference tolerance (base ${maxBaseError}, exposure ${maxExposureErrorStops} stops).`);
+      throw new Error(`WebGPU validation for ACES profile ${profile} exceeded the CPU reference tolerance (base ${maxBaseError}, norm EV ${maxExposureErrorStops} stops, scalar ${maxExposureScalarErrorStops} stops).`);
     }
     let maxPreviewError = 0;
     if (profile === 4) {
-      const cpuPreview = cpu_preview_pixels(cpuBase, cpuExposure, request.refl);
-      const gpuPreview = await gpu_preview_pixels(cpuBase, cpuExposure, request.refl);
+      const cpuPreview = cpu_preview_pixels(cpuBase, cpuExposureScalar, request.refl);
+      const gpuPreview = await gpu_preview_pixels(cpuBase, cpuExposureScalar, request.refl);
       const gpuDisplay = await gpu_preview_ap0(cpuBase);
       const cpuBasePreview = cpuPreview.base instanceof Uint8Array ? cpuPreview.base : new Uint8Array(cpuPreview.base);
       const gpuBasePreview = gpuPreview.base instanceof Uint8Array ? gpuPreview.base : new Uint8Array(gpuPreview.base);
@@ -392,6 +391,7 @@ async function validateGpu(request: DecompositionRequest, probe: GpuProbe): Prom
       key,
       maxBaseError,
       maxExposureErrorStops,
+      maxExposureScalarErrorStops,
       maxPreviewError,
     };
     checkpoint("GPU profile validated", validation);
@@ -667,7 +667,7 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
   stats.compute_backend = backend;
   stats.gpu_adapter = gpuValidation?.adapter ?? probe?.adapter_name ?? null;
   stats.gpu_validation = gpuValidation
-    ? `CPU reference: original f64 modCAM16-HK and exact ACES 2.0 P3-D65; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max exposure error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops, max preview error ${gpuValidation.maxPreviewError} encoded levels`
+    ? `CPU reference: original f64 modCAM16-HK and exact ACES 2.0 P3-D65; max base error ${gpuValidation.maxBaseError.toExponential(3)}, max norm EV error ${gpuValidation.maxExposureErrorStops.toExponential(3)} stops, max scalar error ${gpuValidation.maxExposureScalarErrorStops.toExponential(3)} stops, max preview error ${gpuValidation.maxPreviewError} encoded levels`
     : gpuValidationFailure ? `failed: ${gpuValidationFailure}` : null;
   stats.batch_size = batchSize;
   const totalPixels = width * height;
@@ -701,7 +701,8 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
         solved = useGpu ? await gpu_solve_chunk(batch.pixels, message.request) : solve_chunk(batch.pixels, message.request);
         batch.pixels = new Float32Array(0);
         let chunkBase = solved.base instanceof Float32Array ? solved.base : new Float32Array(solved.base);
-        let chunkExposure = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
+        let chunkExposureNormEv = solved.exposure instanceof Float32Array ? solved.exposure : new Float32Array(solved.exposure);
+        let chunkExposure = solved.exposure_scalar instanceof Float32Array ? solved.exposure_scalar : new Float32Array(solved.exposure_scalar);
         checkpoint("Solve batch complete; transform output previews", { id, start, stop, backend, solveMs: performance.now() - batchStartedAt, previewUseGpu });
         const preview = previewUseGpu
           ? await gpu_preview_pixels(chunkBase, chunkExposure, message.request.refl)
@@ -715,13 +716,13 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
         await exposureDisplayRaw.write(await transformDisplay(exposureDisplay.append_exposure(chunkExposure, message.request.refl)));
         for (let row = 0; row < (stop - start) / width; row++) {
           const y = Math.floor(start / width) + row;
-          const rows = convertExrRow(chunkBase, chunkExposure, row * width, width);
+          const rows = convertExrRow(chunkBase, chunkExposureNormEv, row * width, width, chunkExposure);
           await writers.base.writeRow(y, { B: rows.baseB, G: rows.baseG, R: rows.baseR });
-          await writers.exposureRgb.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
-          await writers.exposure.writeRow(y, { exposure: rows.exposure });
+          await writers.exposure.writeRow(y, { B: rows.exposure, G: rows.exposure, R: rows.exposure });
+          await writers.exposureNormEv.writeRow(y, { exposure: rows.exposureNormEv });
         }
         addStats(stats, solved.stats as SolveStats);
-        chunkBase = new Float32Array(0); chunkExposure = new Float32Array(0); solved = undefined;
+        chunkBase = new Float32Array(0); chunkExposureNormEv = new Float32Array(0); chunkExposure = new Float32Array(0); solved = undefined;
       } catch (error) {
         console.error("GPU batch or preview failed", error, { id, start, stop, backend, previewUseGpu });
         batch.pixels = new Float32Array(0);
@@ -766,12 +767,12 @@ async function solvePreparedFromOpfs(message: SolveMessage): Promise<void> {
   stats.preview_backend = previewUseGpu ? "webgpu" : "wasm-cpu";
   stats.preview_transform_ms = performance.now() - previewStartedAt;
   postProgress(id, "Finalize EXR files", 93, { processed: totalPixels, projected: stats.projected_pixels, clipped: stats.clipped_pixels, non_finite: stats.non_finite_pixels });
-  await writers.base.close(); await writers.exposure.close(); await writers.exposureRgb.close();
+  await writers.base.close(); await writers.exposure.close(); await writers.exposureNormEv.close();
   await basePreviewRaw.close(); await exposurePreviewRaw.close();
   await baseDisplayRaw.close(); await exposureDisplayRaw.close();
   checkpoint("Build analytic report", { id, width, height, stats, warnings });
   const report = build_report(width, height, message.request, stats, warnings);
-  const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposure.size, writers.exposureRgb.size][index] }));
+  const outputs = output.outputs.map((entry, index) => ({ ...entry, size: [writers.base.size, writers.exposureNormEv.size, writers.exposure.size][index] }));
   postProgress(id, "Prepare preview JPEGs", 94, { processed: totalPixels });
   scope.postMessage({ kind: "preview-encode", id, width, height, displayWidth, displayHeight, report, outputs, storage: "opfs" });
 }

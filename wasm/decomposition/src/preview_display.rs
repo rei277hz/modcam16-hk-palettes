@@ -108,15 +108,13 @@ impl AreaPreview {
         })
     }
 
-    fn append_exposure(&mut self, exposure: &[f32], refl: f32) -> Result<Vec<f32>, String> {
+    fn append_exposure(&mut self, exposure_scalar: &[f32], refl: f32) -> Result<Vec<f32>, String> {
         if !refl.is_finite() || refl <= 0.0 {
             return Err("Invalid preview Refl.".into());
         }
         // Match the full-size preview's scene-linear neutral AP0 canvas.
         // Average Refl * s, never norm EV or tone-mapped RGB.
-        self.append(exposure.len(), |i| {
-            [refl * super::exposure_scalar(exposure[i]); 3]
-        })
+        self.append(exposure_scalar.len(), |i| [refl * exposure_scalar[i]; 3])
     }
 
     fn finish(&self) -> Result<(), String> {
@@ -166,7 +164,11 @@ impl DisplayPreview {
 /// Construct a preview with a caller-selected longest-edge cap. Source
 /// previews use a smaller cap than decomposition output previews.
 #[wasm_bindgen]
-pub fn new_bounded_display_preview(width: u32, height: u32, max_edge: u32) -> Result<DisplayPreview, JsValue> {
+pub fn new_bounded_display_preview(
+    width: u32,
+    height: u32,
+    max_edge: u32,
+) -> Result<DisplayPreview, JsValue> {
     let max_edge = max_edge as usize;
     if max_edge == 0 {
         return Err(JsValue::from_str("Preview edge cap must be positive."));
@@ -237,11 +239,11 @@ mod tests {
     #[test]
     fn exposure_averages_linear_canvas_not_normalized_ev() {
         let exposure: Vec<f32> = (0..4096)
-            .map(|i| if i % 2 == 0 { 0.5 } else { 0.6 })
+            .map(|i| if i % 2 == 0 { 1.0 } else { 1.5 })
             .collect();
         let mut preview = AreaPreview::new(4096, 1).unwrap();
         let output = preview.append_exposure(&exposure, 0.5).unwrap();
-        assert!(output.iter().all(|&v| (v - 1.25).abs() < 1e-6));
+        assert!(output.iter().all(|&v| (v - 0.625).abs() < 1e-6));
         preview.finish().unwrap();
     }
 

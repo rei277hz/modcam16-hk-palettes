@@ -53,7 +53,8 @@ try {
   assert.equal(await page.locator("#save-overlay-preview").textContent(), "Save full-size JPEG");
   assert.equal(await page.locator("#source-gamut").isVisible(), false);
   assert.equal(await page.locator("#source-transfer").isVisible(), false);
-  assert.equal(await page.locator("#download-exposure span").textContent(), "Exposure EXR (norm EV)");
+  assert.equal(await page.locator("#download-exposure span").textContent(), "Exposure EXR");
+  assert.equal(await page.locator("#download-exposure-norm-ev span").textContent(), "Exposure EXR (norm EV)");
   assert.equal(await page.locator(".previews button").count(), 2, "thumbnails have no JPEG download buttons");
   assert.ok(!(await page.locator(".downloads").innerText()).includes("ZIP16"));
   const png = await page.evaluate(() => {

@@ -328,16 +328,28 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let target_j = bitcast<f32>(params.target_bits);
   let refl = bitcast<f32>(params.refl_bits);
   if (q.x == 0.0 && q.y == 0.0 && q.z == 0.0) {
-    output_pixels[index] = vec4<f32>(refl, refl, refl, 0.5);
+    output_pixels[index] = vec4<f32>(refl, refl, refl, 0.0);
     output_flags[index] = flags;
     return;
   }
   var low = -20.0;
   var high = 20.0;
-  let low_j = jhk_for_ap0(q * pow(2.0, -low), params.profile);
-  let high_j = jhk_for_ap0(q * pow(2.0, -high), params.profile);
-  if (low_j < target_j) { flags = flags | 2u; low = -10.0; }
-  if (high_j > target_j) { flags = flags | 2u; high = 10.0; }
+  var low_j = jhk_for_ap0(q * pow(2.0, -low), params.profile);
+  var high_j = jhk_for_ap0(q * pow(2.0, -high), params.profile);
+  // Find the complete root before applying the serializable +/-10-stop norm
+  // EV range. The fourth output component is the direct scalar s; JavaScript
+  // derives the clamped norm EV channel from its log2 value.
+  for (var expansion = 0u; expansion < 8u; expansion = expansion + 1u) {
+    if (low_j < target_j) {
+      low = low - 10.0;
+      low_j = jhk_for_ap0(q * pow(2.0, -low), params.profile);
+    }
+    if (high_j > target_j) {
+      high = high + 10.0;
+      high_j = jhk_for_ap0(q * pow(2.0, -high), params.profile);
+    }
+    if (low_j >= target_j && high_j <= target_j) { break; }
+  }
   if (low_j >= target_j && high_j <= target_j) {
     for (var iteration = 0u; iteration < 32u; iteration = iteration + 1u) {
       let middle = 0.5 * (low + high);
@@ -347,17 +359,18 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
   } else {
     flags = flags | 2u;
-    low = select(10.0, -10.0, low_j < target_j);
+    low = select(100.0, -100.0, low_j < target_j);
   }
-  let exposure = clamp(low, -10.0, 10.0);
-  let base = q * pow(2.0, -exposure);
-  let normalized = clamp(exposure / 20.0 + 0.5, 0.0, 1.0);
-  if (bad3(base) || bad(normalized)) {
+  if (low < -10.0 || low > 10.0) { flags = flags | 2u; }
+  let scalar = pow(2.0, low);
+  let base = q * pow(2.0, -low);
+  let normalized = clamp(low / 20.0 + 0.5, 0.0, 1.0);
+  if (bad3(base) || bad(scalar) || bad(normalized)) {
     output_pixels[index] = vec4<f32>(0.0);
     output_flags[index] = flags | 4u;
     return;
   }
-  output_pixels[index] = vec4<f32>(base, normalized);
+  output_pixels[index] = vec4<f32>(base, scalar);
   output_flags[index] = flags;
 }
 
@@ -369,8 +382,7 @@ fn preview_main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   let refl = bitcast<f32>(params.refl_bits);
   var ap0 = input.xyz;
   if (params.mode == 2u) {
-    let scale = pow(2.0, input.w * 20.0 - 10.0);
-    ap0 = vec3<f32>(refl * scale);
+    ap0 = vec3<f32>(refl * input.w);
   }
   if (bad3(ap0)) {
     output_pixels[index] = vec4<f32>(0.0);

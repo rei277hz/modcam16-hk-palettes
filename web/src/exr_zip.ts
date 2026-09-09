@@ -89,7 +89,13 @@ export class ScanlineExrWriter {
       attr("lineOrder", "lineOrder", new Uint8Array([0])), attr("pixelAspectRatio", "float", f32(1)),
       attr("screenWindowCenter", "v2f", concatBytes(f32(0), f32(0))), attr("screenWindowWidth", "float", f32(1)),
       attr("chromaticities", "chromaticities", chromaticities), attr("ocioColorSpace", "string", ascii("ACEScg")),
-      attr("decompositionComponent", "string", ascii(component)), new Uint8Array([0]),
+      attr("decompositionComponent", "string", ascii(component)),
+      ...(component === "exposure_norm-ev"
+        ? [attr("decompositionExposureEncoding", "string", ascii("normalized_exposure=clamp(log2(s),-10,10)/20+0.5; scalar s is not stored in this channel"))]
+        : component === "exposure"
+          ? [attr("decompositionExposureEncoding", "string", ascii("RGB=(s,s,s); direct solved s; linear scalar"))]
+          : []),
+      new Uint8Array([0]),
     );
     await this.sink.write(header);
     this.cursor += header.byteLength;

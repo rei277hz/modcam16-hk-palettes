@@ -125,7 +125,7 @@ the solver finds AP0 base `B` and scalar `s` such that:
 
 ```text
 Q = B * s
-s = 2^(norm_EV * 20 - 10)
+e = log2(s),   s = 2^e
 J_HK(f(B)) = J_HK(f(Refl, Refl, Refl))
 ```
 
@@ -135,8 +135,19 @@ The stored base is `AP1(B)` in linear ACEScg. The norm EV channel is:
 norm_EV = clamp(log2(s), -10, 10) / 20 + 0.5
 ```
 
-Black (`Q = 0`) receives the neutral base and norm EV `0.0` through an
-explicit zero rule. Exposure outside +/-10 stops is clipped and counted.
+The direct scalar `s` is retained for the replicated RGB exposure output and
+is never reconstructed from the clamped norm EV channel. The norm EV channel
+is always bounded to `[0, 1]`; `e` and `s` may lie outside the representable
+range when exposure is clipped and counted.
+
+For an unclipped solution, this is equivalent to
+`s = 2^(norm_EV * 20 - 10)`. Once `e` falls outside +/-10 stops, only the
+norm EV representation is clipped; the direct RGB output keeps the solved
+scalar.
+
+Black (`Q = 0`) receives the neutral base, norm EV `0.0`, and scalar `s = 0.0`
+through an explicit zero rule. Exposure outside +/-10 stops is clipped and
+counted.
 Projection into the selected view's limiting RGB volume and clamping negative
 AP0 components are opt-in lossy operations; all projections, clamps,
 non-finite values, solve residuals, and tolerance exceedances are reported.
@@ -216,9 +227,10 @@ misclassified as GPU failures.
 Successful decomposition enables exactly three EXR downloads:
 
 1. `Base EXR`: linear ACEScg/AP1 RGB, fp16, three channels.
-2. `Exposure EXR`: scalar norm EV, fp16, one `exposure` channel.
-3. `Exposure RGB EXR`: direct scalar `s` replicated into linear ACEScg RGB,
+2. `Exposure EXR`: direct scalar `s` replicated into linear ACEScg RGB,
    fp16, three channels.
+3. `Exposure EXR (norm EV)`: bounded scalar norm EV, fp16, one `exposure`
+   channel.
 
 All are scanline OpenEXR files with the required magic bytes, little-endian
 fp16 samples, ZIP16 compression when effective, and a raw-block fallback when
