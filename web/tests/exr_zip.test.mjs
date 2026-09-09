@@ -37,6 +37,31 @@ function decodeZipBlock(payload, rawSize) {
   return raw;
 }
 
+function readHeaderAttributes(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  const readCString = (start) => {
+    let end = start;
+    while (bytes[end] !== 0) end += 1;
+    return [decoder.decode(bytes.subarray(start, end)), end + 1];
+  };
+  const attributes = new Map();
+  let cursor = 8;
+  while (true) {
+    const [name, afterName] = readCString(cursor);
+    cursor = afterName;
+    if (!name) break;
+    const [type, afterType] = readCString(cursor);
+    cursor = afterType;
+    const size = view.getUint32(cursor, true);
+    cursor += 4;
+    const value = bytes.subarray(cursor, cursor + size);
+    attributes.set(name, { type, value: decoder.decode(value).replace(/\0$/, "") });
+    cursor += size;
+  }
+  return { attributes, end: cursor };
+}
+
 test("writes a standards-compliant ZIP16 EXR that round-trips scanlines", async () => {
   const sink = new MemorySink();
   const writer = await ScanlineExrWriter.create(sink, 3, 17, ["B", "G", "R"], "base");
@@ -54,21 +79,7 @@ test("writes a standards-compliant ZIP16 EXR that round-trips scanlines", async 
 
   assert.deepEqual(Array.from(sink.bytes.subarray(0, 4)), Array.from(OPENEXR_MAGIC));
   assert.equal(sink.bytes[8], 0x63); // channels attribute starts after magic/version.
-  const readCString = (start) => {
-    let end = start;
-    while (sink.bytes[end] !== 0) end += 1;
-    return [new TextDecoder().decode(sink.bytes.subarray(start, end)), end + 1];
-  };
-  let headerEnd = 8;
-  while (true) {
-    const [name, afterName] = readCString(headerEnd);
-    headerEnd = afterName;
-    if (!name) break;
-    const [, afterType] = readCString(headerEnd);
-    headerEnd = afterType;
-    const size = new DataView(sink.bytes.buffer).getUint32(headerEnd, true);
-    headerEnd += 4 + size;
-  }
+  const { end: headerEnd } = readHeaderAttributes(sink.bytes);
   assert.ok(headerEnd > 100, "header terminator present");
 
   // The offset table immediately follows the header. Locate both chunks from
@@ -85,6 +96,14 @@ test("writes a standards-compliant ZIP16 EXR that round-trips scanlines", async 
   const secondPayloadSize = view.getUint32(secondChunk + 4, true);
   const secondRaw = decodeZipBlock(sink.bytes.subarray(secondChunk + 8, secondChunk + 8 + secondPayloadSize), 1 * 3 * 3 * 2);
   assert.deepEqual(Array.from(secondRaw), Array.from(expected[16]));
+});
+
+test("serializes the normalized EV component name as an EXR string", async () => {
+  const sink = new MemorySink();
+  await ScanlineExrWriter.create(sink, 1, 1, ["exposure"], "exposure_norm-ev");
+  const { attributes } = readHeaderAttributes(sink.bytes);
+  assert.equal(attributes.get("decompositionComponent")?.type, "string");
+  assert.equal(attributes.get("decompositionComponent")?.value, "exposure_norm-ev");
 });
 
 test("uses raw little-endian bytes when ZIP would expand a block", () => {

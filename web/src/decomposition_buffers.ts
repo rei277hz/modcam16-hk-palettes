@@ -38,8 +38,8 @@ export function batchPixelLimit(width: number, gpu: boolean, probe?: { max_batch
   return Math.floor(Math.min(Math.max(width, target), adapterLimit) / width) * width;
 }
 
-export function convertExrRow(base: Float32Array, exposure: Float32Array, offset: number, width: number): { baseR: Uint16Array; baseG: Uint16Array; baseB: Uint16Array; exposure: Uint16Array } {
-  const baseR = new Uint16Array(width), baseG = new Uint16Array(width), baseB = new Uint16Array(width), exposureOut = new Uint16Array(width);
+export function convertExrRow(base: Float32Array, exposureNormEv: Float32Array, offset: number, width: number, exposure: Float32Array): { baseR: Uint16Array; baseG: Uint16Array; baseB: Uint16Array; exposureNormEv: Uint16Array; exposure: Uint16Array } {
+  const baseR = new Uint16Array(width), baseG = new Uint16Array(width), baseB = new Uint16Array(width), exposureNormEvOut = new Uint16Array(width), exposureOut = new Uint16Array(width);
   for (let x = 0; x < width; x++) {
     const i = offset + x;
     const r = base[i * 3], g = base[i * 3 + 1], b = base[i * 3 + 2];
@@ -47,7 +47,13 @@ export function convertExrRow(base: Float32Array, exposure: Float32Array, offset
     const ap1g = AP0_TO_AP1[1][0] * r + AP0_TO_AP1[1][1] * g + AP0_TO_AP1[1][2] * b;
     const ap1b = AP0_TO_AP1[2][0] * r + AP0_TO_AP1[2][1] * g + AP0_TO_AP1[2][2] * b;
     baseR[x] = floatToHalf(ap1r); baseG[x] = floatToHalf(ap1g); baseB[x] = floatToHalf(ap1b);
-    exposureOut[x] = floatToHalf(Math.pow(2, exposure[i] * 20 - 10));
+    // Keep the two encodings independent. `exposureNormEv` is the normalized EV
+    // channel and is guaranteed to remain in [0, 1]; the RGB exposure output
+    // receives the solver's original scene-linear scalar directly. Rebuilding
+    // the scalar from a clamped normalized EV loses out-of-range exposure.
+    const normalized = exposureNormEv[i];
+    exposureNormEvOut[x] = floatToHalf(Number.isNaN(normalized) ? 0 : Math.min(1, Math.max(0, normalized)));
+    exposureOut[x] = floatToHalf(exposure[i]);
   }
-  return { baseR, baseG, baseB, exposure: exposureOut };
+  return { baseR, baseG, baseB, exposureNormEv: exposureNormEvOut, exposure: exposureOut };
 }

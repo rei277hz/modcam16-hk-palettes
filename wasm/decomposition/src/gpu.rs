@@ -52,6 +52,7 @@ mod webgpu {
     pub struct GpuResult {
         pub base: Vec<f32>,
         pub exposure: Vec<f32>,
+        pub exposure_scalar: Vec<f32>,
         pub stats: SolveStats,
     }
 
@@ -330,11 +331,13 @@ mod webgpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         }));
-        let params_buffer = buffers.track(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("decomposition parameters"),
-            contents: bytemuck::cast_slice(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        }));
+        let params_buffer = buffers.track(device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("decomposition parameters"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        ));
         let output_readback = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decomposition output readback"),
             size: output_size,
@@ -394,6 +397,7 @@ mod webgpu {
         let flags = bytes_as_u32(&flags_bytes);
         let mut base = Vec::with_capacity(count * 3);
         let mut exposure = Vec::with_capacity(count);
+        let mut exposure_scalar = Vec::with_capacity(count);
         let mut stats = SolveStats {
             exposure_min: f32::INFINITY,
             exposure_max: f32::NEG_INFINITY,
@@ -409,6 +413,7 @@ mod webgpu {
                 stats.non_finite_pixels += 1;
                 base.extend_from_slice(&[0.0; 3]);
                 exposure.push(0.0);
+                exposure_scalar.push(0.0);
                 continue;
             }
             if flag & 1 != 0 {
@@ -417,7 +422,8 @@ mod webgpu {
             if flag & 2 != 0 {
                 stats.clipped_pixels += 1;
             }
-            let e = (values[3] - 0.5) * 20.0;
+            let scalar = values[3];
+            let e = if scalar > 0.0 { scalar.log2() } else { 0.0 };
             stats.exposure_min = stats.exposure_min.min(e);
             stats.exposure_max = stats.exposure_max.max(e);
             stats.exposure_sum += e as f64;
@@ -428,11 +434,13 @@ mod webgpu {
                 base.push(*value);
             }
             stats.finite_pixels += 1;
-            exposure.push(values[3].clamp(0.0, 1.0));
+            exposure.push(crate::normalized_exposure(e, scalar));
+            exposure_scalar.push(scalar);
         }
         Ok(GpuResult {
             base,
             exposure,
+            exposure_scalar,
             stats,
         })
     }
@@ -490,11 +498,13 @@ mod webgpu {
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         }));
-        let params_buffer = buffers.track(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("ACES preview parameters"),
-            contents: bytemuck::cast_slice(&params),
-            usage: wgpu::BufferUsages::UNIFORM,
-        }));
+        let params_buffer = buffers.track(device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("ACES preview parameters"),
+                contents: bytemuck::cast_slice(&params),
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        ));
         let output_readback = buffers.track(device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ACES preview readback"),
             size: output_size,
@@ -557,7 +567,10 @@ mod webgpu {
         if rgb.is_empty() || rgb.len() % 3 != 0 {
             return Err("Invalid AP0 preview buffer.".into());
         }
-        let input = rgb.chunks_exact(3).map(|p| [p[0], p[1], p[2], 0.0]).collect();
+        let input = rgb
+            .chunks_exact(3)
+            .map(|p| [p[0], p[1], p[2], 0.0])
+            .collect();
         preview_mode(input, 1.0, 1).await
     }
 

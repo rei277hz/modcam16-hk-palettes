@@ -134,12 +134,14 @@ test("6000x4000 traversal stays bounded, row-aligned, and visits every source sa
 
 test("EXR row conversion is independent of batch boundaries", () => {
   const base = new Float32Array([0, 0, 0, 1, 1, 1, 0.1, 0.5, 2, -0.2, 0.1, 0.25]);
-  const exposure = new Float32Array([0, 0.5, 0.25, 1]);
-  const whole = convertExrRow(base, exposure, 0, 4);
-  const first = convertExrRow(base, exposure, 0, 2);
-  const last = convertExrRow(base.subarray(6), exposure.subarray(2), 0, 2);
+  const exposure = new Float32Array([0, 0.5, 0.25, 1.5]);
+  const scalar = new Float32Array([0.0009765625, 1, 0.5, 1024]);
+  const whole = convertExrRow(base, exposure, 0, 4, scalar);
+  const first = convertExrRow(base, exposure, 0, 2, scalar);
+  const last = convertExrRow(base.subarray(6), exposure.subarray(2), 0, 2, scalar.subarray(2));
   for (const channel of Object.keys(whole)) {
     assert.deepEqual([...first[channel], ...last[channel]], [...whole[channel]]);
   }
-  assert.deepEqual([...whole.exposure], [0x1400, 0x3c00, 0x2800, 0x6400]);
+  assert.deepEqual([...whole.exposureNormEv], [0x0000, 0x3800, 0x3400, 0x3c00]);
+  assert.deepEqual([...whole.exposure], [0x1400, 0x3c00, 0x3800, 0x6400]);
 });

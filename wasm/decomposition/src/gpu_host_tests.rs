@@ -282,7 +282,8 @@ fn actual_wgsl_kernel_matches_f64_cpu_reference_on_software_adapter() {
             0,
             None,
         );
-        let (cpu_base, cpu_exposure, cpu_stats) = solve_prepared(&pixels, &request);
+        let (cpu_base, cpu_exposure, cpu_exposure_scalar, cpu_stats) =
+            solve_prepared(&pixels, &request);
         let expected_flags = cpu_base
             .iter()
             .enumerate()
@@ -291,7 +292,7 @@ fn actual_wgsl_kernel_matches_f64_cpu_reference_on_software_adapter() {
                     4
                 } else {
                     let projected = pixels[i].iter().any(|v| *v < 0.0);
-                    let (_, _, clipped) = solve_exposure(
+                    let (_, _, _, clipped) = solve_exposure(
                         [
                             pixels[i][0].max(0.0),
                             pixels[i][1].max(0.0),
@@ -317,7 +318,21 @@ fn actual_wgsl_kernel_matches_f64_cpu_reference_on_software_adapter() {
                 .enumerate()
                 .map(|(channel, value)| (out[channel] - value).abs())
                 .fold(0.0_f32, f32::max);
-            let exposure_error_stops = (out[3] - cpu_exposure[i]).abs() * 20.0;
+            let gpu_exposure = if out[3] > 0.0 {
+                (out[3].log2() / 20.0 + 0.5).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let exposure_error_stops = (gpu_exposure - cpu_exposure[i]).abs() * 20.0;
+            let scalar_error_stops = if out[3] == 0.0 || cpu_exposure_scalar[i] == 0.0 {
+                if out[3] == cpu_exposure_scalar[i] {
+                    0.0
+                } else {
+                    1000.0
+                }
+            } else {
+                (out[3].log2() - cpu_exposure_scalar[i].log2()).abs()
+            };
             assert!(
                 max_base_error <= 0.0002,
                 "profile {profile} pixel {i} base error {max_base_error}"
@@ -325,6 +340,10 @@ fn actual_wgsl_kernel_matches_f64_cpu_reference_on_software_adapter() {
             assert!(
                 exposure_error_stops <= 0.002,
                 "profile {profile} pixel {i} exposure error {exposure_error_stops}"
+            );
+            assert!(
+                scalar_error_stops <= 0.002,
+                "profile {profile} pixel {i} scalar error {scalar_error_stops}"
             );
             assert_eq!(
                 flags[i], expected_flags[i],
@@ -349,7 +368,7 @@ fn actual_wgsl_preview_matches_exact_cpu_aces_p3_reference() {
         [4.0, 2.0, 0.5],
         [20.0, 20.0, 20.0],
     ];
-    let exposure = [0.5, 0.52, 0.6, 0.7, 0.8, 0.9, 1.0];
+    let exposure = [0.0009765625, 1.0, 4.0, 16.0, 64.0, 256.0, 1024.0];
     let refl = 0.5;
     let (base_out, _) = run_shader(
         &device,
@@ -406,7 +425,7 @@ fn actual_wgsl_preview_matches_exact_cpu_aces_p3_reference() {
     };
     for i in 0..pixels.len() {
         let expected_base = expected(pixels[i]);
-        let expected_exposure = expected([refl * 2.0_f32.powf(exposure[i] * 20.0 - 10.0); 3]);
+        let expected_exposure = expected([refl * exposure[i]; 3]);
         for channel in 0..3 {
             let base_error = (base_out[i * 4 + channel] - expected_base[channel]).abs();
             let exposure_error = (exposure_out[i * 4 + channel] - expected_exposure[channel]).abs();

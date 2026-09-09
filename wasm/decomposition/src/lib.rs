@@ -21,8 +21,8 @@ use png::{Decoder as PngDecoder, Transformations};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::sync::OnceLock;
-use wasm_bindgen::prelude::*;
 use ultrahdr_core::metadata::apple::{from_apple_headroom, parse_exif_for_apple_hdr};
+use wasm_bindgen::prelude::*;
 
 mod gpu;
 mod preview_display;
@@ -40,7 +40,10 @@ extern "C" {
 #[wasm_bindgen(start)]
 pub fn install_panic_diagnostics() {
     std::panic::set_hook(Box::new(|info| {
-        log_panic(&format!("Rust/WASM panic: {info}"), &js_sys::Error::new("Rust/WASM panic stack"));
+        log_panic(
+            &format!("Rust/WASM panic: {info}"),
+            &js_sys::Error::new("Rust/WASM panic stack"),
+        );
     }));
 }
 
@@ -282,7 +285,8 @@ fn prepare_rgb(
         }
     } else {
         return Err(
-            "Select gamut and transfer manually: this image has no usable embedded ICC profile.".into(),
+            "Select gamut and transfer manually: this image has no usable embedded ICC profile."
+                .into(),
         );
     }
     blur(&mut rgb, width, height, req.blur_sigma);
@@ -291,7 +295,11 @@ fn prepare_rgb(
 
 fn srgb_eotf(value: f32) -> f32 {
     let a = value.abs();
-    let linear = if a <= 0.04045 { a / 12.92 } else { ((a + 0.055) / 1.055).powf(2.4) };
+    let linear = if a <= 0.04045 {
+        a / 12.92
+    } else {
+        ((a + 0.055) / 1.055).powf(2.4)
+    };
     value.signum() * linear
 }
 
@@ -314,8 +322,10 @@ fn apply_apple_gain_map(
     if gain.len() != gain_width.saturating_mul(gain_height) {
         return Err("Apple HDR gain-map dimensions do not match the supplied samples.".into());
     }
-    let info = parse_exif_for_apple_hdr(exif)
-        .ok_or_else(|| "Apple HDR gain-map metadata does not contain a usable MakerNote headroom value.".to_string())?;
+    let info = parse_exif_for_apple_hdr(exif).ok_or_else(|| {
+        "Apple HDR gain-map metadata does not contain a usable MakerNote headroom value."
+            .to_string()
+    })?;
     let metadata = from_apple_headroom(&info)
         .ok_or_else(|| "Apple HDR gain-map headroom is missing.".to_string())?;
     let stops = metadata.alternate_hdr_headroom as f32;
@@ -337,8 +347,8 @@ fn apply_apple_gain_map(
             let g01 = srgb_eotf(gain[y0 * gain_width + x1].clamp(0.0, 1.0));
             let g10 = srgb_eotf(gain[y1 * gain_width + x0].clamp(0.0, 1.0));
             let g11 = srgb_eotf(gain[y1 * gain_width + x1].clamp(0.0, 1.0));
-            let gain_linear = (g00 * (1.0 - fx) + g01 * fx) * (1.0 - fy)
-                + (g10 * (1.0 - fx) + g11 * fx) * fy;
+            let gain_linear =
+                (g00 * (1.0 - fx) + g01 * fx) * (1.0 - fy) + (g10 * (1.0 - fx) + g11 * fx) * fy;
             let factor = 1.0 + scale * gain_linear;
             let px = &mut rgb[y * width + x];
             for c in px.iter_mut() {
@@ -749,10 +759,10 @@ fn write_exr(
     if component.starts_with("exposure") {
         attrs.other.insert(
             Text::new_or_panic("decompositionExposureEncoding"),
-            AttributeValue::Text(Text::new_or_panic(if component == "exposure_rgb" {
-                "RGB=(s,s,s); s=2^(normalized_exposure*20-10); linear scalar"
+            AttributeValue::Text(Text::new_or_panic(if component == "exposure" {
+                "RGB=(s,s,s); direct solved s; linear scalar"
             } else {
-                "normalized_exposure=clamp(log2(s),-10,10)/20+0.5"
+                "normalized_exposure=clamp(log2(s),-10,10)/20+0.5; scalar s is not stored in this channel"
             })),
         );
     }
@@ -781,14 +791,29 @@ pub fn inspect(data: Vec<u8>, format: String) -> Result<JsValue, JsValue> {
 /// Prepare a bounded JPEG source preview without decoding the full-resolution
 /// raster. The native JPEG IDCT scale is selected before pixel conversion.
 #[wasm_bindgen]
-pub fn prepare_jpeg_preview(data: Vec<u8>, request: JsValue, max_edge: u32) -> Result<PreparedImage, JsValue> {
+pub fn prepare_jpeg_preview(
+    data: Vec<u8>,
+    request: JsValue,
+    max_edge: u32,
+) -> Result<PreparedImage, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     let p = parse_jpeg_inner_scaled(&data, Some(max_edge)).map_err(|e| JsValue::from_str(&e))?;
     let width = p.width;
     let height = p.height;
-    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
-    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref(), embedded_pair)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let embedded_pair = p
+        .summary
+        .gamut
+        .as_deref()
+        .zip(p.summary.transfer.as_deref());
+    let rgb = prepare_rgb(
+        p.rgb,
+        width,
+        height,
+        &req,
+        p.icc_profile.as_deref(),
+        embedded_pair,
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width, height, p.summary.warnings.clone())
         .map_err(|e| JsValue::from_str(&e))
 }
@@ -845,8 +870,8 @@ fn parse_request(value: JsValue) -> Result<Request, String> {
 fn payload(
     report: Report,
     base: Vec<u8>,
+    exposure_norm_ev: Vec<u8>,
     exposure: Vec<u8>,
-    exposure_rgb: Vec<u8>,
     base_preview: Vec<u8>,
     exposure_preview: Vec<u8>,
 ) -> Result<JsValue, String> {
@@ -865,16 +890,16 @@ fn payload(
     .map_err(|e| format!("base: {e:?}"))?;
     Reflect::set(
         &object,
+        &JsValue::from_str("exposure_norm_ev_exr"),
+        &Uint8Array::from(exposure_norm_ev.as_slice()).into(),
+    )
+    .map_err(|e| format!("exposure norm EV: {e:?}"))?;
+    Reflect::set(
+        &object,
         &JsValue::from_str("exposure_exr"),
         &Uint8Array::from(exposure.as_slice()).into(),
     )
     .map_err(|e| format!("exposure: {e:?}"))?;
-    Reflect::set(
-        &object,
-        &JsValue::from_str("exposure_rgb_exr"),
-        &Uint8Array::from(exposure_rgb.as_slice()).into(),
-    )
-    .map_err(|e| format!("exposure RGB: {e:?}"))?;
     Reflect::set(
         &object,
         &JsValue::from_str("base_preview_jpeg"),
@@ -899,38 +924,60 @@ fn jhk_for_ap0(ap0: [f32; 3], profile: u32) -> f64 {
     modcam16_color_core::j_hk_from_xyz(xyz)
 }
 
-fn solve_exposure(q: [f32; 3], profile: u32, target: f64, refl: f32) -> (f32, [f32; 3], bool) {
+fn solve_exposure(q: [f32; 3], profile: u32, target: f64, refl: f32) -> (f32, f32, [f32; 3], bool) {
     if q.iter().all(|v| *v == 0.0) {
-        return (0.0, [refl; 3], false);
+        return (0.0, 0.0, [refl; 3], false);
     }
     let mut low = -20.0_f64;
     let mut high = 20.0_f64;
-    let scale_low = 2.0_f64.powf(-low) as f32;
-    let low_j = jhk_for_ap0(
-        [q[0] * scale_low, q[1] * scale_low, q[2] * scale_low],
-        profile,
-    );
-    let scale_high = 2.0_f64.powf(-high);
-    let high_j = jhk_for_ap0(
+    let mut low_j = jhk_for_ap0(
         [
-            q[0] * scale_high as f32,
-            q[1] * scale_high as f32,
-            q[2] * scale_high as f32,
+            q[0] * 2.0_f64.powf(-low) as f32,
+            q[1] * 2.0_f64.powf(-low) as f32,
+            q[2] * 2.0_f64.powf(-low) as f32,
         ],
         profile,
     );
-    // Increasing exposure lowers the base and therefore lowers J_HK. If the
-    // finite root is outside the serializable range, retain the endpoint and
-    // report that clipping occurred.
+    let mut high_j = jhk_for_ap0(
+        [
+            q[0] * 2.0_f64.powf(-high) as f32,
+            q[1] * 2.0_f64.powf(-high) as f32,
+            q[2] * 2.0_f64.powf(-high) as f32,
+        ],
+        profile,
+    );
+
+    // Find the complete root before applying the representable norm-EV range.
+    // The direct RGB exposure output must retain this scalar when its log2
+    // value lies outside +/-10 stops.
+    for _ in 0..8 {
+        if low_j < target {
+            low -= 10.0;
+            low_j = jhk_for_ap0(
+                [
+                    q[0] * 2.0_f64.powf(-low) as f32,
+                    q[1] * 2.0_f64.powf(-low) as f32,
+                    q[2] * 2.0_f64.powf(-low) as f32,
+                ],
+                profile,
+            );
+        }
+        if high_j > target {
+            high += 10.0;
+            high_j = jhk_for_ap0(
+                [
+                    q[0] * 2.0_f64.powf(-high) as f32,
+                    q[1] * 2.0_f64.powf(-high) as f32,
+                    q[2] * 2.0_f64.powf(-high) as f32,
+                ],
+                profile,
+            );
+        }
+        if low_j >= target && high_j <= target {
+            break;
+        }
+    }
     let mut clipped = false;
-    if low_j < target {
-        clipped = true;
-        low = -10.0;
-    }
-    if high_j > target {
-        clipped = true;
-        high = 10.0;
-    }
     if low_j >= target && high_j <= target {
         for _ in 0..32 {
             let middle = 0.5 * (low + high);
@@ -943,21 +990,39 @@ fn solve_exposure(q: [f32; 3], profile: u32, target: f64, refl: f32) -> (f32, [f
             }
         }
     } else {
-        // The broad root search did not bracket the target. Keep a finite
-        // exposure and make the lossy endpoint visible in the report.
+        // No finite bracket was found. Keep a finite endpoint and expose the
+        // lossy condition in the diagnostics.
         clipped = true;
-        low = if low_j < target { -10.0 } else { 10.0 };
+        low = if low_j < target { -100.0 } else { 100.0 };
     }
-    clipped |= low < EXPOSURE_MIN as f64 || low > EXPOSURE_MAX as f64;
-    let e = low.clamp(EXPOSURE_MIN as f64, EXPOSURE_MAX as f64) as f32;
-    let scale = 2.0_f64.powf(-e as f64) as f32;
-    (e, [q[0] * scale, q[1] * scale, q[2] * scale], clipped)
+    let e = low as f32;
+    clipped |= e < EXPOSURE_MIN || e > EXPOSURE_MAX;
+    let scalar = 2.0_f64.powf(low) as f32;
+    let scale = 2.0_f64.powf(-low) as f32;
+    (
+        e,
+        scalar,
+        [q[0] * scale, q[1] * scale, q[2] * scale],
+        clipped,
+    )
 }
 
-fn solve_prepared(rgb: &[[f32; 3]], req: &Request) -> (Vec<[f32; 3]>, Vec<f32>, SolveStats) {
+fn normalized_exposure(e: f32, scalar: f32) -> f32 {
+    if scalar == 0.0 || e.is_nan() {
+        0.0
+    } else {
+        (e / 20.0 + 0.5).clamp(0.0, 1.0)
+    }
+}
+
+fn solve_prepared(
+    rgb: &[[f32; 3]],
+    req: &Request,
+) -> (Vec<[f32; 3]>, Vec<f32>, Vec<f32>, SolveStats) {
     let target_j_hk = jhk_for_ap0([req.refl; 3], req.profile);
     let mut base = Vec::with_capacity(rgb.len());
     let mut exposure = Vec::with_capacity(rgb.len());
+    let mut exposure_scalar = Vec::with_capacity(rgb.len());
     let mut stats = SolveStats {
         exposure_min: f32::INFINITY,
         exposure_max: f32::NEG_INFINITY,
@@ -970,6 +1035,7 @@ fn solve_prepared(rgb: &[[f32; 3]], req: &Request) -> (Vec<[f32; 3]>, Vec<f32>, 
             stats.non_finite_pixels += 1;
             base.push([0.0; 3]);
             exposure.push(0.0);
+            exposure_scalar.push(0.0);
             continue;
         }
         let mut qq = *q;
@@ -979,7 +1045,7 @@ fn solve_prepared(rgb: &[[f32; 3]], req: &Request) -> (Vec<[f32; 3]>, Vec<f32>, 
                 *v = v.max(0.0);
             }
         }
-        let (e, b, clipped) = solve_exposure(qq, req.profile, target_j_hk, req.refl);
+        let (e, scalar, b, clipped) = solve_exposure(qq, req.profile, target_j_hk, req.refl);
         if clipped {
             stats.clipped_pixels += 1;
         }
@@ -993,9 +1059,10 @@ fn solve_prepared(rgb: &[[f32; 3]], req: &Request) -> (Vec<[f32; 3]>, Vec<f32>, 
         }
         stats.finite_pixels += 1;
         base.push(b);
-        exposure.push((e / 20.0 + 0.5).clamp(0.0, 1.0));
+        exposure.push(normalized_exposure(e, scalar));
+        exposure_scalar.push(scalar);
     }
-    (base, exposure, stats)
+    (base, exposure, exposure_scalar, stats)
 }
 
 fn report_from_stats(
@@ -1058,7 +1125,11 @@ fn report_from_stats(
         batch_size: stats.batch_size,
         preview_transform: "ACES-OUTPUT - ACES2065-1_to_CIE-XYZ-D65 - SDR-100nit-P3-D65_2.0".into(),
         preview_encoding: "P3-D65 JPEG, sRGB encoding".into(),
-        preview_backend: if stats.preview_backend.is_empty() { "wasm-cpu".into() } else { stats.preview_backend.clone() },
+        preview_backend: if stats.preview_backend.is_empty() {
+            "wasm-cpu".into()
+        } else {
+            stats.preview_backend.clone()
+        },
         preview_transform_ms: stats.preview_transform_ms,
         warnings,
     }
@@ -1113,10 +1184,6 @@ fn preview_bytes(rgb: impl Iterator<Item = [f32; 3]>) -> Vec<u8> {
         .collect()
 }
 
-fn exposure_scalar(normalized: f32) -> f32 {
-    2.0_f32.powf(normalized * 20.0 - 10.0)
-}
-
 fn encode_base_preview_jpeg(
     base: &[[f32; 3]],
     width: usize,
@@ -1127,21 +1194,22 @@ fn encode_base_preview_jpeg(
 }
 
 fn encode_exposure_preview_jpeg(
-    exposure: &[f32],
+    exposure_scalar: &[f32],
     width: usize,
     height: usize,
     refl: f32,
 ) -> Result<Vec<u8>, String> {
     let pixels = preview_bytes(
-        exposure
+        exposure_scalar
             .iter()
-            .map(|e| preview_rgb_for_ap0([refl * exposure_scalar(*e); 3])),
+            .map(|s| preview_rgb_for_ap0([refl * *s; 3])),
     );
     encode_preview_jpeg(width, height, &pixels)
 }
 
 fn encode_exrs(
     base: &[[f32; 3]],
+    exposure_norm_ev: &[f32],
     exposure: &[f32],
     width: usize,
     height: usize,
@@ -1158,7 +1226,10 @@ fn encode_exrs(
             ]
         })
         .collect();
-    let re: Vec<f16> = exposure.iter().map(|v| f16::from_f32(*v)).collect();
+    let re: Vec<f16> = exposure_norm_ev
+        .iter()
+        .map(|v| f16::from_f32(if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) }))
+        .collect();
     let base_exr = write_exr(
         width,
         height,
@@ -1179,50 +1250,56 @@ fn encode_exrs(
         "base",
         &report,
     )?;
-    let exposure_exr = write_exr(
+    let exposure_norm_ev_exr = write_exr(
         width,
         height,
         vec![AnyChannel::new("exposure", FlatSamples::F16(re))],
-        "exposure",
+        "exposure_norm-ev",
         &report,
     )?;
-    let scalar: Vec<f16> = exposure.iter()
-        .map(|e| f16::from_f32(exposure_scalar(*e)))
-        .collect();
-    let exposure_rgb_exr = write_exr(
-        width, height,
+    let scalar: Vec<f16> = exposure.iter().map(|s| f16::from_f32(*s)).collect();
+    let exposure_exr = write_exr(
+        width,
+        height,
         vec![
             AnyChannel::new("R", FlatSamples::F16(scalar.clone())),
             AnyChannel::new("G", FlatSamples::F16(scalar.clone())),
             AnyChannel::new("B", FlatSamples::F16(scalar)),
         ],
-        "exposure_rgb", report,
+        "exposure",
+        report,
     )?;
-    Ok((base_exr, exposure_exr, exposure_rgb_exr))
+    Ok((base_exr, exposure_norm_ev_exr, exposure_exr))
 }
 
 fn encode_result(
     base: &[[f32; 3]],
+    exposure_norm_ev: &[f32],
     exposure: &[f32],
     width: usize,
     height: usize,
     report: Report,
 ) -> Result<JsValue, String> {
-    let (base_exr, exposure_exr, exposure_rgb_exr) = encode_exrs(base, exposure, width, height, &report)?;
+    let (base_exr, exposure_norm_ev_exr, exposure_exr) =
+        encode_exrs(base, exposure_norm_ev, exposure, width, height, &report)?;
     let base_preview = encode_base_preview_jpeg(base, width, height)?;
     let exposure_preview = encode_exposure_preview_jpeg(exposure, width, height, report.refl)?;
     payload(
         report,
         base_exr,
+        exposure_norm_ev_exr,
         exposure_exr,
-        exposure_rgb_exr,
         base_preview,
         exposure_preview,
     )
 }
 
 fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
-    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
+    let embedded_pair = p
+        .summary
+        .gamut
+        .as_deref()
+        .zip(p.summary.transfer.as_deref());
     p.rgb = prepare_rgb(
         std::mem::take(&mut p.rgb),
         p.width,
@@ -1231,9 +1308,16 @@ fn process(mut p: Pixels, req: Request) -> Result<JsValue, String> {
         p.icc_profile.as_deref(),
         embedded_pair,
     )?;
-    let (base, exposure, stats) = solve_prepared(&p.rgb, &req);
+    let (base, exposure_norm_ev, exposure, stats) = solve_prepared(&p.rgb, &req);
     let report = report_from_stats(p.width, p.height, &req, &stats, p.summary.warnings.clone());
-    encode_result(&base, &exposure, p.width, p.height, report)
+    encode_result(
+        &base,
+        &exposure_norm_ev,
+        &exposure,
+        p.width,
+        p.height,
+        report,
+    )
 }
 
 /// Own the prepared raster in Rust. JavaScript reads only the active batch;
@@ -1249,20 +1333,24 @@ pub struct PreparedImage {
 #[wasm_bindgen]
 impl PreparedImage {
     #[wasm_bindgen(getter)]
-    pub fn width(&self) -> u32 { self.width }
+    pub fn width(&self) -> u32 {
+        self.width
+    }
 
     #[wasm_bindgen(getter)]
-    pub fn height(&self) -> u32 { self.height }
+    pub fn height(&self) -> u32 {
+        self.height
+    }
 
     #[wasm_bindgen(getter)]
     pub fn warnings(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.warnings)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&self.warnings).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     pub fn read_pixels(&self, start: u32, count: u32) -> Result<Vec<f32>, JsValue> {
         let start = start as usize;
-        let end = start.checked_add(count as usize)
+        let end = start
+            .checked_add(count as usize)
             .filter(|end| *end <= self.rgb.len())
             .ok_or_else(|| JsValue::from_str("Prepared pixel batch is outside the image."))?;
         Ok(flat_pixels(&self.rgb[start..end]))
@@ -1270,10 +1358,16 @@ impl PreparedImage {
 
     /// Solve directly from the Rust-owned prepared raster. This avoids copying
     /// every batch through JavaScript and back into WASM memory.
-    pub fn solve_pixels(&self, start: u32, count: u32, request: JsValue) -> Result<JsValue, JsValue> {
+    pub fn solve_pixels(
+        &self,
+        start: u32,
+        count: u32,
+        request: JsValue,
+    ) -> Result<JsValue, JsValue> {
         let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
         let start = start as usize;
-        let end = start.checked_add(count as usize)
+        let end = start
+            .checked_add(count as usize)
             .filter(|end| *end <= self.rgb.len())
             .ok_or_else(|| JsValue::from_str("Prepared pixel batch is outside the image."))?;
         solve_result_payload(&self.rgb[start..end], &req).map_err(|e| JsValue::from_str(&e))
@@ -1289,7 +1383,12 @@ fn prepared_payload_rgb(
     if rgb.len() != width.saturating_mul(height) {
         return Err("Prepared RGB dimensions do not match.".into());
     }
-    Ok(PreparedImage { rgb, width: width as u32, height: height as u32, warnings })
+    Ok(PreparedImage {
+        rgb,
+        width: width as u32,
+        height: height as u32,
+        warnings,
+    })
 }
 
 fn flat_to_rgb(data: Vec<f32>) -> Result<Vec<[f32; 3]>, String> {
@@ -1309,14 +1408,32 @@ fn flat_to_rgb(data: Vec<f32>) -> Result<Vec<[f32; 3]>, String> {
 }
 
 fn solve_result_payload(rgb: &[[f32; 3]], req: &Request) -> Result<JsValue, String> {
-    let (base, exposure, stats) = solve_prepared(rgb, req);
+    let (base, exposure_norm_ev, exposure, stats) = solve_prepared(rgb, req);
     let object = Object::new();
-    Reflect::set(&object, &JsValue::from_str("base"), &Float32Array::from(flat_pixels(&base).as_slice()).into())
-        .map_err(|e| format!("base: {e:?}"))?;
-    Reflect::set(&object, &JsValue::from_str("exposure"), &Float32Array::from(exposure.as_slice()).into())
-        .map_err(|e| format!("exposure: {e:?}"))?;
-    Reflect::set(&object, &JsValue::from_str("stats"), &serde_wasm_bindgen::to_value(&stats).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("stats: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("base"),
+        &Float32Array::from(flat_pixels(&base).as_slice()).into(),
+    )
+    .map_err(|e| format!("base: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure"),
+        &Float32Array::from(exposure_norm_ev.as_slice()).into(),
+    )
+    .map_err(|e| format!("exposure: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("exposure_scalar"),
+        &Float32Array::from(exposure.as_slice()).into(),
+    )
+    .map_err(|e| format!("exposure scalar: {e:?}"))?;
+    Reflect::set(
+        &object,
+        &JsValue::from_str("stats"),
+        &serde_wasm_bindgen::to_value(&stats).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("stats: {e:?}"))?;
     Ok(object.into())
 }
 
@@ -1335,9 +1452,20 @@ pub fn prepare(data: Vec<u8>, request: JsValue) -> Result<PreparedImage, JsValue
     let width = p.width;
     let height = p.height;
     let warnings = p.summary.warnings.clone();
-    let embedded_pair = p.summary.gamut.as_deref().zip(p.summary.transfer.as_deref());
-    let rgb = prepare_rgb(p.rgb, width, height, &req, p.icc_profile.as_deref(), embedded_pair)
-        .map_err(|e| JsValue::from_str(&e))?;
+    let embedded_pair = p
+        .summary
+        .gamut
+        .as_deref()
+        .zip(p.summary.transfer.as_deref());
+    let rgb = prepare_rgb(
+        p.rgb,
+        width,
+        height,
+        &req,
+        p.icc_profile.as_deref(),
+        embedded_pair,
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width, height, warnings).map_err(|e| JsValue::from_str(&e))
 }
 
@@ -1358,7 +1486,7 @@ pub fn prepare_pixels(
     let rgb = prepare_rgb(rgb, width as usize, height as usize, &req, None, None)
         .map_err(|e| JsValue::from_str(&e))?;
     prepared_payload_rgb(rgb, width as usize, height as usize, Vec::new())
-    .map_err(|e| JsValue::from_str(&e))
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 /// Prepare native HEIC/HEIF samples supplied by the browser libheif bridge.
@@ -1378,7 +1506,9 @@ pub fn prepare_heic_pixels(
 ) -> Result<PreparedImage, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     if width == 0 || height == 0 || data.len() != width as usize * height as usize * 3 {
-        return Err(JsValue::from_str("HEIF pixel buffer dimensions do not match."));
+        return Err(JsValue::from_str(
+            "HEIF pixel buffer dimensions do not match.",
+        ));
     }
     let mut rgb = flat_to_rgb(data).map_err(|e| JsValue::from_str(&e))?;
     if !gain_map.is_empty() {
@@ -1462,6 +1592,12 @@ pub async fn gpu_solve_chunk(data: Vec<f32>, request: JsValue) -> Result<JsValue
     .map_err(|e| JsValue::from_str(&format!("exposure: {e:?}")))?;
     Reflect::set(
         &object,
+        &JsValue::from_str("exposure_scalar"),
+        &Float32Array::from(result.exposure_scalar.as_slice()).into(),
+    )
+    .map_err(|e| JsValue::from_str(&format!("exposure scalar: {e:?}")))?;
+    Reflect::set(
+        &object,
         &JsValue::from_str("stats"),
         &serde_wasm_bindgen::to_value(&result.stats)
             .map_err(|e| JsValue::from_str(&e.to_string()))?,
@@ -1500,6 +1636,7 @@ pub async fn gpu_preview_pixels(
 pub fn encode_outputs(
     base: Vec<f32>,
     exposure: Vec<f32>,
+    exposure_scalar: Vec<f32>,
     width: u32,
     height: u32,
     request: JsValue,
@@ -1511,6 +1648,7 @@ pub fn encode_outputs(
         || height == 0
         || base.len() != width as usize * height as usize * 3
         || exposure.len() != width as usize * height as usize
+        || exposure_scalar.len() != width as usize * height as usize
     {
         return Err(JsValue::from_str(
             "Output buffers do not match the image dimensions.",
@@ -1522,8 +1660,15 @@ pub fn encode_outputs(
         serde_wasm_bindgen::from_value(warnings).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let base: Vec<[f32; 3]> = base.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
     let report = report_from_stats(width as usize, height as usize, &req, &stats, warnings);
-    encode_result(&base, &exposure, width as usize, height as usize, report)
-        .map_err(|e| JsValue::from_str(&e))
+    encode_result(
+        &base,
+        &exposure,
+        &exposure_scalar,
+        width as usize,
+        height as usize,
+        report,
+    )
+    .map_err(|e| JsValue::from_str(&e))
 }
 
 // The worker uses these separate exports so progress measures ACES forward
@@ -1532,6 +1677,7 @@ pub fn encode_outputs(
 pub fn encode_exr_outputs(
     base: Vec<f32>,
     exposure: Vec<f32>,
+    exposure_scalar: Vec<f32>,
     width: u32,
     height: u32,
     request: JsValue,
@@ -1540,7 +1686,12 @@ pub fn encode_exr_outputs(
 ) -> Result<JsValue, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
     let pixel_count = width as usize * height as usize;
-    if width == 0 || height == 0 || base.len() != pixel_count * 3 || exposure.len() != pixel_count {
+    if width == 0
+        || height == 0
+        || base.len() != pixel_count * 3
+        || exposure.len() != pixel_count
+        || exposure_scalar.len() != pixel_count
+    {
         return Err(JsValue::from_str(
             "Output buffers do not match the image dimensions.",
         ));
@@ -1551,11 +1702,24 @@ pub fn encode_exr_outputs(
         serde_wasm_bindgen::from_value(warnings).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let base: Vec<[f32; 3]> = base.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect();
     let report = report_from_stats(width as usize, height as usize, &req, &stats, warnings);
-    let (base_exr, exposure_exr, exposure_rgb_exr) =
-        encode_exrs(&base, &exposure, width as usize, height as usize, &report)
-            .map_err(|e| JsValue::from_str(&e))?;
-    payload(report, base_exr, exposure_exr, exposure_rgb_exr, Vec::new(), Vec::new())
-        .map_err(|e| JsValue::from_str(&e))
+    let (base_exr, exposure_norm_ev_exr, exposure_exr) = encode_exrs(
+        &base,
+        &exposure,
+        &exposure_scalar,
+        width as usize,
+        height as usize,
+        &report,
+    )
+    .map_err(|e| JsValue::from_str(&e))?;
+    payload(
+        report,
+        base_exr,
+        exposure_norm_ev_exr,
+        exposure_exr,
+        Vec::new(),
+        Vec::new(),
+    )
+    .map_err(|e| JsValue::from_str(&e))
 }
 
 /// Build analytic report metadata without allocating or encoding full image
@@ -1569,10 +1733,10 @@ pub fn build_report(
     warnings: JsValue,
 ) -> Result<JsValue, JsValue> {
     let req = parse_request(request).map_err(|e| JsValue::from_str(&e))?;
-    let stats: SolveStats = serde_wasm_bindgen::from_value(stats)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let warnings: Vec<String> = serde_wasm_bindgen::from_value(warnings)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let stats: SolveStats =
+        serde_wasm_bindgen::from_value(stats).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let warnings: Vec<String> =
+        serde_wasm_bindgen::from_value(warnings).map_err(|e| JsValue::from_str(&e.to_string()))?;
     serde_wasm_bindgen::to_value(&report_from_stats(
         width as usize,
         height as usize,
@@ -1599,23 +1763,27 @@ pub fn cpu_preview_ap0(pixels: &[f32]) -> Result<Vec<u8>, JsValue> {
         return Err(JsValue::from_str("Invalid AP0 preview buffer."));
     }
     Ok(preview_bytes(
-        pixels.chunks_exact(3).map(|p| preview_rgb_for_ap0([p[0], p[1], p[2]])),
+        pixels
+            .chunks_exact(3)
+            .map(|p| preview_rgb_for_ap0([p[0], p[1], p[2]])),
     ))
 }
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub async fn gpu_preview_ap0(pixels: Vec<f32>) -> Result<Vec<u8>, JsValue> {
-    gpu::preview_ap0(pixels).await.map_err(|e| JsValue::from_str(&e))
+    gpu::preview_ap0(pixels)
+        .await
+        .map_err(|e| JsValue::from_str(&e))
 }
 
 #[wasm_bindgen]
 pub fn cpu_preview_pixels(
     base: Vec<f32>,
-    exposure: Vec<f32>,
+    exposure_scalar: Vec<f32>,
     refl: f32,
 ) -> Result<JsValue, JsValue> {
-    if base.len() != exposure.len() * 3 || !refl.is_finite() || refl <= 0.0 {
+    if base.len() != exposure_scalar.len() * 3 || !refl.is_finite() || refl <= 0.0 {
         return Err(JsValue::from_str("Invalid preview input buffers or Refl."));
     }
     let base = preview_bytes(
@@ -1623,9 +1791,9 @@ pub fn cpu_preview_pixels(
             .map(|p| preview_rgb_for_ap0([p[0], p[1], p[2]])),
     );
     let exposure = preview_bytes(
-        exposure
+        exposure_scalar
             .iter()
-            .map(|e| preview_rgb_for_ap0([refl * exposure_scalar(*e); 3])),
+            .map(|s| preview_rgb_for_ap0([refl * *s; 3])),
     );
     let object = Object::new();
     Reflect::set(
@@ -1689,26 +1857,47 @@ mod tests {
     #[test]
     fn exposure_solver_preserves_hk_target_for_positive_pixel() {
         let target = jhk_for_ap0([0.5; 3], 1);
-        let (exposure, base, clipped) = solve_exposure([0.15, 0.25, 0.4], 1, target, 0.5);
+        let (exposure, scalar, base, clipped) = solve_exposure([0.15, 0.25, 0.4], 1, target, 0.5);
         assert!(!clipped);
         assert!((-10.0..=10.0).contains(&exposure));
+        assert!((scalar - 2.0_f32.powf(exposure)).abs() < 1.0e-6);
         let solved = jhk_for_ap0(base, 1);
         assert!((solved - target).abs() < 1.0e-3, "{solved} vs {target}");
     }
 
     #[test]
     fn zero_pixel_keeps_neutral_base_and_zero_exposure() {
-        let (exposure, base, clipped) = solve_exposure([0.0; 3], 1, 0.0, 0.5);
+        let (exposure, scalar, base, clipped) = solve_exposure([0.0; 3], 1, 0.0, 0.5);
         assert_eq!(exposure, 0.0);
+        assert_eq!(scalar, 0.0);
         assert_eq!(base, [0.5; 3]);
         assert!(!clipped);
     }
 
     #[test]
-    fn exposure_rgb_output_uses_direct_scalar_encoding() {
-        assert!((exposure_scalar(0.5) - 1.0).abs() < 1.0e-6);
-        assert!((exposure_scalar(0.75) - 32.0).abs() < 1.0e-5);
-        assert!((exposure_scalar(0.0) - 0.0009765625).abs() < 1.0e-9);
+    fn exposure_outputs_keep_norm_ev_bounded_and_scalar_direct() {
+        let target = jhk_for_ap0([0.5; 3], 1);
+        let (exposure, scalar, _, clipped) = solve_exposure([0.5; 3], 1, target, 0.5);
+        assert!(!clipped);
+        assert!(exposure.abs() < 1.0e-5);
+        assert!(((exposure / 20.0 + 0.5) - 0.5).abs() < 1.0e-5);
+        assert!((scalar - 1.0).abs() < 1.0e-5);
+
+        let low_target = jhk_for_ap0([0.5; 3], 1);
+        let (low_exposure, low_scalar, _, clipped) = solve_exposure(
+            [
+                0.5 * 2.0_f32.powi(-12),
+                0.5 * 2.0_f32.powi(-12),
+                0.5 * 2.0_f32.powi(-12),
+            ],
+            1,
+            low_target,
+            0.5,
+        );
+        assert!(clipped);
+        assert!(low_exposure < -10.0);
+        assert_eq!((low_exposure / 20.0 + 0.5).clamp(0.0, 1.0), 0.0);
+        assert!(low_scalar < 2.0_f32.powi(-10));
     }
 
     #[test]

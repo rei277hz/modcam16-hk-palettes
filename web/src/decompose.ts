@@ -95,7 +95,7 @@ const reportRow = $(".report-row");
 const reportMobileViewport = window.matchMedia("(max-width: 800px)");
 const downloadBase = $("#download-base") as HTMLButtonElement;
 const downloadExposure = $("#download-exposure") as HTMLButtonElement;
-const downloadExposureRgb = $("#download-exposure-rgb") as HTMLButtonElement;
+const downloadExposureNormEv = $("#download-exposure-norm-ev") as HTMLButtonElement;
 const basePreviewTrigger = $("#base-preview-trigger") as HTMLButtonElement;
 const exposurePreviewTrigger = $("#exposure-preview-trigger") as HTMLButtonElement;
 const previewOverlay = $("#preview-overlay") as HTMLDivElement;
@@ -109,7 +109,7 @@ const basePreviewImage = $("#base-preview-image") as HTMLImageElement;
 const exposurePreviewImage = $("#exposure-preview-image") as HTMLImageElement;
 const baseSize = $("#base-size");
 const exposureSize = $("#exposure-size");
-const exposureRgbSize = $("#exposure-rgb-size");
+const exposureNormEvSize = $("#exposure-norm-ev-size");
 
 let worker = createWorker();
 let selectedFile: File | undefined;
@@ -127,8 +127,8 @@ let sourcePreviewUrl: string | undefined;
 let sourcePreviewTimer: number | undefined;
 let sourceCacheReadyId: number | undefined;
 let baseUrl: string | undefined;
+let exposureNormEvUrl: string | undefined;
 let exposureUrl: string | undefined;
-let exposureRgbUrl: string | undefined;
 let basePreviewUrl: string | undefined;
 let exposurePreviewUrl: string | undefined;
 let baseFullPreviewUrl: string | undefined;
@@ -191,15 +191,15 @@ function detectFormat(file: File): string | undefined {
 
 function revokeOutputUrls(): void {
   if (baseUrl) URL.revokeObjectURL(baseUrl);
+  if (exposureNormEvUrl) URL.revokeObjectURL(exposureNormEvUrl);
   if (exposureUrl) URL.revokeObjectURL(exposureUrl);
-  if (exposureRgbUrl) URL.revokeObjectURL(exposureRgbUrl);
   if (basePreviewUrl) URL.revokeObjectURL(basePreviewUrl);
   if (exposurePreviewUrl) URL.revokeObjectURL(exposurePreviewUrl);
   if (baseFullPreviewUrl) URL.revokeObjectURL(baseFullPreviewUrl);
   if (exposureFullPreviewUrl) URL.revokeObjectURL(exposureFullPreviewUrl);
   baseUrl = undefined;
+  exposureNormEvUrl = undefined;
   exposureUrl = undefined;
-  exposureRgbUrl = undefined;
   basePreviewUrl = undefined;
   exposurePreviewUrl = undefined;
   baseFullPreviewUrl = undefined;
@@ -425,13 +425,13 @@ function resetResults(): void {
   clearPreview(exposurePreviewImage);
   revokeOutputUrls();
   downloadBase.disabled = true;
+  downloadExposureNormEv.disabled = true;
   downloadExposure.disabled = true;
-  downloadExposureRgb.disabled = true;
   basePreviewTrigger.disabled = true;
   exposurePreviewTrigger.disabled = true;
   baseDisplayDimensions = "";
   exposureDisplayDimensions = "";
-  for (const size of [baseSize, exposureRgbSize, exposureSize]) {
+  for (const size of [baseSize, exposureSize, exposureNormEvSize]) {
     size.textContent = "Waiting";
   }
   emptyReport.hidden = false;
@@ -713,8 +713,8 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
     };
     revokeOutputUrls();
     baseUrl = await openUrl("base-exr", "image/x-exr");
-    exposureUrl = await openUrl("exposure-normalized-ev", "image/x-exr");
-    exposureRgbUrl = await openUrl("exposure-exr", "image/x-exr");
+    exposureNormEvUrl = await openUrl("exposure-normalized-ev", "image/x-exr");
+    exposureUrl = await openUrl("exposure-exr", "image/x-exr");
     basePreviewUrl = await openUrl("base-display-jpeg", "image/jpeg");
     exposurePreviewUrl = await openUrl("exposure-display-jpeg", "image/jpeg");
     const baseName = selectedFile!.name.replace(/\.[^.]+$/, "");
@@ -738,13 +738,13 @@ async function onWorkerMessage(message: WorkerMessage): Promise<void> {
   showPreview(exposurePreviewImage, exposurePreviewUrl);
   renderReport(message.report);
   downloadBase.disabled = false;
+  downloadExposureNormEv.disabled = false;
   downloadExposure.disabled = false;
-  downloadExposureRgb.disabled = false;
   basePreviewTrigger.disabled = false;
   exposurePreviewTrigger.disabled = false;
   baseSize.textContent = formatBytes(files.get("base-exr")?.size ?? 0);
-  exposureSize.textContent = formatBytes(files.get("exposure-normalized-ev")?.size ?? 0);
-  exposureRgbSize.textContent = formatBytes(files.get("exposure-exr")?.size ?? 0);
+  exposureNormEvSize.textContent = formatBytes(files.get("exposure-normalized-ev")?.size ?? 0);
+  exposureSize.textContent = formatBytes(files.get("exposure-exr")?.size ?? 0);
   setBusy(false);
   progressBar.value = 100;
   progressPercent.value = "100";
@@ -933,8 +933,8 @@ sourcePreviewFrame.addEventListener("click", () => { fileInput.value = ""; fileI
 fileInput.addEventListener("change", () => { const file = fileInput.files?.[0]; if (file) void chooseFile(file); });
 calculateButton.addEventListener("click", () => { if (activeJob !== undefined) cancel(); else void calculate(); });
 downloadBase.addEventListener("click", () => download(baseUrl, "base-acescg-fp16", "exr"));
-downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-norm-ev", "exr"));
-downloadExposureRgb.addEventListener("click", () => download(exposureRgbUrl, "exposure-acescg-fp16", "exr"));
+downloadExposureNormEv.addEventListener("click", () => download(exposureNormEvUrl, "exposure-norm-ev", "exr"));
+downloadExposure.addEventListener("click", () => download(exposureUrl, "exposure-acescg-fp16", "exr"));
 saveOverlayPreview.addEventListener("click", () => {
   if (openPreviewKind) void savePreviewFile(openPreviewKind);
 });
