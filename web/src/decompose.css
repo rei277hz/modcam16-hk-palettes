@@ -56,7 +56,7 @@ button:disabled { cursor: not-allowed; opacity: .4; }
 .field { min-width: 0; display: grid; gap: 4px; }
 .field > span { color: #bfcbd0; font-size: 12px; }
 #source-gamut-action { color: #e7d3a7; font-style: normal; }
-#source-format-indicator { margin: 8px 0 0; }
+#source-format-indicator { margin: 0; }
 select, input[type="number"] { width: 100%; min-height: 34px; border: 1px solid #3a4752; border-radius: 0; background: #111820; padding: 0 9px; font-size: 12px; }
 #refl { width: 7ch; max-width: 100%; font-variant-numeric: tabular-nums; }
 .field-note { min-height: 13px; color: #71808b; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -174,7 +174,7 @@ body.diagnostics-open .report-row { max-height: none; overflow: visible; }
   body.report-open .upload-row { overflow: visible; }
 }
 html:has(body.preview-open), body.diagnostics-open.preview-open, body.report-open.preview-open { overflow: hidden; }
-.debug-panel { min-width: 0; border-top: 1px solid #2b3540; padding-top: 6px; color: #aebbc2; font-size: 12px; }
+.debug-panel { min-width: 0; padding-top: 6px; color: #aebbc2; font-size: 12px; }
 .debug-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0; }
 #debug-save-status { overflow-wrap: anywhere; }
 #debug-output { display: block; width: 100%; min-height: 240px; height: 50dvh; resize: vertical; border: 1px solid #3a4752; background: #080b0e; color: #bfcbd0; padding: 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

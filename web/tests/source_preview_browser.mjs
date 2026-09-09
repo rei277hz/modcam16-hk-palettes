@@ -139,6 +139,7 @@ try {
   assert.equal(await page.locator("#source-gamut").isVisible(), true);
   assert.equal(await page.locator("#source-gamut").inputValue(), "embedded");
   assert.equal(await page.locator("#source-format-indicator").textContent(), "JPEG");
+  assert.equal(await page.locator("#source-format-indicator").evaluate(element => getComputedStyle(element).marginTop), "0px");
   assert.equal(await page.locator("#source-gamut-action").isVisible(), false);
   assert.equal(await page.locator("#source-transfer-field").isVisible(), false);
   assert.equal(await page.locator("#source-transfer").isDisabled(), true);

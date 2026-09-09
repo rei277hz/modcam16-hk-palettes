@@ -40,6 +40,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#debug-output").value.includes("Debug capture ready"));
   assert.equal(await page.locator("#debug-panel").isVisible(), true);
   assert.equal(await page.locator("#debug-toggle").getAttribute("aria-expanded"), "true");
+  assert.equal(await page.locator("#debug-panel").evaluate(panel => getComputedStyle(panel).borderTopStyle), "none", "debug panel has no divider below the report");
   assert.match(await page.locator("#debug-output").inputValue(), /Debug capture ready/);
   assert.equal(await page.locator("#debug-output").isEditable(), false);
   assert.equal(await page.evaluate(() => getComputedStyle(document.body).overflowY), "auto");
