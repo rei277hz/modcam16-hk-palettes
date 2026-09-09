@@ -10,8 +10,9 @@ device.
 - The file picker accepts `.dng` and `.DNG` in addition to the existing formats.
 - DNG inspection runs in the preparation worker and reports the actual raw
   dimensions, orientation, camera model, photometry, bit depth, and compression.
-- A supported DNG is interpreted from its embedded calibration. The UI labels it
-  as embedded DNG camera calibration and hides manual gamut/transfer selectors.
+- A supported DNG is interpreted from its embedded calibration. The source
+  format indicator displays only `DNG`; manual gamut/transfer selectors stay
+  hidden while calibration details remain available in diagnostics.
 - The implementation does not request an external DCP and does not apply DCP
   tone curves, look tables, or display rendering. It uses DNG calibration and
   as-shot white balance for a scene-linear result.
@@ -49,8 +50,9 @@ The decoder develops the raw image in this order:
 
 The prepared raster is interleaved AP0 `f32`. Finite negative and above-1.0
 values are retained. Any skipped optional metadata is carried into the
-decomposition warnings and the source indicator identifies the selected
-calibration, dimensions, orientation, and raw storage.
+decomposition warnings. The source format indicator is intentionally concise
+and displays only `DNG`; detailed calibration, dimensions, orientation, and raw
+storage remain available in diagnostics.
 
 ## Reuse, preview, and decomposition
 

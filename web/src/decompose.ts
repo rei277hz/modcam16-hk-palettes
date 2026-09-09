@@ -1,4 +1,4 @@
-import { appendDebug, syncDiagnosticScroll } from "./debug_panel";
+import { appendDebug, setDebugExpanded, syncDiagnosticScroll } from "./debug_panel";
 import type { DebugMessage } from "./debug_log";
 import { listScratchFiles, readScratchFile, removeScratchFile } from "./scratch_store";
 import "./decompose.css";
@@ -94,6 +94,7 @@ const sourcePreviewImage = $("#source-preview-image") as HTMLImageElement;
 const sourcePreviewState = $("#source-preview-state");
 const interpretationGroup = $(".interpretation-group") as HTMLDivElement;
 const interpretationControls = $(".interpretation-controls") as HTMLDivElement;
+const gamutField = $("#source-gamut-field") as HTMLLabelElement;
 const gamutSelect = $("#source-gamut") as HTMLSelectElement;
 const transferSelect = $("#source-transfer") as HTMLSelectElement;
 const transferField = $("#source-transfer-field") as HTMLLabelElement;
@@ -146,6 +147,7 @@ let activeJob: number | undefined;
 let embeddedAvailable = false;
 let embeddedLabel = "Use embedded interpretation";
 let primaryEmbeddedSelection = false;
+let sourceIsDng = false;
 let interpretationMode: "embedded" | "manual" | "unresolved" = "unresolved";
 let sourcePreviewGeneration = 0;
 let sourcePreviewUrl: string | undefined;
@@ -281,10 +283,16 @@ function interpretationFromSelectors(): "embedded" | "manual" | "unresolved" {
   return "unresolved";
 }
 
+function setLayoutVisibility(element: HTMLElement, visible: boolean): void {
+  element.classList.toggle("layout-hidden", !visible);
+  element.setAttribute("aria-hidden", String(!visible));
+  element.toggleAttribute("inert", !visible);
+}
+
 function syncTransferControl(busy = activeJob !== undefined): void {
   const embedded = gamutSelect.value === "embedded" && embeddedAvailable;
   const manualPrimaries = Boolean(gamutSelect.value && gamutSelect.value !== "embedded");
-  transferField.hidden = !manualPrimaries;
+  setLayoutVisibility(transferField, !sourceIsDng && manualPrimaries);
   transferSelect.disabled = busy || !manualPrimaries;
   gamutAction.hidden = !sourceInspected || embeddedAvailable || manualPrimaries;
   if (embedded && transferSelect.value !== "sRGB") transferSelect.value = "sRGB";
@@ -447,6 +455,7 @@ function updateCalculateState(): void {
 function resetResults(): void {
   closePreview();
   setReportExpanded(false);
+  setDebugExpanded(false);
   clearPreview(basePreviewImage);
   clearPreview(exposurePreviewImage);
   revokeOutputUrls();
@@ -466,7 +475,9 @@ function resetResults(): void {
 }
 
 function setReportExpanded(expanded: boolean): void {
+  if (expanded) setDebugExpanded(false);
   reportRow.classList.toggle("report-expanded", expanded);
+  reportContent.hidden = !expanded;
   reportToggle.setAttribute("aria-expanded", String(expanded));
   reportToggle.setAttribute("aria-label", expanded ? "Collapse analytic report" : "Expand analytic report");
   const mobile = reportMobileViewport.matches;
@@ -482,19 +493,18 @@ function renderSummary(summary: SourceSummary): void {
   // DNG is already developed to linear ACES2065-1/AP0 by the WASM decoder;
   // there is no user-selectable source transfer or gamut to expose.
   const isDng = summary.format.toLowerCase() === "dng";
-  interpretationGroup.hidden = false;
-  interpretationControls.hidden = isDng;
+  sourceIsDng = isDng;
+  setLayoutVisibility(interpretationGroup, true);
+  setLayoutVisibility(gamutField, !isDng);
+  setLayoutVisibility(interpretationControls, true);
   sourceCacheReadyId = inspectionId;
   setEmbeddedOption(summary);
   gamutSelect.value = embeddedAvailable ? "embedded" : "";
   transferSelect.value = embeddedAvailable ? "sRGB" : "";
   primaryEmbeddedSelection = embeddedAvailable;
   interpretationMode = embeddedAvailable ? "embedded" : "unresolved";
-  const orientation = summary.orientation && summary.orientation > 1 ? ` · orientation ${summary.orientation}` : "";
-  sourceFormatIndicator.textContent = isDng
-    ? `DNG · ${summary.width} × ${summary.height}${orientation}${summary.camera_model ? ` · ${summary.camera_model}` : ""}${summary.photometry ? ` · ${summary.photometry}` : ""}${summary.bit_depth ? ` · ${summary.bit_depth}-bit` : ""}${summary.compression ? ` · ${summary.compression}` : ""} · embedded camera calibration · linear ACES2065-1/AP0`
-    : selectedFormat.toUpperCase();
-  sourceFormatIndicator.hidden = false;
+  sourceFormatIndicator.textContent = isDng ? "DNG" : selectedFormat.toUpperCase();
+  setLayoutVisibility(sourceFormatIndicator, true);
   updateInterpretationState();
   scheduleSourcePreview();
   updateCalculateState();
@@ -861,9 +871,12 @@ async function chooseFile(file: File): Promise<void> {
   clearSourcePreview();
   sourceCacheReadyId = undefined;
   sourceInspected = false;
-  interpretationGroup.hidden = true;
+  sourceIsDng = false;
+  setLayoutVisibility(interpretationGroup, false);
+  setLayoutVisibility(gamutField, false);
+  setLayoutVisibility(interpretationControls, true);
   sourceFormatIndicator.textContent = "";
-  sourceFormatIndicator.hidden = true;
+  setLayoutVisibility(sourceFormatIndicator, false);
   embeddedAvailable = false;
   primaryEmbeddedSelection = false;
   interpretationMode = "unresolved";
@@ -1000,6 +1013,10 @@ reflInput.addEventListener("change", normalizeReflDisplay);
 reflInput.addEventListener("blur", normalizeReflDisplay);
 reportToggle.addEventListener("click", () => setReportExpanded(!reportRow.classList.contains("report-expanded")));
 reportMobileViewport.addEventListener("change", () => setReportExpanded(false));
+document.addEventListener("debug-panel-toggle", (event) => {
+  const detail = (event as CustomEvent<{ open?: boolean }>).detail;
+  if (detail?.open) setReportExpanded(false);
+});
 window.addEventListener("beforeunload", () => { revokeUrls(); worker.terminate(); previewEncoding?.abort(); });
 updateReconstructionProfile();
 setBusy(false);
