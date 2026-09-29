@@ -2,6 +2,9 @@
 
 *Demo: `P3-GamutCone_ACES2-Rec2020-PQ-Compensated_ACEScg-fp32.exr` is loaded (top-left) into a Photoshop document configured with the ACES 2.0 OCIO config, along with a 24-patch ColorChecker chart (bottom). For each of three patches, the eyedropper samples a color from the palette, a brush stroke is applied over the matching patch, and exposure is adjusted until the painted color matches the reference. The document uses Display = `Rec.2100-PQ - Display` and a View suited to the delivery target and the author’s laptop screen (HDR 1000 nit, P3-D65, Match OS Display Profile), which aligns with the palette’s compensation target (ACES 2.0 Rec.2020 / Rec.2100-PQ, 1000 nit).*
 
+> [!WARNING]
+> This repository is archived. Please use the [improved modCAM16-HK color picker](https://rei277hz.github.io/modcam16-hk-ucs/).
+
 # modCAM16-HK Palettes
 
 Language / 语言: [English](README.md) | [中文](README.zh.md)

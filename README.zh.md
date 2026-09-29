@@ -2,6 +2,9 @@
 
 *演示：在配置了 ACES 2.0 OCIO 配置的 Photoshop 文档中加载 `P3-GamutCone_ACES2-Rec2020-PQ-Compensated_ACEScg-fp32.exr`（画面左上角），并在下方加载 24 色 ColorChecker 色卡。针对其中三个色块，依次用滴管工具从调色盘吸取颜色、用笔刷在对应色块上画一笔、再调整曝光直至绘制颜色与参考色匹配。文档的 Display 设为 `Rec.2100-PQ - Display`，View 选择了符合制作目标和笔者笔记本屏幕的选项（HDR 1000 nit、P3-D65、Match OS Display Profile），与该调色盘的补偿目标（ACES 2.0 Rec.2020 / Rec.2100-PQ，1000 nit）一致。*
 
+> [!WARNING]
+> 本仓库现已归档。请使用采用改进设计的 [modCAM16-HK 取色器](https://rei277hz.github.io/modcam16-hk-ucs/)。
+
 # modCAM16-HK 调色盘
 
 Language / 语言: [English](README.md) | [中文](README.zh.md)
